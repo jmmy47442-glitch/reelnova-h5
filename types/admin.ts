@@ -120,6 +120,28 @@ export interface AdminUsersResponse {
   countries: string[];
 }
 
+export type AuditRisk = '普通' | '高风险';
+
+export interface AuditLog {
+  id: string;
+  actor: string;
+  module: string;
+  action: string;
+  target: string;
+  detail: string;
+  risk: AuditRisk;
+  ip: string | null;
+  createdAt: string;
+}
+
+export interface AdminAuditResponse {
+  connected: true;
+  generatedAt: string;
+  items: AuditLog[];
+  total: number;
+  modules: string[];
+}
+
 export interface ReconciliationRow {
   date: string;
   currency: string;

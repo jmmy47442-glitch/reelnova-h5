@@ -1,5 +1,5 @@
 import type { H3Event } from 'h3';
-import { d1All, d1First, d1Run, hasD1Connection } from './cloudflare-d1';
+import { d1All, d1First, d1Run } from './cloudflare-d1';
 
 export type AdminRole = 'super_admin' | 'admin';
 export type AdminStatus = 'invited' | 'active' | 'disabled';
@@ -42,7 +42,6 @@ export interface AdminAccount {
 
 const sessionCookie = 'reelnova-admin-session';
 const encoder = new TextEncoder();
-const memoryAccounts = new Map<string, AdminAccountRow>();
 
 const bytesToBase64Url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes))
   .replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, '');
@@ -87,29 +86,19 @@ const toAccount = (row: AdminAccountRow): AdminAccount => ({
   createdAt: row.created_at,
 });
 
-const useMemoryRepository = (event: H3Event) => {
-  if (hasD1Connection(event)) return false;
-  if (process.env.NODE_ENV === 'production') {
-    throw createError({ statusCode: 503, statusMessage: 'Admin database is not configured' });
-  }
-  return true;
-};
+const findByEmail = async (event: H3Event, email: string) => d1First<AdminAccountRow>(
+  event,
+  'SELECT * FROM admin_accounts WHERE email = ? COLLATE NOCASE LIMIT 1',
+  [email],
+);
 
-const findByEmail = async (event: H3Event, email: string) => {
-  if (useMemoryRepository(event)) return [...memoryAccounts.values()].find((account) => account.email === email) || null;
-  return d1First<AdminAccountRow>(event, 'SELECT * FROM admin_accounts WHERE email = ? COLLATE NOCASE LIMIT 1', [email]);
-};
-
-const findById = async (event: H3Event, id: string) => {
-  if (useMemoryRepository(event)) return memoryAccounts.get(id) || null;
-  return d1First<AdminAccountRow>(event, 'SELECT * FROM admin_accounts WHERE id = ? LIMIT 1', [id]);
-};
+const findById = async (event: H3Event, id: string) => d1First<AdminAccountRow>(
+  event,
+  'SELECT * FROM admin_accounts WHERE id = ? LIMIT 1',
+  [id],
+);
 
 const insertAccount = async (event: H3Event, row: AdminAccountRow) => {
-  if (useMemoryRepository(event)) {
-    memoryAccounts.set(row.id, row);
-    return;
-  }
   await d1Run(event, `INSERT INTO admin_accounts
     (id, email, name, role, status, password_salt, password_hash, invited_by, invited_at, last_login_at, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
@@ -119,11 +108,6 @@ const insertAccount = async (event: H3Event, row: AdminAccountRow) => {
 };
 
 const updateLogin = async (event: H3Event, id: string, loggedInAt: string) => {
-  if (useMemoryRepository(event)) {
-    const account = memoryAccounts.get(id);
-    if (account) memoryAccounts.set(id, { ...account, status: 'active', last_login_at: loggedInAt, updated_at: loggedInAt });
-    return;
-  }
   await d1Run(event, `UPDATE admin_accounts
     SET status = CASE WHEN status = 'invited' THEN 'active' ELSE status END, last_login_at = ?, updated_at = ? WHERE id = ?`,
   [loggedInAt, loggedInAt, id]);
@@ -228,9 +212,7 @@ export const requireSuperAdmin = (event: H3Event) => {
 
 export const listAdminAccounts = async (event: H3Event) => {
   await ensureSuperAdmin(event);
-  const rows = useMemoryRepository(event)
-    ? [...memoryAccounts.values()].sort((left, right) => right.created_at.localeCompare(left.created_at))
-    : await d1All<AdminAccountRow>(event, 'SELECT * FROM admin_accounts ORDER BY created_at DESC');
+  const rows = await d1All<AdminAccountRow>(event, 'SELECT * FROM admin_accounts ORDER BY created_at DESC');
   return rows.map(toAccount);
 };
 
@@ -264,8 +246,7 @@ export const updateAdminStatus = async (event: H3Event, id: string, status: Extr
   if (!account) throw createError({ statusCode: 404, statusMessage: 'Administrator not found' });
   if (account.role === 'super_admin') throw createError({ statusCode: 400, statusMessage: 'Super administrator cannot be disabled' });
   const now = new Date().toISOString();
-  if (useMemoryRepository(event)) memoryAccounts.set(id, { ...account, status, updated_at: now });
-  else await d1Run(event, 'UPDATE admin_accounts SET status = ?, updated_at = ? WHERE id = ?', [status, now, id]);
+  await d1Run(event, 'UPDATE admin_accounts SET status = ?, updated_at = ? WHERE id = ?', [status, now, id]);
   return { ...toAccount(account), status };
 };
 
@@ -273,8 +254,7 @@ export const deleteAdminAccount = async (event: H3Event, id: string) => {
   const account = await findById(event, id);
   if (!account) throw createError({ statusCode: 404, statusMessage: 'Administrator not found' });
   if (account.role === 'super_admin') throw createError({ statusCode: 400, statusMessage: 'Super administrator cannot be deleted' });
-  if (useMemoryRepository(event)) memoryAccounts.delete(id);
-  else await d1Run(event, 'DELETE FROM admin_accounts WHERE id = ?', [id]);
+  await d1Run(event, 'DELETE FROM admin_accounts WHERE id = ?', [id]);
   return { id };
 };
 

@@ -43,7 +43,7 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | Reconciliation | `GET /api/admin/reconciliation` |
 | PayPal | `GET/PUT /admin/api/paypal/config`, `GET /admin/api/paypal/webhook-health` |
 | Site/domain | `GET/PUT /admin/api/site-config`, `GET/POST /admin/api/domains` |
-| Audit | `GET /admin/api/audit-logs` |
+| Audit | `GET /api/admin/audit` |
 | Connection health | `GET /api/admin/connection` |
 
 Order creation must use a server-side price snapshot. Playback requests must validate the visitor session and entitlement every time. PayPal approval in the browser is not proof of payment; only a verified capture or webhook may issue entitlement.

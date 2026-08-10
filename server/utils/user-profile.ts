@@ -63,14 +63,20 @@ export const recordAdminUserAction = (event: H3Event, input: {
   action: 'status_change' | 'device_restriction_release' | 'entitlement_grant';
   detail: string;
 }) => {
-  const session = event.context.adminSession as { email?: string } | undefined;
-  return d1Run(event, `INSERT INTO admin_user_actions (id, visitor_id, actor, action, detail, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)`, [
-    crypto.randomUUID(),
-    input.visitorId,
-    getHeader(event, 'cf-access-authenticated-user-email') || session?.email || 'Admin',
-    input.action,
-    input.detail,
-    new Date().toISOString(),
+  const session = event.context.adminSession as { id?: string; email?: string } | undefined;
+  const actor = getHeader(event, 'cf-access-authenticated-user-email') || session?.email || 'Admin';
+  const ip = getHeader(event, 'cf-connecting-ip') || getHeader(event, 'x-forwarded-for')?.split(',')[0]?.trim() || getHeader(event, 'x-real-ip') || null;
+  const createdAt = new Date().toISOString();
+  const id = crypto.randomUUID();
+  const actionLabel = input.action === 'status_change'
+    ? (input.detail.endsWith('-> disabled') ? '禁用账号' : input.detail.endsWith('-> active') ? '恢复账号' : '变更账号状态')
+    : input.action === 'device_restriction_release' ? '解除设备限制' : '手工补发权益';
+  return Promise.all([
+    d1Run(event, `INSERT INTO admin_user_actions (id, visitor_id, actor, action, detail, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)`, [id, input.visitorId, actor, input.action, input.detail, createdAt]),
+    d1Run(event, `INSERT INTO admin_audit_logs (id, actor, actor_id, module, action, target, detail, risk, ip, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+      `user-action-${id}`, actor, session?.id || null, '用户与权益', actionLabel, input.visitorId, input.detail, '高风险', ip, createdAt,
+    ]),
   ]);
 };

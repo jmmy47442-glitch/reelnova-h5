@@ -1,6 +1,6 @@
 # Cloudflare production data integration
 
-The admin dashboard never falls back to sample metrics. When Cloudflare D1 is unavailable, dashboard, orders and reconciliation return a connection error and display an explicit disconnected state.
+The admin dashboard and administrator accounts never fall back to sample or in-memory data. When Cloudflare D1 is unavailable, dashboard, administrators, orders, reconciliation and audit logs return an explicit connection error.
 
 ## Data ownership
 
@@ -12,7 +12,8 @@ The admin dashboard never falls back to sample metrics. When Cloudflare D1 is un
 | Entitlements | Cloudflare D1 `entitlements` | Granted only after amount and currency match the order snapshot |
 | User profiles | Cloudflare D1 `users` | One row per `visitor_id`; email is synchronized from verified PayPal capture |
 | Manual entitlements | Cloudflare D1 `manual_entitlements` | Admin grants are separate from payment orders and do not affect revenue |
-| User actions | Cloudflare D1 `admin_user_actions` | Status changes, device releases and manual grants |
+| Administrator accounts | Cloudflare D1 `admin_accounts` | Login, account status and administrator management share one durable source of truth |
+| Audit logs | Cloudflare D1 `admin_audit_logs` | Actor, source IP, target and change details for administrative actions |
 | Reconciliation | Cloudflare D1 aggregation | Paid amount minus PayPal fee and refunds |
 
 Cloudflare Web Analytics request counts are not used as play counts. Page requests, bots, reloads and media segment requests do not represent a user starting an episode.
@@ -40,6 +41,7 @@ Create a database named `reelnova-production` in Cloudflare Dashboard under Stor
 npx wrangler d1 execute reelnova-production --remote --file=./migrations/0001_reelnova_core.sql
 npx wrangler d1 execute reelnova-production --remote --file=./migrations/0002_users.sql
 npx wrangler d1 execute reelnova-production --remote --file=./migrations/0003_admin_accounts.sql
+npx wrangler d1 execute reelnova-production --remote --file=./migrations/0004_admin_audit_logs.sql
 ```
 
 For Cloudflare Pages or Workers, add a D1 binding with variable name `DB`. For local Node deployment, set the REST fallback variables shown in `.env.example`:
@@ -104,4 +106,4 @@ Visit `/admin/system`. D1, PayPal and media delivery are checked independently. 
 4. The order appears in `/admin/orders`.
 5. Starting an authorized episode increments the D1 playback count once for that session.
 
-The admin user page reads `GET /api/admin/users` from D1. Run all three migrations before opening `/admin/users`; otherwise the page will show the explicit database migration error state. User rows are created or refreshed on playback authorization, playback events and order creation. Verified PayPal captures fill in the user's email and country. Administrator credentials and sessions use `admin_accounts` and the server-side admin auth API.
+The admin user page reads `GET /api/admin/users` from D1, the administrator page reads `GET /api/admin/administrators`, and the audit page reads `GET /api/admin/audit`. Run all four migrations before opening these pages; otherwise the UI will show the explicit database migration error state. User rows are created or refreshed on playback authorization, playback events and order creation. Verified PayPal captures fill in the user's email and country. Administrator credentials and account state use `admin_accounts`; sessions are signed HttpOnly cookies and are revalidated against that table on every protected request.

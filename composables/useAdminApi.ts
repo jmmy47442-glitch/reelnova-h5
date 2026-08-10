@@ -1,5 +1,5 @@
 import type { ApiEnvelope } from '~/types/content';
-import type { AdminAccount, AdminOrdersResponse, AdminUsersResponse, DashboardSummary, PersistedUserStatus, ReconciliationResponse } from '~/types/admin';
+import type { AdminAccount, AdminAuditResponse, AdminOrdersResponse, AdminUsersResponse, DashboardSummary, PersistedUserStatus, ReconciliationResponse } from '~/types/admin';
 
 export const useAdminApi = () => {
   const request = <T>(path: string, options: Parameters<typeof $fetch>[1] = {}) =>
@@ -9,6 +9,7 @@ export const useAdminApi = () => {
     getDashboard: () => request<DashboardSummary>('/api/admin/dashboard'),
     getOrders: (query: Record<string, string | number | undefined> = {}) => request<AdminOrdersResponse>('/api/admin/orders', { query }),
     getUsers: (query: Record<string, string | number | undefined> = {}) => request<AdminUsersResponse>('/api/admin/users', { query }),
+    getAudit: (query: Record<string, string | number | undefined> = {}) => request<AdminAuditResponse>('/api/admin/audit', { query }),
     updateUserStatus: (visitorId: string, status: PersistedUserStatus) => request<{ visitorId: string; status: PersistedUserStatus }>(`/api/admin/users/${encodeURIComponent(visitorId)}`, { method: 'PATCH', body: { status } }),
     releaseUserDevice: (visitorId: string) => request<{ visitorId: string; status: PersistedUserStatus }>(`/api/admin/users/${encodeURIComponent(visitorId)}/release-device`, { method: 'POST' }),
     grantUserEntitlement: (visitorId: string, seriesId: string, reason: string) => request<{ visitorId: string; seriesId: string; status: 'granted' }>(`/api/admin/users/${encodeURIComponent(visitorId)}/entitlements`, { method: 'POST', body: { seriesId, reason } }),
