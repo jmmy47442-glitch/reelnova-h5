@@ -4,14 +4,7 @@ import type { UserLoginInput, UserRegisterInput, UserSession } from '~/types/use
 export const useUserAuth = () => {
   const session = useState<UserSession | null>('user-session', () => null);
   const sessionChecked = useState('user-session-checked', () => false);
-  const guestPreview = useCookie<string | null>('rn_guest_preview', {
-    default: () => null,
-    maxAge: 60 * 60 * 24 * 30,
-    sameSite: 'lax',
-  });
-
-  const isAuthenticated = computed(() => Boolean(session.value?.id));
-  const isGuest = computed(() => !isAuthenticated.value && String(guestPreview.value) === '1');
+  const isAuthenticated = computed(() => Boolean(session.value?.userId));
 
   const fetchSession = async (force = false) => {
     if (sessionChecked.value && !force) return session.value;
@@ -32,7 +25,6 @@ export const useUserAuth = () => {
     const response = await $fetch<ApiEnvelope<UserSession>>('/api/auth/login', { method: 'POST', body: input });
     session.value = response.data;
     sessionChecked.value = true;
-    guestPreview.value = null;
     return response.data;
   };
 
@@ -40,14 +32,7 @@ export const useUserAuth = () => {
     const response = await $fetch<ApiEnvelope<UserSession>>('/api/auth/register', { method: 'POST', body: input });
     session.value = response.data;
     sessionChecked.value = true;
-    guestPreview.value = null;
     return response.data;
-  };
-
-  const continueAsGuest = () => {
-    session.value = null;
-    sessionChecked.value = true;
-    guestPreview.value = '1';
   };
 
   const logout = async () => {
@@ -56,9 +41,8 @@ export const useUserAuth = () => {
     } finally {
       session.value = null;
       sessionChecked.value = true;
-      guestPreview.value = null;
     }
   };
 
-  return { session, sessionChecked, isAuthenticated, isGuest, fetchSession, login, register, continueAsGuest, logout };
+  return { session, sessionChecked, isAuthenticated, fetchSession, login, register, logout };
 };

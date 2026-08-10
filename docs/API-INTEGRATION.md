@@ -19,15 +19,15 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
-| POST | `/api/auth/register` | Create a viewer account and preserve the current visitor identity |
-| POST | `/api/auth/login` | Authenticate a viewer and restore their linked visitor identity |
+| POST | `/api/auth/register` | Create a viewer account and signed session |
+| POST | `/api/auth/login` | Authenticate a viewer and create a signed session |
 | GET | `/api/auth/session` | Read the current signed viewer session |
 | POST | `/api/auth/logout` | Clear the current viewer session |
 | GET | `/api/home` | Configured home sections and series cards |
 | GET | `/api/explore` | Search, filter and sort series |
 | GET | `/api/series/{slug}` | Series metadata, pricing and episode entitlement states |
 | GET | `/api/playback?seriesId=&episodeNo=` | Server-authorized short-lived HLS URL |
-| GET | `/api/me/library` | Purchases and watch progress for the current visitor |
+| GET | `/api/me/library` | Purchases and watch progress for the signed-in user |
 | POST | `/api/orders` | Create a local order and PayPal order |
 | GET | `/api/orders/{orderNo}` | Poll server-confirmed order state |
 | POST | `/api/orders/restore` | Start verified purchase restoration |
@@ -44,11 +44,11 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | Episodes | `GET/POST /admin/api/series/{id}/episodes`, `POST /admin/api/uploads/multipart` |
 | Home sections | `GET/PUT /admin/api/home-sections`, `PUT /admin/api/home-sections/sort` |
 | Orders | `GET /api/admin/orders`, `POST /api/admin/orders/{orderNo}/verify` |
-| Users | `GET /api/admin/users`, `PATCH /api/admin/users/{visitorId}`, `POST /api/admin/users/{visitorId}/release-device`, `POST /api/admin/users/{visitorId}/entitlements` |
+| Users | `GET /api/admin/users`, `PATCH /api/admin/users/{userId}`, `POST /api/admin/users/{userId}/release-device`, `POST /api/admin/users/{userId}/entitlements` |
 | Reconciliation | `GET /api/admin/reconciliation` |
 | PayPal | `GET/PUT /admin/api/paypal/config`, `GET /admin/api/paypal/webhook-health` |
 | Site/domain | `GET/PUT /admin/api/site-config`, `GET/POST /admin/api/domains` |
 | Audit | `GET /api/admin/audit` |
 | Connection health | `GET /api/admin/connection` |
 
-Order creation must use a server-side price snapshot. Playback requests must validate the visitor session and entitlement every time. PayPal approval in the browser is not proof of payment; only a verified capture or webhook may issue entitlement.
+Order creation must use a server-side price snapshot. Playback requests must validate the user session and entitlement every time. PayPal approval in the browser is not proof of payment; only a verified capture or webhook may issue entitlement.

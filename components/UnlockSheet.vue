@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { Check, CircleAlert, LoaderCircle, ShieldCheck, X } from 'lucide-vue-next';
+import { useUserAuth } from '~/composables/useUserAuth';
 import type { OrderStatus, Series } from '~/types/content';
 
 const props = defineProps<{ series: Series; open: boolean }>();
 const emit = defineEmits<{ close: []; unlocked: [] }>();
 const api = useContentApi();
 const { formatPrice } = useFormatters();
+const route = useRoute();
+const { isAuthenticated } = useUserAuth();
 const status = ref<OrderStatus>('pending');
 const error = ref('');
 
@@ -17,6 +20,12 @@ watch(() => props.open, (isOpen) => {
 });
 
 const checkout = async () => {
+  if (!isAuthenticated.value) {
+    emit('close');
+    await navigateTo({ path: '/login', query: { redirect: route.fullPath } });
+    return;
+  }
+
   status.value = 'processing';
   error.value = '';
   try {
@@ -40,7 +49,20 @@ const checkout = async () => {
             <X :size="20" />
           </button>
 
-          <template v-if="status === 'pending' || status === 'failed'">
+          <template v-if="!isAuthenticated">
+            <div class="unlock-sheet__intro">
+              <img :src="series.coverUrl" alt="" />
+              <div>
+                <span class="eyebrow">ACCOUNT REQUIRED</span>
+                <h2 id="unlock-title">Sign in to unlock</h2>
+                <p>Watch the free preview first. Create an account or sign in when you are ready to buy this series.</p>
+              </div>
+            </div>
+            <button class="button button--primary button--wide" type="button" @click="checkout">Sign in or register</button>
+            <p class="legal-copy">Your preview position stays on this device.</p>
+          </template>
+
+          <template v-else-if="status === 'pending' || status === 'failed'">
             <div class="unlock-sheet__intro">
               <img :src="series.coverUrl" alt="" />
               <div>

@@ -6,7 +6,6 @@ import {
   EyeOff,
   LockKeyhole,
   Mail,
-  Play,
   ShieldCheck,
   Sparkles,
   UserRound,
@@ -15,7 +14,7 @@ import { useUserAuth } from '~/composables/useUserAuth';
 
 const props = defineProps<{ mode: 'login' | 'register' }>();
 const route = useRoute();
-const { login, register, continueAsGuest } = useUserAuth();
+const { login, register } = useUserAuth();
 const form = reactive({ name: '', email: '', password: '', confirmPassword: '', remember: true, agreement: false });
 const errors = reactive({ name: '', email: '', password: '', confirmPassword: '', agreement: '', submit: '' });
 const showPassword = ref(false);
@@ -72,11 +71,6 @@ const submit = async () => {
   } finally {
     submitting.value = false;
   }
-};
-
-const enterGuestPreview = async () => {
-  continueAsGuest();
-  await navigateTo(redirect.value);
 };
 </script>
 
@@ -146,8 +140,6 @@ const enterGuestPreview = async () => {
           </button>
         </form>
 
-        <div class="consumer-auth__divider"><span>or preview free episodes</span></div>
-        <button class="consumer-auth__guest" type="button" @click="enterGuestPreview"><Play :size="17" fill="currentColor" />Continue as guest</button>
         <p class="consumer-auth__alternate">{{ isRegister ? 'Already have an account?' : 'New to ReelNova?' }} <NuxtLink :to="alternateTo">{{ isRegister ? 'Sign in' : 'Register' }}</NuxtLink></p>
       </div>
       <p class="consumer-auth__legal">By continuing, you confirm you are 18 or older.</p>

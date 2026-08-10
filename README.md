@@ -9,7 +9,7 @@ npm install
 npm run dev
 ```
 
-- 用户端：登录 `/login`，注册 `/register`，首页 `/`，探索 `/explore`，片库 `/library`，个人中心 `/profile`。首次访问可登录、注册或选择游客试看；游客可浏览并观看免费集。
+- 用户端：登录 `/login`，注册 `/register`，首页 `/`，探索 `/explore`，片库 `/library`，个人中心 `/profile`。用户必须注册或登录后才能进入用户端界面。
 - 核心流程：详情 `/series/vows-and-vengeance`，锁片播放 `/watch/vows-and-vengeance/4`。
 - 管理后台：概览 `/admin`，短剧 `/admin/series`，订单 `/admin/orders`，首页配置 `/admin/operations`，支付配置 `/admin/system`。
 - 管理后台仅提供登录，不开放注册。所有管理员账号（包括开发环境预设超级管理员）均保存在 Cloudflare D1 `admin_accounts` 表，未连接数据库时不使用内存数据兜底。开发环境预设账号为 `admin@reelnova.com` / `ReelNova@2026`；生产部署必须通过 `SUPER_ADMIN_EMAIL`、`SUPER_ADMIN_PASSWORD` 和 `ADMIN_SESSION_SECRET` 覆盖默认值。

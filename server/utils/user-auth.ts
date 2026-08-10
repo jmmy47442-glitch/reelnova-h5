@@ -1,11 +1,10 @@
 import type { H3Event } from 'h3';
 import type { UserSession } from '~/types/user';
-import { d1First, d1Run, getVisitorId, rotateVisitorId } from './cloudflare-d1';
-import { upsertUserProfile } from './user-profile';
+import { d1First, d1Run, getRequestCountry } from './cloudflare-d1';
+import { summarizeDevice } from './user-profile';
 
 interface UserAccountRow {
-  id: string;
-  visitor_id: string;
+  user_id: string;
   email: string;
   display_name: string;
   password_salt: string;
@@ -16,8 +15,7 @@ interface UserAccountRow {
 }
 
 export interface UserAccount {
-  id: string;
-  visitorId: string;
+  userId: string;
   email: string;
   name: string;
   status: UserAccountRow['status'];
@@ -64,8 +62,7 @@ const constantTimeEqual = (left: string, right: string) => {
 };
 
 const toAccount = (row: UserAccountRow): UserAccount => ({
-  id: row.id,
-  visitorId: row.visitor_id,
+  userId: row.user_id,
   email: row.email,
   name: row.display_name,
   status: row.status,
@@ -73,20 +70,21 @@ const toAccount = (row: UserAccountRow): UserAccount => ({
   createdAt: row.created_at,
 });
 
-const accountSelect = `SELECT a.*, u.status
-  FROM user_accounts a
-  INNER JOIN users u ON u.visitor_id = a.visitor_id`;
+const accountSelect = `SELECT user_id, email, display_name, password_salt, password_hash,
+  status, last_login_at, created_at
+  FROM users
+  WHERE password_hash IS NOT NULL`;
 
 const findByEmail = (event: H3Event, email: string) => d1First<UserAccountRow>(
   event,
-  `${accountSelect} WHERE a.email = ? COLLATE NOCASE LIMIT 1`,
+  `${accountSelect} AND email = ? COLLATE NOCASE LIMIT 1`,
   [email],
 );
 
-const findById = (event: H3Event, id: string) => d1First<UserAccountRow>(
+const findById = (event: H3Event, userId: string) => d1First<UserAccountRow>(
   event,
-  `${accountSelect} WHERE a.id = ? LIMIT 1`,
-  [id],
+  `${accountSelect} AND user_id = ? LIMIT 1`,
+  [userId],
 );
 
 export const createUserAccount = async (event: H3Event, input: { name: string; email: string; password: string }) => {
@@ -95,23 +93,13 @@ export const createUserAccount = async (event: H3Event, input: { name: string; e
     throw createError({ statusCode: 409, statusMessage: 'An account with this email already exists' });
   }
 
-  let visitorId = getVisitorId(event);
-  const existingVisitorAccount = await d1First<{ id: string }>(event, 'SELECT id FROM user_accounts WHERE visitor_id = ? LIMIT 1', [visitorId]);
-  if (existingVisitorAccount) {
-    // Older clients may still have the old visitor cookie after signing out.
-    // Only an active session must retain its visitor identity.
-    if (await getUserSession(event)) {
-      throw createError({ statusCode: 409, statusMessage: 'This browser is already linked to an account' });
-    }
-    visitorId = rotateVisitorId(event);
+  if (await getUserSession(event)) {
+    throw createError({ statusCode: 409, statusMessage: 'You are already signed in' });
   }
-
-  await upsertUserProfile(event, { visitorId, email });
   const now = new Date().toISOString();
   const salt = randomToken();
   const row: UserAccountRow = {
-    id: `usr_${crypto.randomUUID()}`,
-    visitor_id: visitorId,
+    user_id: `usr_${crypto.randomUUID()}`,
     email,
     display_name: input.name.trim(),
     password_salt: salt,
@@ -120,11 +108,13 @@ export const createUserAccount = async (event: H3Event, input: { name: string; e
     last_login_at: now,
     created_at: now,
   };
-  await d1Run(event, `INSERT INTO user_accounts
-    (id, visitor_id, email, display_name, password_salt, password_hash, last_login_at, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
-    row.id, row.visitor_id, row.email, row.display_name, row.password_salt, row.password_hash,
-    row.last_login_at, row.created_at, now,
+  await d1Run(event, `INSERT INTO users
+    (user_id, email, display_name, password_salt, password_hash, last_login_at,
+     country, device, status, created_at, last_seen_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`, [
+    row.user_id, row.email, row.display_name, row.password_salt, row.password_hash,
+    row.last_login_at, getRequestCountry(event), summarizeDevice(getHeader(event, 'user-agent')),
+    row.created_at, row.created_at, now,
   ]);
   return toAccount(row);
 };
@@ -135,7 +125,7 @@ export const authenticateUser = async (event: H3Event, email: string, password: 
   const candidate = await derivePasswordHash(password, account.password_salt);
   if (!constantTimeEqual(candidate, account.password_hash)) return null;
   const loggedInAt = new Date().toISOString();
-  await d1Run(event, 'UPDATE user_accounts SET last_login_at = ?, updated_at = ? WHERE id = ?', [loggedInAt, loggedInAt, account.id]);
+  await d1Run(event, 'UPDATE users SET last_login_at = ?, updated_at = ? WHERE user_id = ?', [loggedInAt, loggedInAt, account.user_id]);
   return { ...toAccount(account), lastLoginAt: loggedInAt };
 };
 
@@ -149,8 +139,7 @@ export const setUserSession = async (event: H3Event, account: UserAccount, remem
   const maxAge = remember ? 60 * 60 * 24 * 30 : 60 * 60 * 12;
   const loggedInAt = new Date().toISOString();
   const session: UserSession = {
-    id: account.id,
-    visitorId: account.visitorId,
+    userId: account.userId,
     email: account.email,
     name: account.name,
     loggedInAt,
@@ -166,15 +155,11 @@ export const setUserSession = async (event: H3Event, account: UserAccount, remem
     path: '/',
   };
   setCookie(event, sessionCookie, `${payload}.${signature}`, cookieOptions);
-  setCookie(event, 'rn_visitor', account.visitorId, { ...cookieOptions, sameSite: 'lax', maxAge: 60 * 60 * 24 * 365 });
   return session;
 };
 
 export const clearUserSession = (event: H3Event) => {
-  // A visitor identity is linked to an account at registration time. Rotate it
-  // on sign-out so the next account registration starts with a fresh identity.
   deleteCookie(event, sessionCookie, { path: '/' });
-  deleteCookie(event, 'rn_visitor', { path: '/' });
 };
 
 export const getUserSession = async (event: H3Event): Promise<UserSession | null> => {
@@ -187,9 +172,9 @@ export const getUserSession = async (event: H3Event): Promise<UserSession | null
 
   try {
     const session = decodeJson<UserSession>(payload);
-    if (!session.id || !session.visitorId || !session.email || Date.parse(session.expiresAt) <= Date.now()) return null;
-    const account = await findById(event, session.id);
-    if (!account || account.status !== 'active' || account.visitor_id !== session.visitorId || account.email !== session.email) return null;
+    if (!session.userId || !session.email || Date.parse(session.expiresAt) <= Date.now()) return null;
+    const account = await findById(event, session.userId);
+    if (!account || account.status !== 'active' || account.user_id !== session.userId || account.email !== session.email) return null;
     return { ...session, name: account.display_name };
   } catch {
     return null;

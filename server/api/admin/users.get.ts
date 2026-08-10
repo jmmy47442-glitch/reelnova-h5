@@ -3,7 +3,8 @@ import { d1All, d1First } from '~/server/utils/cloudflare-d1';
 import type { AdminUsersResponse, PersistedUser, PersistedUserStatus } from '~/types/admin';
 
 interface UserRow {
-  visitor_id: string;
+  user_id: string;
+  display_name: string;
   email: string | null;
   country: string | null;
   device: string | null;
@@ -27,7 +28,8 @@ const maskEmail = (value: string | null) => {
 };
 
 const mapUser = (row: UserRow): PersistedUser => ({
-  id: row.visitor_id,
+  id: row.user_id,
+  name: row.display_name,
   email: maskEmail(row.email),
   country: row.country || '—',
   device: row.device || '未知设备',
@@ -42,7 +44,7 @@ export default defineEventHandler(async (event) => {
   const query = getQuery(event);
   const page = Math.max(1, Number(query.page) || 1);
   const pageSize = Math.min(100, Math.max(1, Number(query.pageSize) || 20));
-  const conditions: string[] = [];
+  const conditions: string[] = ['u.password_hash IS NOT NULL'];
   const params: unknown[] = [];
   if (query.status && ['active', 'restricted', 'disabled'].includes(String(query.status))) {
     conditions.push('u.status = ?');
@@ -54,20 +56,23 @@ export default defineEventHandler(async (event) => {
   }
   if (query.keyword) {
     const keyword = `%${escapeLike(String(query.keyword).trim())}%`;
-    conditions.push("(u.visitor_id LIKE ? ESCAPE '\\' OR u.email LIKE ? ESCAPE '\\' OR u.device LIKE ? ESCAPE '\\')");
-    params.push(keyword, keyword, keyword);
+    conditions.push("(u.user_id LIKE ? ESCAPE '\\' OR u.display_name LIKE ? ESCAPE '\\' OR u.email LIKE ? ESCAPE '\\' OR u.device LIKE ? ESCAPE '\\')");
+    params.push(keyword, keyword, keyword, keyword);
   }
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const where = `WHERE ${conditions.join(' AND ')}`;
+  const from = 'FROM users u';
   const [rows, total, countryRows] = await Promise.all([
-    d1All<UserRow>(event, `SELECT u.visitor_id, u.email, u.country, u.device, u.status, u.created_at, u.last_seen_at,
-      (SELECT COUNT(*) FROM orders o WHERE o.visitor_id = u.visitor_id) AS orders,
+    d1All<UserRow>(event, `SELECT u.user_id, u.display_name,
+      u.email, u.country, u.device, u.status, u.created_at, u.last_seen_at,
+      (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.user_id) AS orders,
       (SELECT COUNT(*) FROM (
-        SELECT series_id FROM entitlements e WHERE e.visitor_id = u.visitor_id AND e.status = 'granted'
-        UNION SELECT series_id FROM manual_entitlements m WHERE m.visitor_id = u.visitor_id AND m.status = 'granted'
+        SELECT series_id FROM entitlements e WHERE e.user_id = u.user_id AND e.status = 'granted'
+        UNION SELECT series_id FROM manual_entitlements m WHERE m.user_id = u.user_id AND m.status = 'granted'
       )) AS entitlements
-      FROM users u ${where} ORDER BY u.last_seen_at DESC LIMIT ? OFFSET ?`, [...params, pageSize, (page - 1) * pageSize]),
-    d1First<CountRow>(event, `SELECT COUNT(*) AS value FROM users u ${where}`, params),
-    d1All<CountryRow>(event, "SELECT DISTINCT country FROM users WHERE country IS NOT NULL AND country != '' ORDER BY country"),
+      ${from} ${where} ORDER BY u.last_seen_at DESC LIMIT ? OFFSET ?`, [...params, pageSize, (page - 1) * pageSize]),
+    d1First<CountRow>(event, `SELECT COUNT(*) AS value ${from} ${where}`, params),
+    d1All<CountryRow>(event, `SELECT DISTINCT u.country FROM users u
+      WHERE u.password_hash IS NOT NULL AND u.country IS NOT NULL AND u.country != '' ORDER BY u.country`),
   ]);
   const data: AdminUsersResponse = {
     connected: true,

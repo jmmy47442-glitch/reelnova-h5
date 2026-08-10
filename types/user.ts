@@ -1,6 +1,5 @@
 export interface UserSession {
-  id: string;
-  visitorId: string;
+  userId: string;
   email: string;
   name: string;
   loggedInAt: string;

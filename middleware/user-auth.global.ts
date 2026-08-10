@@ -4,7 +4,7 @@ export default defineNuxtRouteMiddleware(async (to) => {
   if (to.path.startsWith('/admin')) return;
 
   const isEntryRoute = to.path === '/login' || to.path === '/register';
-  const { isAuthenticated, isGuest, fetchSession } = useUserAuth();
+  const { isAuthenticated, fetchSession } = useUserAuth();
   await fetchSession();
 
   const getRedirect = () => typeof to.query.redirect === 'string'
@@ -18,7 +18,7 @@ export default defineNuxtRouteMiddleware(async (to) => {
     return;
   }
 
-  if (!isAuthenticated.value && !isGuest.value) {
+  if (!isAuthenticated.value) {
     return navigateTo({ path: '/login', query: { redirect: to.fullPath } });
   }
 });

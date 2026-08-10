@@ -17,7 +17,7 @@ interface PayPalCaptureResponse {
 }
 
 interface OrderSnapshot {
-  order_no: string; series_id: string; series_slug: string; series_title: string; visitor_id: string;
+  order_no: string; series_id: string; series_slug: string; series_title: string; user_id: string;
   amount_cents: number; currency: string; status: string; paypal_order_id: string | null;
 }
 
@@ -81,7 +81,7 @@ export const applyVerifiedCapture = async (event: H3Event, paypalOrderId: string
   const payerEmail = capture.payer?.email_address || capture.payment_source?.paypal?.email_address || null;
   const payerCountry = capture.payer?.address?.country_code || capture.payment_source?.paypal?.address?.country_code || null;
   if (order.status === 'paid') {
-    await upsertUserProfile(event, { visitorId: order.visitor_id, email: payerEmail, country: payerCountry, includeDevice: false });
+    await upsertUserProfile(event, { userId: order.user_id, country: payerCountry, includeDevice: false });
     return order;
   }
   const payment = capture.purchase_units?.[0]?.payments?.captures?.[0];
@@ -94,12 +94,11 @@ export const applyVerifiedCapture = async (event: H3Event, paypalOrderId: string
   }
   const feeCents = Math.round(Number(payment.seller_receivable_breakdown?.paypal_fee?.value || 0) * 100);
   await d1Run(event, "UPDATE orders SET status = 'paid', capture_id = ?, fee_cents = ?, email = COALESCE(?, email), country = COALESCE(?, country), callback_at = ?, updated_at = ? WHERE order_no = ? AND status != 'paid'", [payment.id, feeCents, payerEmail, payerCountry, now, now, order.order_no]);
-  await d1Run(event, `INSERT INTO entitlements (id, visitor_id, series_id, order_no, status, granted_at)
-    VALUES (?, ?, ?, ?, 'granted', ?) ON CONFLICT(visitor_id, series_id) DO UPDATE SET order_no = excluded.order_no, status = 'granted', granted_at = excluded.granted_at, revoked_at = NULL`,
-  [crypto.randomUUID(), order.visitor_id, order.series_id, order.order_no, now]);
+  await d1Run(event, `INSERT INTO entitlements (id, user_id, series_id, order_no, status, granted_at)
+    VALUES (?, ?, ?, ?, 'granted', ?) ON CONFLICT(user_id, series_id) DO UPDATE SET order_no = excluded.order_no, status = 'granted', granted_at = excluded.granted_at, revoked_at = NULL`,
+  [crypto.randomUUID(), order.user_id, order.series_id, order.order_no, now]);
   await upsertUserProfile(event, {
-    visitorId: order.visitor_id,
-    email: payerEmail,
+    userId: order.user_id,
     country: payerCountry,
     includeDevice: false,
   });

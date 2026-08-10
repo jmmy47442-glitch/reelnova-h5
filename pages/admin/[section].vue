@@ -5,7 +5,7 @@ definePageMeta({ layout: 'admin' });
 const route = useRoute();
 const names: Record<string, [string, string]> = {
   taxonomy: ['分类与标签', '管理内容分类、多语言名称、标签颜色与有效期。'],
-  users: ['用户与权益', '查询匿名访客、购买权益、观看记录和设备限制。'],
+  users: ['用户与权益', '查询注册用户、购买权益、观看记录和设备限制。'],
   reconciliation: ['对账中心', '按日期和币种汇总收入、退款与异常订单。'],
   domains: ['域名管理', '管理主备域名、HTTPS 证书和跳转策略。'],
   audit: ['审计日志', '追踪高风险操作的变更前后值、操作人和 IP。'],

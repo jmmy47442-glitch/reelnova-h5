@@ -607,10 +607,6 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .consumer-auth__submit svg { margin-left: auto; }
 .consumer-auth__submit:hover { background: #ff5488; transform: translateY(-1px); }
 .consumer-auth__submit:disabled { opacity: .56; cursor: wait; transform: none; }
-.consumer-auth__divider { display: flex; margin: 18px 0 12px; color: #67646e; align-items: center; gap: 10px; font-size: 8px; }
-.consumer-auth__divider::before, .consumer-auth__divider::after { height: 1px; background: var(--line); content: ''; flex: 1; }
-.consumer-auth__guest { display: flex; width: 100%; height: 45px; border: 1px solid rgba(255,255,255,.16); border-radius: 6px; background: transparent; color: #e7e3e8; align-items: center; justify-content: center; gap: 8px; font-size: 10px; font-weight: 800; cursor: pointer; transition: border-color .18s, background .18s; }
-.consumer-auth__guest:hover { border-color: rgba(255,255,255,.3); background: rgba(255,255,255,.04); }
 .consumer-auth__alternate { margin-top: 16px; color: #77737e; text-align: center; font-size: 9px; }
 .consumer-auth__alternate a { min-height: 32px; color: var(--signal); font-weight: 800; line-height: 32px; }
 .consumer-auth__legal { margin-top: auto; color: #5f5c65; text-align: center; font-size: 8px; }

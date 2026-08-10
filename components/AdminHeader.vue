@@ -18,7 +18,7 @@ const commands = [
   { label: '首页配置', description: '分区排序与推荐内容', to: '/admin/operations' },
   { label: '分类与标签', description: '分类、多语言与标签', to: '/admin/taxonomy' },
   { label: '订单管理', description: '支付、退款与权益发放', to: '/admin/orders' },
-  { label: '用户与权益', description: '访客、设备与补发权益', to: '/admin/users' },
+  { label: '用户与权益', description: '用户、设备与补发权益', to: '/admin/users' },
   { label: '对账中心', description: '收入、手续费与异常', to: '/admin/reconciliation' },
   { label: '站点与支付', description: 'PayPal 与业务规则', to: '/admin/system' },
   { label: '域名管理', description: 'DNS、HTTPS 与跳转', to: '/admin/domains' },

@@ -121,6 +121,7 @@ export type PersistedUserStatus = 'active' | 'restricted' | 'disabled';
 
 export interface PersistedUser {
   id: string;
+  name: string;
   email: string;
   country: string;
   device: string;

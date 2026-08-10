@@ -1,12 +1,7 @@
 import type { H3Event } from 'h3';
-import { d1First, d1Run, getRequestCountry, getVisitorId } from '~/server/utils/cloudflare-d1';
+import { d1First, d1Run, getRequestCountry } from '~/server/utils/cloudflare-d1';
 
 export type UserStatus = 'active' | 'restricted' | 'disabled';
-
-const normalizeEmail = (value?: string | null) => {
-  const email = value?.trim().toLowerCase();
-  return email && email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
-};
 
 const normalizeCountry = (value?: string | null) => {
   const country = value?.trim().toUpperCase();
@@ -31,35 +26,31 @@ export const summarizeDevice = (userAgent?: string | null) => {
 };
 
 export const upsertUserProfile = async (event: H3Event, input: {
-  visitorId?: string;
-  email?: string | null;
+  userId: string;
   country?: string | null;
   includeDevice?: boolean;
-} = {}) => {
-  const visitorId = input.visitorId || getVisitorId(event);
-  const email = normalizeEmail(input.email);
+}) => {
+  const userId = input.userId;
   const country = normalizeCountry(input.country ?? getRequestCountry(event));
   const device = input.includeDevice === false ? null : summarizeDevice(getHeader(event, 'user-agent'));
   const now = new Date().toISOString();
-  await d1Run(event, `INSERT INTO users
-    (visitor_id, email, country, device, status, created_at, last_seen_at, updated_at)
-    VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
-    ON CONFLICT(visitor_id) DO UPDATE SET
-      email = COALESCE(excluded.email, users.email),
-      country = COALESCE(excluded.country, users.country),
-      device = COALESCE(excluded.device, users.device),
-      last_seen_at = excluded.last_seen_at,
-      updated_at = excluded.updated_at`, [visitorId, email, country, device, now, now, now]);
-  return visitorId;
+  await d1Run(event, `UPDATE users SET
+    country = COALESCE(?, country),
+    device = COALESCE(?, device),
+    last_seen_at = ?,
+    updated_at = ?
+    WHERE user_id = ?`, [country, device, now, now, userId]);
+  return userId;
 };
 
-export const assertUserEnabled = async (event: H3Event, visitorId: string) => {
-  const profile = await d1First<{ status: UserStatus }>(event, 'SELECT status FROM users WHERE visitor_id = ?', [visitorId]);
-  if (profile?.status === 'disabled') throw createError({ statusCode: 403, statusMessage: 'User account is disabled' });
+export const assertUserEnabled = async (event: H3Event, userId: string) => {
+  const profile = await d1First<{ status: UserStatus }>(event, 'SELECT status FROM users WHERE user_id = ?', [userId]);
+  if (!profile) throw createError({ statusCode: 404, statusMessage: 'User not found' });
+  if (profile.status === 'disabled') throw createError({ statusCode: 403, statusMessage: 'User account is disabled' });
 };
 
 export const recordAdminUserAction = (event: H3Event, input: {
-  visitorId: string;
+  userId: string;
   action: 'status_change' | 'device_restriction_release' | 'entitlement_grant';
   detail: string;
 }) => {
@@ -72,11 +63,11 @@ export const recordAdminUserAction = (event: H3Event, input: {
     ? (input.detail.endsWith('-> disabled') ? '禁用账号' : input.detail.endsWith('-> active') ? '恢复账号' : '变更账号状态')
     : input.action === 'device_restriction_release' ? '解除设备限制' : '手工补发权益';
   return Promise.all([
-    d1Run(event, `INSERT INTO admin_user_actions (id, visitor_id, actor, action, detail, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)`, [id, input.visitorId, actor, input.action, input.detail, createdAt]),
+    d1Run(event, `INSERT INTO admin_user_actions (id, user_id, actor, action, detail, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)`, [id, input.userId, actor, input.action, input.detail, createdAt]),
     d1Run(event, `INSERT INTO admin_audit_logs (id, actor, actor_id, module, action, target, detail, risk, ip, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
-      `user-action-${id}`, actor, session?.id || null, '用户与权益', actionLabel, input.visitorId, input.detail, '高风险', ip, createdAt,
+      `user-action-${id}`, actor, session?.id || null, '用户与权益', actionLabel, input.userId, input.detail, '高风险', ip, createdAt,
     ]),
   ]);
 };

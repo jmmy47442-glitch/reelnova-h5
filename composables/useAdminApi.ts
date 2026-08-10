@@ -12,9 +12,9 @@ export const useAdminApi = () => {
     getOrders: (query: Record<string, string | number | undefined> = {}) => request<AdminOrdersResponse>('/api/admin/orders', { query }),
     getUsers: (query: Record<string, string | number | undefined> = {}) => request<AdminUsersResponse>('/api/admin/users', { query }),
     getAudit: (query: Record<string, string | number | undefined> = {}) => request<AdminAuditResponse>('/api/admin/audit', { query }),
-    updateUserStatus: (visitorId: string, status: PersistedUserStatus) => request<{ visitorId: string; status: PersistedUserStatus }>(`/api/admin/users/${encodeURIComponent(visitorId)}`, { method: 'PATCH', body: { status } }),
-    releaseUserDevice: (visitorId: string) => request<{ visitorId: string; status: PersistedUserStatus }>(`/api/admin/users/${encodeURIComponent(visitorId)}/release-device`, { method: 'POST' }),
-    grantUserEntitlement: (visitorId: string, seriesId: string, reason: string) => request<{ visitorId: string; seriesId: string; status: 'granted' }>(`/api/admin/users/${encodeURIComponent(visitorId)}/entitlements`, { method: 'POST', body: { seriesId, reason } }),
+    updateUserStatus: (userId: string, status: PersistedUserStatus) => request<{ userId: string; status: PersistedUserStatus }>(`/api/admin/users/${encodeURIComponent(userId)}`, { method: 'PATCH', body: { status } }),
+    releaseUserDevice: (userId: string) => request<{ userId: string; status: PersistedUserStatus }>(`/api/admin/users/${encodeURIComponent(userId)}/release-device`, { method: 'POST' }),
+    grantUserEntitlement: (userId: string, seriesId: string, reason: string) => request<{ userId: string; seriesId: string; status: 'granted' }>(`/api/admin/users/${encodeURIComponent(userId)}/entitlements`, { method: 'POST', body: { seriesId, reason } }),
     verifyOrder: (orderNo: string) => request<{ paypalStatus: string; captureStatus: string | null; synchronized: boolean }>(`/api/admin/orders/${orderNo}/verify`, { method: 'POST' }),
     getReconciliation: (days: number) => request<ReconciliationResponse>('/api/admin/reconciliation', { query: { days } }),
     getConnection: () => request<{
