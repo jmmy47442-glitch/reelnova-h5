@@ -9,8 +9,16 @@ await mkdir(outputDir, { recursive: true });
 
 const browser = await chromium.launch({ executablePath, headless: true });
 
+const addAdminSession = async (page) => {
+  const response = await page.request.post(`${baseURL}/api/admin/auth/login`, {
+    data: { email: 'admin@reelnova.com', password: 'ReelNova@2026', remember: true },
+  });
+  if (!response.ok()) throw new Error(`Admin login failed: ${response.status()} ${await response.text()}`);
+};
+
 const inspectPage = async (name, path, viewport) => {
   const page = await browser.newPage({ viewport, deviceScaleFactor: 1 });
+  if (path.startsWith('/admin') && path !== '/admin/login') await addAdminSession(page);
   const errors = [];
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text());
@@ -52,9 +60,11 @@ results.push(await inspectPage('admin-reconciliation-1440', '/admin/reconciliati
 results.push(await inspectPage('admin-system-1440', '/admin/system', { width: 1440, height: 1000 }));
 results.push(await inspectPage('admin-domains-1440', '/admin/domains', { width: 1440, height: 1000 }));
 results.push(await inspectPage('admin-audit-1440', '/admin/audit', { width: 1440, height: 1000 }));
+results.push(await inspectPage('admin-administrators-1440', '/admin/administrators', { width: 1440, height: 1000 }));
 results.push(await inspectPage('admin-orders-390', '/admin/orders', { width: 390, height: 844 }));
 
 const interactionPage = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
+await addAdminSession(interactionPage);
 const interactionErrors = [];
 interactionPage.on('console', (message) => { if (message.type() === 'error') interactionErrors.push(message.text()); });
 interactionPage.on('pageerror', (error) => interactionErrors.push(error.message));
@@ -63,13 +73,30 @@ await interactionPage.getByRole('button', { name: '新建短剧' }).click();
 const createDialogVisible = await interactionPage.getByRole('dialog', { name: '新建短剧' }).isVisible();
 await interactionPage.keyboard.press('Escape');
 await interactionPage.goto(`${baseURL}/admin/orders`, { waitUntil: 'networkidle' });
-await interactionPage.getByRole('button', { name: '详情' }).first().click();
-const orderDrawerVisible = await interactionPage.getByRole('dialog', { name: '订单详情' }).isVisible();
-await interactionPage.keyboard.press('Escape');
+const orderDetailButton = interactionPage.getByRole('button', { name: '详情' }).first();
+const hasOrderDetail = await orderDetailButton.count() > 0;
+if (hasOrderDetail) await orderDetailButton.click();
+const orderDrawerVisible = hasOrderDetail ? await interactionPage.getByRole('dialog', { name: '订单详情' }).isVisible() : null;
+if (hasOrderDetail) await interactionPage.keyboard.press('Escape');
 await interactionPage.keyboard.press('Meta+k');
 const commandDialogVisible = await interactionPage.getByRole('dialog', { name: '快速导航' }).isVisible();
 results.push({ name: 'admin-interactions', createDialogVisible, orderDrawerVisible, commandDialogVisible, errors: interactionErrors });
 await interactionPage.close();
+
+const authPage = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+await authPage.goto(`${baseURL}/admin/series`, { waitUntil: 'networkidle' });
+const protectedRouteRedirected = authPage.url().includes('/admin/login');
+await authPage.locator('input[type="email"]').fill('admin@reelnova.com');
+await authPage.locator('input[type="password"]').fill('ReelNova@2026');
+await authPage.getByRole('button', { name: '登录工作台' }).click();
+await authPage.waitForURL(`${baseURL}/admin/series`);
+const loginRestoredRoute = authPage.url().endsWith('/admin/series');
+await authPage.locator('.admin-user').click();
+await authPage.getByText('退出登录', { exact: true }).click();
+await authPage.waitForURL(/\/admin\/login/);
+const logoutReturnedToLogin = authPage.url().includes('/admin/login');
+results.push({ name: 'admin-auth', protectedRouteRedirected, loginRestoredRoute, logoutReturnedToLogin });
+await authPage.close();
 
 const checkoutPage = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
 await checkoutPage.goto(`${baseURL}/series/vows-and-vengeance`, { waitUntil: 'networkidle' });

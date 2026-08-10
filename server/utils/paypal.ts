@@ -1,5 +1,6 @@
 import type { H3Event } from 'h3';
 import { d1First, d1Run } from '~/server/utils/cloudflare-d1';
+import { upsertUserProfile } from '~/server/utils/user-profile';
 
 interface PayPalAccessToken { access_token: string }
 interface PayPalLink { rel: string; href: string }
@@ -8,6 +9,7 @@ interface PayPalCaptureResponse {
   id: string;
   status: string;
   payer?: { email_address?: string; address?: { country_code?: string } };
+  payment_source?: { paypal?: { email_address?: string; address?: { country_code?: string } } };
   purchase_units: Array<{ payments?: { captures?: Array<{
     id: string; status: string; amount: { currency_code: string; value: string };
     seller_receivable_breakdown?: { paypal_fee?: { value: string } };
@@ -72,7 +74,12 @@ export const getPayPalOrderDetails = async (event: H3Event, paypalOrderId: strin
 export const applyVerifiedCapture = async (event: H3Event, paypalOrderId: string, capture: PayPalCaptureResponse) => {
   const order = await d1First<OrderSnapshot>(event, 'SELECT * FROM orders WHERE paypal_order_id = ?', [paypalOrderId]);
   if (!order) throw createError({ statusCode: 404, statusMessage: 'Local order not found' });
-  if (order.status === 'paid') return order;
+  const payerEmail = capture.payer?.email_address || capture.payment_source?.paypal?.email_address || null;
+  const payerCountry = capture.payer?.address?.country_code || capture.payment_source?.paypal?.address?.country_code || null;
+  if (order.status === 'paid') {
+    await upsertUserProfile(event, { visitorId: order.visitor_id, email: payerEmail, country: payerCountry, includeDevice: false });
+    return order;
+  }
   const payment = capture.purchase_units?.[0]?.payments?.captures?.[0];
   if (!payment || payment.status !== 'COMPLETED') throw createError({ statusCode: 409, statusMessage: 'PayPal capture is not completed' });
   const paidCents = Math.round(Number(payment.amount.value) * 100);
@@ -82,10 +89,16 @@ export const applyVerifiedCapture = async (event: H3Event, paypalOrderId: string
     throw createError({ statusCode: 409, statusMessage: 'Capture amount or currency mismatch' });
   }
   const feeCents = Math.round(Number(payment.seller_receivable_breakdown?.paypal_fee?.value || 0) * 100);
-  await d1Run(event, "UPDATE orders SET status = 'paid', capture_id = ?, fee_cents = ?, email = COALESCE(?, email), country = COALESCE(?, country), callback_at = ?, updated_at = ? WHERE order_no = ? AND status != 'paid'", [payment.id, feeCents, capture.payer?.email_address || null, capture.payer?.address?.country_code || null, now, now, order.order_no]);
+  await d1Run(event, "UPDATE orders SET status = 'paid', capture_id = ?, fee_cents = ?, email = COALESCE(?, email), country = COALESCE(?, country), callback_at = ?, updated_at = ? WHERE order_no = ? AND status != 'paid'", [payment.id, feeCents, payerEmail, payerCountry, now, now, order.order_no]);
   await d1Run(event, `INSERT INTO entitlements (id, visitor_id, series_id, order_no, status, granted_at)
     VALUES (?, ?, ?, ?, 'granted', ?) ON CONFLICT(visitor_id, series_id) DO UPDATE SET order_no = excluded.order_no, status = 'granted', granted_at = excluded.granted_at, revoked_at = NULL`,
   [crypto.randomUUID(), order.visitor_id, order.series_id, order.order_no, now]);
+  await upsertUserProfile(event, {
+    visitorId: order.visitor_id,
+    email: payerEmail,
+    country: payerCountry,
+    includeDevice: false,
+  });
   return order;
 };
 

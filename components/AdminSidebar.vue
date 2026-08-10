@@ -11,6 +11,7 @@ import {
   Settings,
   ShieldCheck,
   Tags,
+  UserCog,
   Users,
   X,
 } from 'lucide-vue-next';
@@ -19,8 +20,9 @@ defineProps<{ mobileOpen: boolean }>();
 const emit = defineEmits<{ 'update:mobileOpen': [value: boolean] }>();
 const route = useRoute();
 const collapsed = useState('admin-sidebar-collapsed', () => false);
+const { isSuperAdmin } = useAdminAuth();
 
-const menuGroups = [
+const menuGroups = computed(() => [
   { label: '工作台', items: [{ label: '数据概览', to: '/admin', icon: Gauge }] },
   {
     label: '内容运营',
@@ -41,12 +43,13 @@ const menuGroups = [
   {
     label: '系统',
     items: [
+      ...(isSuperAdmin.value ? [{ label: '管理员账号', to: '/admin/administrators', icon: UserCog }] : []),
       { label: '站点与支付', to: '/admin/system', icon: Settings },
       { label: '域名管理', to: '/admin/domains', icon: Globe2 },
       { label: '审计日志', to: '/admin/audit', icon: ShieldCheck },
     ],
   },
-];
+]);
 
 const active = (to: string) => to === '/admin' ? route.path === to : route.path.startsWith(to);
 const closeMobile = () => emit('update:mobileOpen', false);

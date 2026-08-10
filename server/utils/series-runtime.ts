@@ -9,7 +9,8 @@ export const hydrateSeriesRuntimeData = async (event: H3Event, source: Series[])
   const visitorId = getVisitorId(event);
   const [viewRows, entitlementRows] = await Promise.all([
     d1All<ViewRow>(event, "SELECT series_id, COUNT(*) AS views FROM playback_events WHERE event_type = 'start' GROUP BY series_id"),
-    d1All<EntitlementRow>(event, "SELECT series_id FROM entitlements WHERE visitor_id = ? AND status = 'granted'", [visitorId]),
+    d1All<EntitlementRow>(event, `SELECT series_id FROM entitlements WHERE visitor_id = ? AND status = 'granted'
+      UNION SELECT series_id FROM manual_entitlements WHERE visitor_id = ? AND status = 'granted'`, [visitorId, visitorId]),
   ]);
   const views = new Map(viewRows.map((row) => [row.series_id, Number(row.views)]));
   const purchased = new Set(entitlementRows.map((row) => row.series_id));

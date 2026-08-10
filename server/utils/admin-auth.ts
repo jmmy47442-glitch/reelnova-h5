@@ -1,0 +1,292 @@
+import type { H3Event } from 'h3';
+import { d1All, d1First, d1Run, hasD1Connection } from './cloudflare-d1';
+
+export type AdminRole = 'super_admin' | 'admin';
+export type AdminStatus = 'invited' | 'active' | 'disabled';
+
+export interface AdminSession {
+  id: string;
+  email: string;
+  name: string;
+  role: AdminRole;
+  loggedInAt: string;
+  expiresAt: string;
+}
+
+interface AdminAccountRow {
+  id: string;
+  email: string;
+  name: string;
+  role: AdminRole;
+  status: AdminStatus;
+  password_salt: string;
+  password_hash: string;
+  invited_by: string | null;
+  invited_at: string | null;
+  last_login_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminAccount {
+  id: string;
+  email: string;
+  name: string;
+  role: AdminRole;
+  status: AdminStatus;
+  invitedBy: string | null;
+  invitedAt: string | null;
+  lastLoginAt: string | null;
+  createdAt: string;
+}
+
+const sessionCookie = 'reelnova-admin-session';
+const encoder = new TextEncoder();
+const memoryAccounts = new Map<string, AdminAccountRow>();
+
+const bytesToBase64Url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes))
+  .replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, '');
+
+const base64UrlToBytes = (value: string) => {
+  const padded = value.replaceAll('-', '+').replaceAll('_', '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
+  return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+};
+
+const encodeJson = (value: unknown) => bytesToBase64Url(encoder.encode(JSON.stringify(value)));
+const decodeJson = <T>(value: string) => JSON.parse(new TextDecoder().decode(base64UrlToBytes(value))) as T;
+
+const randomToken = (size = 18) => {
+  const bytes = crypto.getRandomValues(new Uint8Array(size));
+  return bytesToBase64Url(bytes);
+};
+
+const derivePasswordHash = async (password: string, salt: string) => {
+  const key = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: base64UrlToBytes(salt), iterations: 210_000 }, key, 256);
+  return bytesToBase64Url(new Uint8Array(bits));
+};
+
+const constantTimeEqual = (left: string, right: string) => {
+  const leftBytes = encoder.encode(left);
+  const rightBytes = encoder.encode(right);
+  let difference = leftBytes.length ^ rightBytes.length;
+  const length = Math.max(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) difference |= (leftBytes[index] || 0) ^ (rightBytes[index] || 0);
+  return difference === 0;
+};
+
+const toAccount = (row: AdminAccountRow): AdminAccount => ({
+  id: row.id,
+  email: row.email,
+  name: row.name,
+  role: row.role,
+  status: row.status,
+  invitedBy: row.invited_by,
+  invitedAt: row.invited_at,
+  lastLoginAt: row.last_login_at,
+  createdAt: row.created_at,
+});
+
+const useMemoryRepository = (event: H3Event) => {
+  if (hasD1Connection(event)) return false;
+  if (process.env.NODE_ENV === 'production') {
+    throw createError({ statusCode: 503, statusMessage: 'Admin database is not configured' });
+  }
+  return true;
+};
+
+const findByEmail = async (event: H3Event, email: string) => {
+  if (useMemoryRepository(event)) return [...memoryAccounts.values()].find((account) => account.email === email) || null;
+  return d1First<AdminAccountRow>(event, 'SELECT * FROM admin_accounts WHERE email = ? COLLATE NOCASE LIMIT 1', [email]);
+};
+
+const findById = async (event: H3Event, id: string) => {
+  if (useMemoryRepository(event)) return memoryAccounts.get(id) || null;
+  return d1First<AdminAccountRow>(event, 'SELECT * FROM admin_accounts WHERE id = ? LIMIT 1', [id]);
+};
+
+const insertAccount = async (event: H3Event, row: AdminAccountRow) => {
+  if (useMemoryRepository(event)) {
+    memoryAccounts.set(row.id, row);
+    return;
+  }
+  await d1Run(event, `INSERT INTO admin_accounts
+    (id, email, name, role, status, password_salt, password_hash, invited_by, invited_at, last_login_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+    row.id, row.email, row.name, row.role, row.status, row.password_salt, row.password_hash,
+    row.invited_by, row.invited_at, row.last_login_at, row.created_at, row.updated_at,
+  ]);
+};
+
+const updateLogin = async (event: H3Event, id: string, loggedInAt: string) => {
+  if (useMemoryRepository(event)) {
+    const account = memoryAccounts.get(id);
+    if (account) memoryAccounts.set(id, { ...account, status: 'active', last_login_at: loggedInAt, updated_at: loggedInAt });
+    return;
+  }
+  await d1Run(event, `UPDATE admin_accounts
+    SET status = CASE WHEN status = 'invited' THEN 'active' ELSE status END, last_login_at = ?, updated_at = ? WHERE id = ?`,
+  [loggedInAt, loggedInAt, id]);
+};
+
+export const ensureSuperAdmin = async (event: H3Event) => {
+  const config = useRuntimeConfig(event);
+  const email = String(config.superAdminEmail).trim().toLowerCase();
+  const existing = await findByEmail(event, email);
+  if (existing) return existing;
+
+  const now = new Date().toISOString();
+  const salt = randomToken();
+  const account: AdminAccountRow = {
+    id: `adm_${crypto.randomUUID()}`,
+    email,
+    name: String(config.superAdminName).trim() || '超级管理员',
+    role: 'super_admin',
+    status: 'active',
+    password_salt: salt,
+    password_hash: await derivePasswordHash(String(config.superAdminPassword), salt),
+    invited_by: null,
+    invited_at: null,
+    last_login_at: null,
+    created_at: now,
+    updated_at: now,
+  };
+  try {
+    await insertAccount(event, account);
+    return account;
+  } catch {
+    const concurrent = await findByEmail(event, email);
+    if (concurrent) return concurrent;
+    throw createError({ statusCode: 500, statusMessage: 'Failed to initialize super administrator' });
+  }
+};
+
+export const authenticateAdmin = async (event: H3Event, email: string, password: string) => {
+  await ensureSuperAdmin(event);
+  const account = await findByEmail(event, email.trim().toLowerCase());
+  if (!account || account.status === 'disabled') return null;
+  const candidate = await derivePasswordHash(password, account.password_salt);
+  if (!constantTimeEqual(candidate, account.password_hash)) return null;
+  const loggedInAt = new Date().toISOString();
+  await updateLogin(event, account.id, loggedInAt);
+  return { ...toAccount(account), status: 'active' as const, lastLoginAt: loggedInAt };
+};
+
+const sign = async (payload: string, secret: string) => {
+  const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return bytesToBase64Url(new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(payload))));
+};
+
+export const setAdminSession = async (event: H3Event, account: AdminAccount, remember: boolean) => {
+  const maxAge = remember ? 60 * 60 * 24 * 7 : 60 * 60 * 12;
+  const loggedInAt = new Date().toISOString();
+  const payload: AdminSession = {
+    id: account.id,
+    email: account.email,
+    name: account.name,
+    role: account.role,
+    loggedInAt,
+    expiresAt: new Date(Date.now() + maxAge * 1000).toISOString(),
+  };
+  const encoded = encodeJson(payload);
+  const signature = await sign(encoded, String(useRuntimeConfig(event).adminSessionSecret));
+  setCookie(event, sessionCookie, `${encoded}.${signature}`, {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: process.env.NODE_ENV === 'production',
+    maxAge,
+    path: '/',
+  });
+  return payload;
+};
+
+export const clearAdminSession = (event: H3Event) => deleteCookie(event, sessionCookie, { path: '/' });
+
+export const getAdminSession = async (event: H3Event): Promise<AdminSession | null> => {
+  const token = getCookie(event, sessionCookie);
+  if (!token) return null;
+  const [payload, signature, extra] = token.split('.');
+  if (!payload || !signature || extra) return null;
+  const expected = await sign(payload, String(useRuntimeConfig(event).adminSessionSecret));
+  if (!constantTimeEqual(signature, expected)) return null;
+  try {
+    const session = decodeJson<AdminSession>(payload);
+    if (!session.id || !session.email || !session.role || Date.parse(session.expiresAt) <= Date.now()) return null;
+    const account = await findById(event, session.id);
+    if (!account || account.status === 'disabled' || account.role !== session.role || account.email !== session.email) return null;
+    return session;
+  } catch {
+    return null;
+  }
+};
+
+export const requireSuperAdmin = (event: H3Event) => {
+  const session = event.context.adminSession as AdminSession | undefined;
+  if (session?.role !== 'super_admin') throw createError({ statusCode: 403, statusMessage: 'Super administrator access required' });
+  return session;
+};
+
+export const listAdminAccounts = async (event: H3Event) => {
+  await ensureSuperAdmin(event);
+  const rows = useMemoryRepository(event)
+    ? [...memoryAccounts.values()].sort((left, right) => right.created_at.localeCompare(left.created_at))
+    : await d1All<AdminAccountRow>(event, 'SELECT * FROM admin_accounts ORDER BY created_at DESC');
+  return rows.map(toAccount);
+};
+
+export const createAdminAccount = async (event: H3Event, input: { email: string; name: string; createdBy: string }) => {
+  const email = input.email.trim().toLowerCase();
+  if (await findByEmail(event, email)) throw createError({ statusCode: 409, statusMessage: 'Administrator email already exists' });
+
+  const password = generateInitialPassword();
+  const salt = randomToken();
+  const now = new Date().toISOString();
+  const row: AdminAccountRow = {
+    id: `adm_${crypto.randomUUID()}`,
+    email,
+    name: input.name.trim(),
+    role: 'admin',
+    status: 'invited',
+    password_salt: salt,
+    password_hash: await derivePasswordHash(password, salt),
+    invited_by: input.createdBy,
+    invited_at: now,
+    last_login_at: null,
+    created_at: now,
+    updated_at: now,
+  };
+  await insertAccount(event, row);
+  return { account: toAccount(row), initialPassword: password };
+};
+
+export const updateAdminStatus = async (event: H3Event, id: string, status: Extract<AdminStatus, 'active' | 'disabled'>) => {
+  const account = await findById(event, id);
+  if (!account) throw createError({ statusCode: 404, statusMessage: 'Administrator not found' });
+  if (account.role === 'super_admin') throw createError({ statusCode: 400, statusMessage: 'Super administrator cannot be disabled' });
+  const now = new Date().toISOString();
+  if (useMemoryRepository(event)) memoryAccounts.set(id, { ...account, status, updated_at: now });
+  else await d1Run(event, 'UPDATE admin_accounts SET status = ?, updated_at = ? WHERE id = ?', [status, now, id]);
+  return { ...toAccount(account), status };
+};
+
+export const deleteAdminAccount = async (event: H3Event, id: string) => {
+  const account = await findById(event, id);
+  if (!account) throw createError({ statusCode: 404, statusMessage: 'Administrator not found' });
+  if (account.role === 'super_admin') throw createError({ statusCode: 400, statusMessage: 'Super administrator cannot be deleted' });
+  if (useMemoryRepository(event)) memoryAccounts.delete(id);
+  else await d1Run(event, 'DELETE FROM admin_accounts WHERE id = ?', [id]);
+  return { id };
+};
+
+const generateInitialPassword = () => {
+  const groups = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopqrstuvwxyz', '23456789', '!@#$%'];
+  const randomCharacter = (characters: string) => characters[crypto.getRandomValues(new Uint32Array(1))[0] % characters.length];
+  const characters = groups.map(randomCharacter);
+  const pool = groups.join('');
+  while (characters.length < 14) characters.push(randomCharacter(pool));
+  for (let index = characters.length - 1; index > 0; index -= 1) {
+    const target = crypto.getRandomValues(new Uint32Array(1))[0] % (index + 1);
+    [characters[index], characters[target]] = [characters[target], characters[index]];
+  }
+  return characters.join('');
+};

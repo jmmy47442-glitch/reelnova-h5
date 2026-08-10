@@ -1,5 +1,4 @@
 <script setup lang="ts">
 definePageMeta({ layout: false });
-useHead({ title: '注册管理员 · ReelNova Admin' });
+await navigateTo('/admin/login', { redirectCode: 301 });
 </script>
-<template><AdminAuthForm mode="register" /></template>

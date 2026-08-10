@@ -4,6 +4,30 @@ export interface DashboardMetric {
   changePercent: number | null;
 }
 
+export type AdminRole = 'super_admin' | 'admin';
+export type AdminAccountStatus = 'invited' | 'active' | 'disabled';
+
+export interface AdminSession {
+  id: string;
+  email: string;
+  name: string;
+  role: AdminRole;
+  loggedInAt: string;
+  expiresAt: string;
+}
+
+export interface AdminAccount {
+  id: string;
+  email: string;
+  name: string;
+  role: AdminRole;
+  status: AdminAccountStatus;
+  invitedBy: string | null;
+  invitedAt: string | null;
+  lastLoginAt: string | null;
+  createdAt: string;
+}
+
 export interface DashboardTrendPoint {
   date: string;
   plays: number;
@@ -72,6 +96,28 @@ export interface AdminOrdersResponse {
     pending: number;
     exceptions: number;
   };
+}
+
+export type PersistedUserStatus = 'active' | 'restricted' | 'disabled';
+
+export interface PersistedUser {
+  id: string;
+  email: string;
+  country: string;
+  device: string;
+  status: PersistedUserStatus;
+  entitlements: number;
+  orders: number;
+  lastSeenAt: string;
+  createdAt: string;
+}
+
+export interface AdminUsersResponse {
+  connected: true;
+  generatedAt: string;
+  items: PersistedUser[];
+  total: number;
+  countries: string[];
 }
 
 export interface ReconciliationRow {

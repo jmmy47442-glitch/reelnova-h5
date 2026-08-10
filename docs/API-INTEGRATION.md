@@ -32,11 +32,14 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 
 | Scope | Endpoints |
 | --- | --- |
+| Authentication | `POST /api/admin/auth/login`, `GET /api/admin/auth/session`, `POST /api/admin/auth/logout` |
+| Administrators | `GET/POST /api/admin/administrators`, `PATCH /api/admin/administrators/{id}` (super administrator only) |
 | Dashboard | `GET /api/admin/dashboard` (Cloudflare D1 only) |
 | Series | `GET/POST /admin/api/series`, `PUT /admin/api/series/{id}`, `POST /admin/api/series/{id}/publish` |
 | Episodes | `GET/POST /admin/api/series/{id}/episodes`, `POST /admin/api/uploads/multipart` |
 | Home sections | `GET/PUT /admin/api/home-sections`, `PUT /admin/api/home-sections/sort` |
 | Orders | `GET /api/admin/orders`, `POST /api/admin/orders/{orderNo}/verify` |
+| Users | `GET /api/admin/users`, `PATCH /api/admin/users/{visitorId}`, `POST /api/admin/users/{visitorId}/release-device`, `POST /api/admin/users/{visitorId}/entitlements` |
 | Reconciliation | `GET /api/admin/reconciliation` |
 | PayPal | `GET/PUT /admin/api/paypal/config`, `GET /admin/api/paypal/webhook-health` |
 | Site/domain | `GET/PUT /admin/api/site-config`, `GET/POST /admin/api/domains` |

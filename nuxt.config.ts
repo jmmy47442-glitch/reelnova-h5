@@ -29,6 +29,10 @@ export default defineNuxtConfig({
     paypalSecret: process.env.PAYPAL_SECRET || '',
     paypalWebhookId: process.env.PAYPAL_WEBHOOK_ID || '',
     paypalEnvironment: process.env.PAYPAL_ENVIRONMENT || 'sandbox',
+    superAdminEmail: process.env.SUPER_ADMIN_EMAIL || 'admin@reelnova.com',
+    superAdminPassword: process.env.SUPER_ADMIN_PASSWORD || 'ReelNova@2026',
+    superAdminName: process.env.SUPER_ADMIN_NAME || 'ReelNova 超级管理员',
+    adminSessionSecret: process.env.ADMIN_SESSION_SECRET || process.env.SUPER_ADMIN_PASSWORD || 'reelnova-development-session-secret',
     cloudflareAccessRequired: process.env.CLOUDFLARE_ACCESS_REQUIRED || (process.env.NODE_ENV === 'production' ? 'true' : 'false'),
     public: {
       apiBase: process.env.NUXT_PUBLIC_API_BASE || '/api',

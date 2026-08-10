@@ -1,5 +1,6 @@
 import { ok } from '~/server/utils/response';
 import { d1Run, getRequestCountry, getVisitorId } from '~/server/utils/cloudflare-d1';
+import { assertUserEnabled, upsertUserProfile } from '~/server/utils/user-profile';
 import type { PlaybackEventInput } from '~/types/admin';
 
 export default defineEventHandler(async (event) => {
@@ -19,6 +20,8 @@ export default defineEventHandler(async (event) => {
   if (suppliedSignature?.length !== expectedSignature.length || !suppliedSignature || !Array.from(expectedSignature).every((character, index) => character === suppliedSignature[index])) {
     throw createError({ statusCode: 401, statusMessage: 'Invalid playback authorization' });
   }
+  await upsertUserProfile(event, { visitorId });
+  await assertUserEnabled(event, visitorId);
   await d1Run(event, `INSERT OR IGNORE INTO playback_events
     (event_id, session_id, visitor_id, series_id, series_title, episode_no, event_type, position_seconds, duration_seconds, country, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [

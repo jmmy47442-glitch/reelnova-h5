@@ -2,6 +2,7 @@ import { seriesList } from '~/data/mock';
 import { ok } from '~/server/utils/response';
 import { d1Run, getRequestCountry, getVisitorId } from '~/server/utils/cloudflare-d1';
 import { createPayPalOrder } from '~/server/utils/paypal';
+import { assertUserEnabled, upsertUserProfile } from '~/server/utils/user-profile';
 import type { Order } from '~/types/content';
 
 export default defineEventHandler(async (event) => {
@@ -13,6 +14,8 @@ export default defineEventHandler(async (event) => {
   const suffix = `${now.getTime()}`.slice(-8);
   const orderNo = `RN-${now.toISOString().slice(0, 10).replaceAll('-', '')}-${suffix}`;
   const visitorId = getVisitorId(event);
+  await upsertUserProfile(event, { visitorId });
+  await assertUserEnabled(event, visitorId);
   const amountCents = Math.round(series.price * 100);
   const origin = getRequestURL(event).origin;
   await d1Run(event, `INSERT INTO orders

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { Bell, ChevronDown, Menu, PanelLeftClose, Search } from 'lucide-vue-next';
+import { Bell, ChevronDown, LogOut, Menu, PanelLeftClose, Search } from 'lucide-vue-next';
 import { ElMessage } from 'element-plus';
 
 defineEmits<{ 'toggle-sidebar': []; 'open-mobile': [] }>();
 const searchOpen = ref(false);
 const query = ref('');
+const { user, isSuperAdmin, logout } = useAdminAuth();
 const commands = [
   { label: '数据概览', description: '播放、收入与系统健康', to: '/admin' },
   { label: '短剧管理', description: '内容资料、分集与发布', to: '/admin/series' },
@@ -17,9 +18,23 @@ const commands = [
   { label: '域名管理', description: 'DNS、HTTPS 与跳转', to: '/admin/domains' },
   { label: '审计日志', description: '高风险操作记录', to: '/admin/audit' },
 ];
-const filtered = computed(() => commands.filter((item) => `${item.label} ${item.description}`.toLowerCase().includes(query.value.toLowerCase())));
+const availableCommands = computed(() => isSuperAdmin.value
+  ? [...commands, { label: '管理员账号', description: '创建、停用和恢复管理员', to: '/admin/administrators' }]
+  : commands);
+const filtered = computed(() => availableCommands.value.filter((item) => `${item.label} ${item.description}`.toLowerCase().includes(query.value.toLowerCase())));
 const openCommand = () => { searchOpen.value = true; nextTick(() => document.querySelector<HTMLInputElement>('.command-search input')?.focus()); };
 const go = (to: string) => { searchOpen.value = false; query.value = ''; navigateTo(to); };
+const handleCommand = async (command: string) => {
+  if (command === 'audit') return go('/admin/audit');
+  if (command === 'administrators') return go('/admin/administrators');
+  if (command === 'logout') {
+    await logout();
+    await navigateTo('/admin/login');
+    ElMessage.success('已退出登录');
+    return;
+  }
+  ElMessage.info('当前为演示管理员会话');
+};
 const onKeydown = (event: KeyboardEvent) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); openCommand(); } };
 onMounted(() => window.addEventListener('keydown', onKeydown));
 onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
@@ -35,7 +50,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
     <div class="admin-header__end">
       <el-popover placement="bottom-end" :width="300" trigger="click"><template #reference><button class="admin-icon-button has-notice" type="button" title="通知"><Bell :size="19" /></button></template><div class="notification-list"><strong>待处理事项</strong><button type="button" @click="go('/admin/orders')"><span class="health-dot warning" /><div><b>7 笔订单等待确认</b><small>检查 PayPal capture 与回调状态</small></div></button><button type="button" @click="go('/admin/domains')"><span class="health-dot warning" /><div><b>1 个域名等待验证</b><small>完成 CNAME 配置后重新验证</small></div></button></div></el-popover>
       <span class="admin-divider" />
-      <el-dropdown @command="(command: string) => command === 'audit' ? go('/admin/audit') : ElMessage.info('当前为演示管理员会话')"><button class="admin-user" type="button"><span class="admin-avatar">AD</span><span class="admin-user__copy"><strong>Admin</strong><small>超级管理员</small></span><ChevronDown :size="15" /></button><template #dropdown><el-dropdown-menu><el-dropdown-item command="audit">我的操作日志</el-dropdown-item><el-dropdown-item command="session" divided>会话信息</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
+      <el-dropdown @command="handleCommand"><button class="admin-user" type="button"><span class="admin-avatar">{{ user.name.slice(0, 2).toUpperCase() }}</span><span class="admin-user__copy"><strong>{{ user.name }}</strong><small>{{ isSuperAdmin ? '超级管理员' : user.email }}</small></span><ChevronDown :size="15" /></button><template #dropdown><el-dropdown-menu><el-dropdown-item v-if="isSuperAdmin" command="administrators">管理员账号</el-dropdown-item><el-dropdown-item command="audit">我的操作日志</el-dropdown-item><el-dropdown-item command="session" divided>会话信息</el-dropdown-item><el-dropdown-item command="logout"><LogOut :size="14" />退出登录</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
     </div>
   </header>
 

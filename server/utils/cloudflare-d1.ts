@@ -32,6 +32,12 @@ const getRestConfig = (event: H3Event) => {
   };
 };
 
+export const hasD1Connection = (event: H3Event) => {
+  if (getBinding(event)) return true;
+  const { accountId, databaseId, apiToken } = getRestConfig(event);
+  return Boolean(accountId && databaseId && apiToken);
+};
+
 const missingConfiguration = () => createError({
   statusCode: 503,
   statusMessage: 'Cloudflare D1 is not connected',

@@ -57,18 +57,6 @@ export interface TaxonomyItem {
   expiresAt: string;
 }
 
-export interface AdminUser {
-  id: string;
-  email: string;
-  country: string;
-  device: string;
-  status: '正常' | '受限' | '已禁用';
-  entitlements: number;
-  orders: number;
-  lastSeenAt: string;
-  createdAt: string;
-}
-
 export interface DomainConfig {
   id: string;
   host: string;
@@ -109,7 +97,6 @@ interface AdminState {
   orders: AdminOrder[];
   homeSections: HomeSectionConfig[];
   taxonomy: TaxonomyItem[];
-  users: AdminUser[];
   domains: DomainConfig[];
   auditLogs: AuditLog[];
   siteConfig: SiteConfig;
@@ -162,13 +149,6 @@ const createInitialState = (): AdminState => ({
     { id: 'tag-03', name: 'Exclusive', localeName: '独家', type: '标签', color: '#8256c9', contentCount: 3, enabled: true, expiresAt: '—' },
     { id: 'tag-04', name: 'Free', localeName: '免费', type: '标签', color: '#26966f', contentCount: 1, enabled: false, expiresAt: '—' },
   ],
-  users: [
-    { id: 'VIS-84F2A91C', email: 'em***@gmail.com', country: 'US', device: 'iPhone 15 · Safari', status: '正常', entitlements: 3, orders: 4, lastSeenAt: `${today} 20:12`, createdAt: '2026-05-18' },
-    { id: 'VIS-16D0B37E', email: 'jo***@outlook.com', country: 'US', device: 'Pixel 9 · Chrome', status: '正常', entitlements: 1, orders: 2, lastSeenAt: `${today} 19:44`, createdAt: '2026-06-02' },
-    { id: 'VIS-923AC401', email: '—', country: 'CA', device: 'iPhone 14 · Safari', status: '受限', entitlements: 0, orders: 3, lastSeenAt: `${today} 18:31`, createdAt: '2026-07-11' },
-    { id: 'VIS-5BE218DF', email: 'ma***@icloud.com', country: 'US', device: 'Galaxy S25 · Chrome', status: '正常', entitlements: 2, orders: 2, lastSeenAt: `${today} 17:08`, createdAt: '2026-04-29' },
-    { id: 'VIS-72FC9B10', email: 'ab***@mail.com', country: 'GB', device: 'iPad · Safari', status: '已禁用', entitlements: 1, orders: 7, lastSeenAt: '2026-08-07 23:51', createdAt: '2026-03-17' },
-  ],
   domains: [
     { id: 'dom-01', host: 'www.reelnova.com', role: '主域名', verification: '已验证', certificate: '正常', redirect: false, updatedAt: `${today} 18:20` },
     { id: 'dom-02', host: 'watch.reelnova.com', role: '备用域名', verification: '已验证', certificate: '正常', redirect: true, updatedAt: '2026-08-08 10:12' },
@@ -185,13 +165,15 @@ const createInitialState = (): AdminState => ({
   },
 });
 
-const storageKey = 'reelnova-admin-demo-v1';
+const storageKey = 'reelnova-admin-demo-v2';
+const legacyStorageKey = 'reelnova-admin-demo-v1';
 
 export const useAdminStore = () => {
   const state = useState<AdminState>('admin-demo-state', createInitialState);
   const hydrated = useState('admin-demo-hydrated', () => false);
 
   if (import.meta.client && !hydrated.value) {
+    localStorage.removeItem(legacyStorageKey);
     const cached = localStorage.getItem(storageKey);
     if (cached) {
       try {
