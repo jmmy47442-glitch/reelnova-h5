@@ -6,6 +6,8 @@ import type { AdminSeries, HomeSectionConfig } from '~/composables/useAdminStore
 definePageMeta({ layout: 'admin' });
 
 const { state, addAudit } = useAdminStore();
+const adminApi = useAdminApi();
+const syncing = ref(false);
 const dialogVisible = ref(false);
 const editingId = ref<string | null>(null);
 const draggingId = ref<string | null>(null);
@@ -14,14 +16,38 @@ const sections = computed(() => state.value.homeSections);
 const previewSection = computed(() => sections.value.find((section) => section.enabled));
 const previewItems = computed(() => previewSection.value?.itemIds.slice(0, previewSection.value.count).map((id) => state.value.series.find((item) => item.id === id)).filter((item): item is AdminSeries => Boolean(item)) || []);
 
+onMounted(async () => {
+  try {
+    const response = await adminApi.getHomeConfig();
+    state.value.homeSections = response.items;
+  } catch {
+    // Keep the local demo configuration when the API is unavailable.
+  }
+});
+
+const persist = async () => {
+  syncing.value = true;
+  try {
+    const response = await adminApi.saveHomeConfig(sections.value);
+    state.value.homeSections = response.items;
+    return true;
+  } catch {
+    ElMessage.error('首页配置发布失败，请稍后重试');
+    return false;
+  } finally {
+    syncing.value = false;
+  }
+};
+
 const openEditor = (section?: HomeSectionConfig) => {
   editingId.value = section?.id || null;
   Object.assign(form, section ? { title: section.title, subtitle: section.subtitle, source: section.source, count: section.count, itemIds: [...section.itemIds] } : { title: '', subtitle: '', source: '手动推荐 + 热度排序', count: 6, itemIds: [] });
   dialogVisible.value = true;
 };
 
-const saveSection = () => {
+const saveSection = async () => {
   if (!form.title.trim() || !form.itemIds.length) return ElMessage.warning('请填写标题并至少选择一部短剧');
+  const previous = sections.value.map((section) => ({ ...section, itemIds: [...section.itemIds] }));
   if (editingId.value) {
     const section = sections.value.find((item) => item.id === editingId.value);
     if (!section) return;
@@ -31,6 +57,10 @@ const saveSection = () => {
     const section: HomeSectionConfig = { id: `section-${Date.now()}`, title: form.title.trim(), subtitle: form.subtitle, source: form.source, count: form.count, itemIds: [...form.itemIds], enabled: false };
     state.value.homeSections.push(section);
     addAudit({ module: '首页配置', action: '新增首页分区', target: section.title, detail: '默认关闭，需确认后启用', risk: '普通' });
+  }
+  if (!await persist()) {
+    state.value.homeSections = previous;
+    return;
   }
   dialogVisible.value = false;
   ElMessage.success('分区配置已保存');
@@ -54,19 +84,33 @@ const drop = (targetId: string) => {
   draggingId.value = null;
 };
 
-const saveOrder = () => {
+const saveOrder = async () => {
+  const previous = sections.value.map((section) => ({ ...section, itemIds: [...section.itemIds] }));
+  if (!await persist()) {
+    state.value.homeSections = previous;
+    return;
+  }
   addAudit({ module: '首页配置', action: '发布首页排序', target: 'H5 首页', detail: sections.value.map((item) => item.title).join(' → '), risk: '普通' });
   ElMessage.success('首页顺序已发布');
 };
 
-const toggleSection = (section: HomeSectionConfig) => {
+const toggleSection = async (section: HomeSectionConfig) => {
+  if (!await persist()) {
+    section.enabled = !section.enabled;
+    return;
+  }
   addAudit({ module: '首页配置', action: section.enabled ? '启用首页分区' : '隐藏首页分区', target: section.title, detail: `线上状态：${section.enabled ? '显示' : '隐藏'}`, risk: '普通' });
   ElMessage.success(section.enabled ? '分区已启用' : '分区已隐藏');
 };
 
 const removeSection = async (section: HomeSectionConfig) => {
   await ElMessageBox.confirm(`确定删除分区“${section.title}”吗？`, '删除分区', { type: 'warning' });
+  const previous = sections.value.map((item) => ({ ...item, itemIds: [...item.itemIds] }));
   state.value.homeSections = sections.value.filter((item) => item.id !== section.id);
+  if (!await persist()) {
+    state.value.homeSections = previous;
+    return;
+  }
   addAudit({ module: '首页配置', action: '删除首页分区', target: section.title, detail: '分区配置已删除', risk: '普通' });
   ElMessage.success('分区已删除');
 };
@@ -79,7 +123,7 @@ const openPreview = () => window.open('/', '_blank', 'noopener,noreferrer');
     <AdminPageHeader title="首页配置" description="调整 H5 首页分区的顺序、内容来源、展示数量和启用状态。"><el-button @click="openPreview"><Eye :size="16" />打开 H5</el-button><el-button type="primary" @click="openEditor()"><Plus :size="16" />新增分区</el-button></AdminPageHeader>
     <div class="operations-layout">
       <section class="admin-panel section-config-list">
-        <div class="admin-panel__header"><div><h2>首页内容分区</h2><p>拖动手柄或使用箭头调整线上顺序</p></div><el-button type="primary" @click="saveOrder">发布排序</el-button></div>
+        <div class="admin-panel__header"><div><h2>首页内容分区</h2><p>拖动手柄或使用箭头调整线上顺序</p></div><el-button type="primary" :loading="syncing" @click="saveOrder">发布排序</el-button></div>
         <article v-for="(section, index) in sections" :key="section.id" class="config-row" draggable="true" @dragstart="draggingId = section.id" @dragover.prevent @drop="drop(section.id)">
           <GripVertical :size="20" class="drag-handle" />
           <span class="config-row__order">{{ String(index + 1).padStart(2, '0') }}</span>

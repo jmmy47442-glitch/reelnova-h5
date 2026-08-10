@@ -21,6 +21,7 @@ interface D1RestResult<T> {
   result?: Array<{ success: boolean; results?: T[]; error?: string; meta?: { changes?: number } }>;
 }
 
+const d1RestTimeoutMs = 8_000;
 const getBinding = (event: H3Event) => (event.context.cloudflare as CloudflareContext | undefined)?.env?.DB;
 
 const getRestConfig = (event: H3Event) => {
@@ -49,6 +50,7 @@ const restQuery = async <T>(event: H3Event, sql: string, params: unknown[]) => {
   if (!accountId || !databaseId || !apiToken) throw missingConfiguration();
   const response = await $fetch<D1RestResult<T>>(`https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`, {
     method: 'POST',
+    timeout: d1RestTimeoutMs,
     headers: { Authorization: `Bearer ${apiToken}` },
     body: { sql, params },
   });

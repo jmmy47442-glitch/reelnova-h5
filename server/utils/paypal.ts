@@ -21,6 +21,8 @@ interface OrderSnapshot {
   amount_cents: number; currency: string; status: string; paypal_order_id: string | null;
 }
 
+const paypalRequestTimeoutMs = 10_000;
+
 const configFor = (event: H3Event) => {
   const config = useRuntimeConfig(event);
   const clientId = config.paypalClientId as string;
@@ -34,7 +36,7 @@ const accessToken = async (event: H3Event) => {
   const { clientId, secret, baseUrl } = configFor(event);
   const auth = btoa(`${clientId}:${secret}`);
   const response = await $fetch<PayPalAccessToken>(`${baseUrl}/v1/oauth2/token`, {
-    method: 'POST', headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'grant_type=client_credentials',
+    method: 'POST', timeout: paypalRequestTimeoutMs, headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'grant_type=client_credentials',
   });
   return { token: response.access_token, baseUrl };
 };
@@ -45,6 +47,7 @@ export const createPayPalOrder = async (event: H3Event, input: { orderNo: string
   const { token, baseUrl } = await accessToken(event);
   const response = await $fetch<PayPalOrderResponse>(`${baseUrl}/v2/checkout/orders`, {
     method: 'POST',
+    timeout: paypalRequestTimeoutMs,
     headers: { Authorization: `Bearer ${token}`, 'PayPal-Request-Id': input.orderNo, 'Content-Type': 'application/json' },
     body: {
       intent: 'CAPTURE',
@@ -60,13 +63,14 @@ export const createPayPalOrder = async (event: H3Event, input: { orderNo: string
 export const capturePayPalOrder = async (event: H3Event, paypalOrderId: string) => {
   const { token, baseUrl } = await accessToken(event);
   return $fetch<PayPalCaptureResponse>(`${baseUrl}/v2/checkout/orders/${encodeURIComponent(paypalOrderId)}/capture`, {
-    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'PayPal-Request-Id': `capture-${paypalOrderId}`, 'Content-Type': 'application/json' }, body: {},
+    method: 'POST', timeout: paypalRequestTimeoutMs, headers: { Authorization: `Bearer ${token}`, 'PayPal-Request-Id': `capture-${paypalOrderId}`, 'Content-Type': 'application/json' }, body: {},
   });
 };
 
 export const getPayPalOrderDetails = async (event: H3Event, paypalOrderId: string) => {
   const { token, baseUrl } = await accessToken(event);
   return $fetch<PayPalCaptureResponse>(`${baseUrl}/v2/checkout/orders/${encodeURIComponent(paypalOrderId)}`, {
+    timeout: paypalRequestTimeoutMs,
     headers: { Authorization: `Bearer ${token}` },
   });
 };
@@ -108,7 +112,7 @@ export const verifyPayPalWebhook = async (event: H3Event, webhookEvent: unknown)
   if (!webhookId) throw createError({ statusCode: 503, statusMessage: 'PAYPAL_WEBHOOK_ID is not configured' });
   const { token, baseUrl } = await accessToken(event);
   const response = await $fetch<{ verification_status: 'SUCCESS' | 'FAILURE' }>(`${baseUrl}/v1/notifications/verify-webhook-signature`, {
-    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    method: 'POST', timeout: paypalRequestTimeoutMs, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: {
       auth_algo: getHeader(event, 'paypal-auth-algo'), cert_url: getHeader(event, 'paypal-cert-url'), transmission_id: getHeader(event, 'paypal-transmission-id'),
       transmission_sig: getHeader(event, 'paypal-transmission-sig'), transmission_time: getHeader(event, 'paypal-transmission-time'), webhook_id: webhookId, webhook_event: webhookEvent,

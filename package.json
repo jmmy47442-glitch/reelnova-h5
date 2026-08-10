@@ -3,12 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "nuxt build",
-    "build:cloudflare": "NITRO_PRESET=cloudflare-pages nuxt build",
-    "dev": "nuxt dev",
-    "generate": "nuxt generate",
+    "build": "REELNOVA_NUXT_BUILD_DIR=node_modules/.cache/reelnova-nuxt/build nuxt build",
+    "build:cloudflare": "REELNOVA_NUXT_BUILD_DIR=node_modules/.cache/reelnova-nuxt/cloudflare NITRO_PRESET=cloudflare-pages nuxt build",
+    "dev": "REELNOVA_NUXT_BUILD_DIR=node_modules/.cache/reelnova-nuxt/dev nuxt dev",
+    "generate": "REELNOVA_NUXT_BUILD_DIR=node_modules/.cache/reelnova-nuxt/generate nuxt generate",
     "preview": "nuxt preview",
-    "typecheck": "nuxt typecheck",
+    "typecheck": "REELNOVA_NUXT_BUILD_DIR=node_modules/.cache/reelnova-nuxt/typecheck nuxt typecheck",
     "visual-check": "node scripts/visual-check.mjs"
   },
   "dependencies": {

@@ -8,6 +8,7 @@ const adminSpaRoutes = {
 
 export default defineNuxtConfig({
   compatibilityDate: '2024-11-01',
+  buildDir: process.env.REELNOVA_NUXT_BUILD_DIR || '.nuxt',
   devtools: { enabled: false },
   css: ['~/assets/css/main.css'],
   modules: ['@nuxtjs/google-fonts', '@element-plus/nuxt'],

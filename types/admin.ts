@@ -98,6 +98,25 @@ export interface AdminOrdersResponse {
   };
 }
 
+export type AdminPendingItemSeverity = 'warning' | 'danger';
+
+export interface AdminPendingItem {
+  id: string;
+  title: string;
+  description: string;
+  count: number;
+  severity: AdminPendingItemSeverity;
+  to: string;
+  latestAt: string | null;
+}
+
+export interface AdminPendingItemsResponse {
+  connected: true;
+  generatedAt: string;
+  total: number;
+  items: AdminPendingItem[];
+}
+
 export type PersistedUserStatus = 'active' | 'restricted' | 'disabled';
 
 export interface PersistedUser {
