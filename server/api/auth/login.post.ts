@@ -1,0 +1,14 @@
+import { authenticateUser, setUserSession } from '../../utils/user-auth';
+import { ok } from '../../utils/response';
+
+export default defineEventHandler(async (event) => {
+  const body = await readBody<{ email?: string; password?: string; remember?: boolean }>(event);
+  const email = body.email?.trim().toLowerCase() || '';
+  const password = body.password || '';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 8) {
+    throw createError({ statusCode: 400, statusMessage: 'Valid email and password are required' });
+  }
+  const account = await authenticateUser(event, email, password);
+  if (!account) throw createError({ statusCode: 401, statusMessage: 'Invalid email or password' });
+  return ok(await setUserSession(event, account, body.remember !== false));
+});

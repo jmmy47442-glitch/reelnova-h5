@@ -19,6 +19,10 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
+| POST | `/api/auth/register` | Create a viewer account and preserve the current visitor identity |
+| POST | `/api/auth/login` | Authenticate a viewer and restore their linked visitor identity |
+| GET | `/api/auth/session` | Read the current signed viewer session |
+| POST | `/api/auth/logout` | Clear the current viewer session |
 | GET | `/api/home` | Configured home sections and series cards |
 | GET | `/api/explore` | Search, filter and sort series |
 | GET | `/api/series/{slug}` | Series metadata, pricing and episode entitlement states |

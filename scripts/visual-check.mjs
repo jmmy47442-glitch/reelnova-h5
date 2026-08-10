@@ -16,9 +16,14 @@ const addAdminSession = async (page) => {
   if (!response.ok()) throw new Error(`Admin login failed: ${response.status()} ${await response.text()}`);
 };
 
+const enableGuestPreview = async (page) => {
+  await page.context().addCookies([{ name: 'rn_guest_preview', value: '1', url: baseURL, sameSite: 'Lax' }]);
+};
+
 const inspectPage = async (name, path, viewport) => {
   const page = await browser.newPage({ viewport, deviceScaleFactor: 1 });
   if (path.startsWith('/admin') && path !== '/admin/login') await addAdminSession(page);
+  if (!path.startsWith('/admin') && path !== '/login' && path !== '/register') await enableGuestPreview(page);
   const errors = [];
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text());
@@ -47,6 +52,9 @@ const inspectPage = async (name, path, viewport) => {
 };
 
 const results = [];
+results.push(await inspectPage('h5-login-1280', '/login', { width: 1280, height: 800 }));
+results.push(await inspectPage('h5-login-390', '/login', { width: 390, height: 844 }));
+results.push(await inspectPage('h5-register-390', '/register', { width: 390, height: 844 }));
 results.push(await inspectPage('h5-home-390', '/', { width: 390, height: 844 }));
 results.push(await inspectPage('h5-detail-390', '/series/vows-and-vengeance', { width: 390, height: 844 }));
 results.push(await inspectPage('h5-watch-lock-390', '/watch/vows-and-vengeance/4', { width: 390, height: 844 }));
@@ -99,6 +107,7 @@ results.push({ name: 'admin-auth', protectedRouteRedirected, loginRestoredRoute,
 await authPage.close();
 
 const checkoutPage = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+await enableGuestPreview(checkoutPage);
 await checkoutPage.goto(`${baseURL}/series/vows-and-vengeance`, { waitUntil: 'networkidle' });
 await checkoutPage.locator('.detail-actions .button--ghost').click();
 await checkoutPage.locator('.unlock-sheet').waitFor();
@@ -106,6 +115,16 @@ await checkoutPage.waitForTimeout(350);
 await checkoutPage.screenshot({ path: `${outputDir}/h5-unlock-390.png`, fullPage: false });
 results.push({ name: 'h5-unlock-390', visible: await checkoutPage.locator('.unlock-sheet').isVisible() });
 await checkoutPage.close();
+
+const guestPage = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+await guestPage.goto(`${baseURL}/profile`, { waitUntil: 'networkidle' });
+const guestProtectedRouteRedirected = guestPage.url().includes('/login?redirect=/profile');
+await guestPage.getByRole('button', { name: 'Continue as guest' }).click();
+await guestPage.waitForURL(`${baseURL}/profile`);
+await guestPage.getByText('GUEST PREVIEW').waitFor({ state: 'visible' });
+const guestPreviewEntered = guestPage.url().endsWith('/profile') && await guestPage.getByText('GUEST PREVIEW').isVisible();
+results.push({ name: 'guest-preview', guestProtectedRouteRedirected, guestPreviewEntered });
+await guestPage.close();
 
 await browser.close();
 console.log(JSON.stringify(results, null, 2));

@@ -91,6 +91,10 @@ export const getRequestCountry = (event: H3Event) => {
 export const getVisitorId = (event: H3Event) => {
   const existing = getCookie(event, 'rn_visitor');
   if (existing) return existing;
+  return rotateVisitorId(event);
+};
+
+export const rotateVisitorId = (event: H3Event) => {
   const id = crypto.randomUUID();
   setCookie(event, 'rn_visitor', id, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 60 * 60 * 24 * 365, path: '/' });
   return id;
