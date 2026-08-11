@@ -45,6 +45,8 @@ npx wrangler d1 execute reelnova-production --remote --file=./migrations/0004_ad
 npx wrangler d1 execute reelnova-production --remote --file=./migrations/0005_home_config.sql
 npx wrangler d1 execute reelnova-production --remote --file=./migrations/0006_user_accounts.sql
 npx wrangler d1 execute reelnova-production --remote --file=./migrations/0007_merge_user_accounts.sql
+npx wrangler d1 execute reelnova-production --remote --file=./migrations/0008_order_idempotency.sql
+npx wrangler d1 execute reelnova-production --remote --file=./migrations/0009_refunds.sql
 ```
 
 已有数据库如果已经执行过 0001-0006，只需要在备份后执行一次 0007；不要重复执行旧迁移文件。
@@ -66,6 +68,7 @@ PAYPAL_CLIENT_ID
 PAYPAL_SECRET
 PAYPAL_WEBHOOK_ID
 PAYPAL_ENVIRONMENT=production
+NUXT_PUBLIC_PAYPAL_CLIENT_ID
 CLOUDFLARE_MEDIA_BASE_URL
 CLOUDFLARE_MEDIA_SIGNING_SECRET
 SUPER_ADMIN_EMAIL

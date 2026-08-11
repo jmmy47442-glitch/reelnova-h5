@@ -17,6 +17,7 @@ export const useAdminApi = () => {
     releaseUserDevice: (userId: string) => request<{ userId: string; status: PersistedUserStatus }>(`/admin/users/${encodeURIComponent(userId)}/release-device`, { method: 'POST' }),
     grantUserEntitlement: (userId: string, seriesId: string, reason: string) => request<{ userId: string; seriesId: string; status: 'granted' }>(`/admin/users/${encodeURIComponent(userId)}/entitlements`, { method: 'POST', body: { seriesId, reason } }),
     verifyOrder: (orderNo: string) => request<{ paypalStatus: string; captureStatus: string | null; synchronized: boolean }>(`/admin/orders/${orderNo}/verify`, { method: 'POST' }),
+    refundOrder: (orderNo: string, reason: string) => request<{ orderNo: string; paypalRefundId?: string; status: 'refunding' | 'refunded'; synchronized: boolean }>(`/admin/orders/${orderNo}/refund`, { method: 'POST', body: { reason } }),
     getReconciliation: (days: number) => request<ReconciliationResponse>('/admin/reconciliation', { query: { days } }),
     getConnection: () => request<{
       checkedAt: string;

@@ -5,6 +5,7 @@ import { upsertUserProfile } from '~/server/utils/user-profile';
 interface PayPalAccessToken { access_token: string }
 interface PayPalLink { rel: string; href: string }
 interface PayPalOrderResponse { id: string; status: string; links?: PayPalLink[] }
+interface PayPalRefundResponse { id: string; status: 'PENDING' | 'COMPLETED' | 'CANCELLED'; amount?: { currency_code: string; value: string } }
 interface PayPalCaptureResponse {
   id: string;
   status: string;
@@ -73,6 +74,30 @@ export const getPayPalOrderDetails = async (event: H3Event, paypalOrderId: strin
     timeout: paypalRequestTimeoutMs,
     headers: { Authorization: `Bearer ${token}` },
   });
+};
+
+export const refundPayPalCapture = async (event: H3Event, input: { captureId: string; requestId: string; amount: string }) => {
+  const { token, baseUrl } = await accessToken(event);
+  return $fetch<PayPalRefundResponse>(`${baseUrl}/v2/payments/captures/${encodeURIComponent(input.captureId)}/refund`, {
+    method: 'POST', timeout: paypalRequestTimeoutMs,
+    headers: { Authorization: `Bearer ${token}`, 'PayPal-Request-Id': input.requestId, 'Content-Type': 'application/json' },
+    body: { amount: { currency_code: 'USD', value: input.amount } },
+  });
+};
+
+export const applyVerifiedRefund = async (event: H3Event, input: { paypalRefundId: string; paypalOrderId?: string | null; captureId?: string | null; status: string }) => {
+  const order = await d1First<{ order_no: string; user_id: string; series_id: string }>(event,
+    `SELECT order_no, user_id, series_id FROM orders
+     WHERE (? IS NOT NULL AND paypal_order_id = ?) OR (? IS NOT NULL AND capture_id = ?) LIMIT 1`,
+  [input.paypalOrderId || null, input.paypalOrderId || null, input.captureId || null, input.captureId || null]);
+  if (!order) throw createError({ statusCode: 404, statusMessage: 'Refund order not found' });
+  const now = new Date().toISOString();
+  const completed = ['COMPLETED', 'REFUNDED', 'REVERSED'].includes(input.status);
+  await d1Run(event, `UPDATE refund_requests SET paypal_refund_id = COALESCE(paypal_refund_id, ?), status = ?, error_message = NULL, updated_at = ?, completed_at = ?
+    WHERE order_no = ? AND status IN ('pending', 'processing', 'failed')`, [input.paypalRefundId, completed ? 'completed' : 'processing', now, completed ? now : null, order.order_no]);
+  await d1Run(event, 'UPDATE orders SET status = ?, note = ?, updated_at = ? WHERE order_no = ?', [completed ? 'refunded' : 'refunding', completed ? `PayPal refund ${input.paypalRefundId} completed` : `PayPal refund ${input.paypalRefundId} processing`, now, order.order_no]);
+  if (completed) await d1Run(event, "UPDATE entitlements SET status = 'revoked', revoked_at = ? WHERE user_id = ? AND series_id = ? AND status = 'granted'", [now, order.user_id, order.series_id]);
+  return { ...order, completed };
 };
 
 export const applyVerifiedCapture = async (event: H3Event, paypalOrderId: string, capture: PayPalCaptureResponse) => {

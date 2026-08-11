@@ -2,7 +2,7 @@ import type { H3Event } from 'h3';
 import { seriesList } from '~/data/mock';
 import type { AdminSeries, DomainConfig, PublishStatus, TaxonomyItem } from '~/types/admin';
 import type { Series } from '~/types/content';
-import { d1First, d1Run, hasD1Connection } from './cloudflare-d1';
+import { d1First, d1Run, getRequestCountry, hasD1Connection } from './cloudflare-d1';
 
 type ManagedSeries = Series & {
   publishStatus: PublishStatus;
@@ -92,9 +92,14 @@ export const saveManagedSeries = async (event: H3Event, items: ManagedSeries[]) 
   return cloneSeries(memorySeries);
 };
 
-export const getPublicSeries = async (event: H3Event) => (await getManagedSeries(event))
-  .filter((item) => item.publishStatus === '已上架')
+const regionCountry: Record<string, string> = { 'United States': 'US', Canada: 'CA' };
+
+export const getPublicSeries = async (event: H3Event) => {
+  const country = getRequestCountry(event)?.toUpperCase() || '';
+  return (await getManagedSeries(event))
+  .filter((item) => item.publishStatus === '已上架' && (!country || item.targetRegion === 'Global' || regionCountry[item.targetRegion] === country))
   .map(({ publishStatus: _publishStatus, publishAt: _publishAt, transcodeProgress: _transcodeProgress, targetRegion: _targetRegion, ...series }) => series);
+};
 
 export const toAdminSeries = (item: ManagedSeries): AdminSeries => ({
   id: item.id,

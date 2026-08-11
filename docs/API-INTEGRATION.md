@@ -27,10 +27,13 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | GET | `/api/explore` | Search, filter and sort series |
 | GET | `/api/series/{slug}` | Series metadata, pricing and episode entitlement states |
 | GET | `/api/playback?seriesId=&episodeNo=` | Server-authorized short-lived HLS URL |
+| POST | `/api/events/playback` | Persist authorized start, heartbeat and completion progress |
 | GET | `/api/me/library` | Purchases and watch progress for the signed-in user |
-| POST | `/api/orders` | Create a local order and PayPal order |
+| DELETE | `/api/me/watch-history` | Clear account watch history |
+| POST | `/api/orders` | Create or reuse an idempotent local and PayPal order |
 | GET | `/api/orders/{orderNo}` | Poll server-confirmed order state |
-| POST | `/api/orders/restore` | Start verified purchase restoration |
+| POST | `/api/orders/restore` | Restore a paid order matched to the signed-in account |
+| POST | `/api/paypal/capture` | Capture an approved PayPal order and issue entitlement |
 
 ## Admin endpoints
 
@@ -43,7 +46,7 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | Series | `GET/POST /api/admin/series`, `PUT /api/admin/series/{id}`, `PATCH /api/admin/series/{id}/status`, `POST /api/admin/series/{id}/duplicate` |
 | Episodes | Media upload requires the Cloudflare R2/Stream upload and transcoding worker; metadata is not marked complete until that service is connected |
 | Home sections | `GET/PUT /api/admin/home-config` |
-| Orders | `GET /api/admin/orders`, `POST /api/admin/orders/{orderNo}/verify` |
+| Orders | `GET /api/admin/orders`, `POST /api/admin/orders/{orderNo}/verify`, `POST /api/admin/orders/{orderNo}/refund` (super administrator) |
 | Users | `GET /api/admin/users`, `PATCH /api/admin/users/{userId}`, `POST /api/admin/users/{userId}/release-device`, `POST /api/admin/users/{userId}/entitlements` |
 | Reconciliation | `GET /api/admin/reconciliation` |
 | Taxonomy | `GET/PUT /api/admin/taxonomy` |

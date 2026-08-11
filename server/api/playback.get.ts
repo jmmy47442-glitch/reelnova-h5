@@ -11,6 +11,14 @@ const sign = async (value: string, secret: string) => {
 };
 
 export default defineEventHandler(async (event) => {
+  const requestUrl = getRequestURL(event);
+  const origin = getHeader(event, 'origin');
+  const referer = getHeader(event, 'referer');
+  if (origin && origin !== requestUrl.origin) throw createError({ statusCode: 403, statusMessage: 'Cross-origin playback request denied' });
+  if (referer) {
+    try { if (new URL(referer).origin !== requestUrl.origin) throw new Error('cross-origin'); }
+    catch { throw createError({ statusCode: 403, statusMessage: 'Invalid playback referrer' }); }
+  }
   const query = getQuery(event);
   const seriesList = await getPublicSeries(event);
   const series = seriesList.find((item) => item.id === query.seriesId);

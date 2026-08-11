@@ -1,11 +1,11 @@
 import { ok } from '~/server/utils/response';
 import { d1First, d1Run } from '~/server/utils/cloudflare-d1';
-import { applyVerifiedCapture, verifyPayPalWebhook } from '~/server/utils/paypal';
+import { applyVerifiedCapture, applyVerifiedRefund, verifyPayPalWebhook } from '~/server/utils/paypal';
 
 interface PayPalWebhook {
   id: string;
   event_type: string;
-  resource: { id?: string; supplementary_data?: { related_ids?: { order_id?: string } } };
+  resource: { id?: string; status?: string; supplementary_data?: { related_ids?: { order_id?: string; capture_id?: string } } };
 }
 
 export default defineEventHandler(async (event) => {
@@ -22,6 +22,14 @@ export default defineEventHandler(async (event) => {
   try {
     if (body.event_type === 'PAYMENT.CAPTURE.COMPLETED' && paypalOrderId) {
       await applyVerifiedCapture(event, paypalOrderId, { id: paypalOrderId, status: 'COMPLETED', purchase_units: [{ payments: { captures: [body.resource as any] } }] });
+    }
+    if (['PAYMENT.CAPTURE.REFUNDED', 'PAYMENT.CAPTURE.REVERSED'].includes(body.event_type)) {
+      await applyVerifiedRefund(event, {
+        paypalRefundId: body.resource.id || body.id,
+        paypalOrderId,
+        captureId: body.resource.supplementary_data?.related_ids?.capture_id || null,
+        status: body.event_type === 'PAYMENT.CAPTURE.REVERSED' ? 'REVERSED' : body.resource.status || 'COMPLETED',
+      });
     }
     await d1Run(event, "UPDATE paypal_webhook_events SET processing_status = 'processed', processed_at = ? WHERE event_id = ?", [new Date().toISOString(), body.id]);
     return ok({ received: true });
