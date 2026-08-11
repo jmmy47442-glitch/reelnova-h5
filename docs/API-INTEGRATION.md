@@ -46,11 +46,11 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | Series | `GET/POST /api/admin/series`, `PUT/DELETE /api/admin/series/{id}`, `PATCH /api/admin/series/{id}/status`, `POST /api/admin/series/{id}/duplicate` |
 | Episodes | `GET /api/admin/series/{id}/episodes`, `POST /api/admin/series/{id}/episodes/uploads`, `PATCH /api/admin/media/uploads/{id}/progress`, `POST /api/admin/media/uploads/{id}/complete`, `POST /api/admin/media/{assetId}/retry`, `GET /api/admin/media/{assetId}/preview` |
 | Home sections | `GET/PUT /api/admin/home-config` |
-| Orders | `GET /api/admin/orders`, `POST /api/admin/orders/{orderNo}/verify`, `POST /api/admin/orders/{orderNo}/refund` (super administrator) |
+| Orders | `GET /api/admin/orders`, `POST /api/admin/orders/{orderNo}/verify`, `GET/POST /api/admin/orders/{orderNo}/refund` (refund mutation requires super administrator) |
 | Users | `GET /api/admin/users`, `PATCH /api/admin/users/{userId}`, `POST /api/admin/users/{userId}/release-device`, `POST /api/admin/users/{userId}/entitlements` |
 | Reconciliation | `GET /api/admin/reconciliation` |
 | Taxonomy | `GET/PUT /api/admin/taxonomy` |
-| PayPal | `GET /api/admin/connection` (credentials remain Cloudflare Secrets and are never returned) |
+| PayPal | `GET /api/admin/connection`, `POST /api/admin/paypal/webhooks/{eventId}/retry` (retry requires super administrator; credentials remain Cloudflare Secrets and are never returned) |
 | Site/domain | `GET/POST /api/admin/domains`, `PATCH /api/admin/domains/{id}`, `POST /api/admin/domains/{id}/verify` |
 | Audit | `GET /api/admin/audit` |
 | Connection health | `GET /api/admin/connection` |
@@ -58,5 +58,7 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 Episode uploads use 10 MiB R2 multipart chunks. The browser may resume an unexpired upload session, while R2 and Stream credentials remain in the media Worker. A series cannot be published until every non-deleted episode has a `ready` media asset. Cloudflare Stream reports asynchronous progress through `POST /api/media/stream-webhook`; episode list polling also reconciles missed callbacks.
 
 Order creation must use a server-side price snapshot. Playback requests must validate the user session and entitlement every time. PayPal approval in the browser is not proof of payment; only a verified capture or webhook may issue entitlement.
+
+`POST /api/orders` accepts an optional client request `idempotencyKey`, while the server also derives a stable purchase key from the authenticated user and series. A granted entitlement returns `status: "paid"` and `entitlementStatus: "granted"`; an existing `pending` or `processing` checkout returns its original order and PayPal approval details. The database permits only one open checkout per user and series, and the captured price version, amount and activity fields are immutable.
 
 When PayPal credentials are absent, `POST /api/orders` and refund operations return `503` with code `PAYPAL_NOT_CONFIGURED` before writing payment state. When the R2 media Worker is absent, upload creation returns `503` with code `MEDIA_PIPELINE_NOT_CONFIGURED` before creating episode or media rows. Frontend controls use the admin connection status and public PayPal Client ID to remain disabled until configuration is complete.

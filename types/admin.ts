@@ -65,6 +65,7 @@ export interface DashboardSummary {
 }
 
 export type PersistedOrderStatus = 'pending' | 'processing' | 'paid' | 'failed' | 'cancelled' | 'refunding' | 'refunded' | 'risk_review';
+export type PersistedRefundStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'rejected' | 'cancelled';
 
 export type PublishStatus = '已上架' | '处理中' | '草稿' | '待发布' | '已下架' | '版权冻结';
 
@@ -156,6 +157,14 @@ export interface PersistedOrder {
   createdAt: string;
   callbackAt: string | null;
   entitlement: 'pending' | 'granted' | 'revoked';
+  refund: {
+    status: PersistedRefundStatus | null;
+    paypalRefundId: string | null;
+    source: 'paypal_api' | 'manual' | 'webhook' | null;
+    entitlementRevokeStatus: 'pending' | 'revoked' | 'not_applicable' | 'failed' | null;
+    errorMessage: string | null;
+    updatedAt: string | null;
+  };
   note: string | null;
 }
 

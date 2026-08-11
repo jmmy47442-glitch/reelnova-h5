@@ -12,6 +12,8 @@ interface OrderRow {
   status: OrderStatus;
   created_at: string;
   paypal_order_id: string | null;
+  refund_status: Order['refundStatus'] | null;
+  entitlement_status: Order['entitlementStatus'] | null;
 }
 
 export default defineEventHandler(async (event) => {
@@ -19,10 +21,12 @@ export default defineEventHandler(async (event) => {
   if (!userSession) throw createError({ statusCode: 401, statusMessage: 'Login required' });
 
   const rows = await d1All<OrderRow>(event, `
-    SELECT order_no, series_id, series_title, amount_cents, currency, status, created_at, paypal_order_id
-    FROM orders
-    WHERE user_id = ?
-    ORDER BY created_at DESC
+    SELECT o.order_no, o.series_id, o.series_title, o.amount_cents, o.currency, o.status, o.created_at, o.paypal_order_id,
+      (SELECT rr.status FROM refund_requests rr WHERE rr.order_no = o.order_no ORDER BY rr.created_at DESC LIMIT 1) AS refund_status,
+      (SELECT e.status FROM entitlements e WHERE e.order_no = o.order_no LIMIT 1) AS entitlement_status
+    FROM orders o
+    WHERE o.user_id = ?
+    ORDER BY o.created_at DESC
   `, [userSession.userId]);
 
   const orders: Order[] = rows.map((row) => ({
@@ -32,6 +36,8 @@ export default defineEventHandler(async (event) => {
     amount: Number(row.amount_cents) / 100,
     currency: row.currency,
     status: row.status,
+    refundStatus: row.refund_status || undefined,
+    entitlementStatus: row.entitlement_status || 'pending',
     createdAt: row.created_at,
     paypalOrderId: row.paypal_order_id || undefined,
   }));

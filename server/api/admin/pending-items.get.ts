@@ -13,10 +13,17 @@ const countOrders = (event: Parameters<typeof d1First>[0], statuses: string[]) =
   statuses,
 );
 
+const countRefunds = (event: Parameters<typeof d1First>[0], statuses: string[]) => d1First<PendingRow>(
+  event,
+  `SELECT COUNT(*) AS count, MAX(updated_at) AS latest_at FROM refund_requests WHERE status IN (${statuses.map(() => '?').join(', ')})`,
+  statuses,
+);
+
 export default defineEventHandler(async (event) => {
-  const [awaitingOrders, refundingOrders, riskOrders, failedWebhooks] = await Promise.all([
+  const [awaitingOrders, refundingOrders, failedRefunds, riskOrders, failedWebhooks] = await Promise.all([
     countOrders(event, ['pending', 'processing']),
     countOrders(event, ['refunding']),
+    countRefunds(event, ['failed']),
     countOrders(event, ['risk_review']),
     d1First<PendingRow>(event, "SELECT COUNT(*) AS count, MAX(received_at) AS latest_at FROM paypal_webhook_events WHERE processing_status = 'failed'"),
   ]);
@@ -39,6 +46,13 @@ export default defineEventHandler(async (event) => {
     title: '笔订单等待退款处理',
     description: '核对退款状态并同步权益',
     severity: 'warning',
+    to: '/admin/orders',
+  });
+  addItem(failedRefunds, {
+    id: 'refunds-failed',
+    title: '笔退款处理失败',
+    description: '检查失败原因并重新发起或同步官方结果',
+    severity: 'danger',
     to: '/admin/orders',
   });
   addItem(riskOrders, {

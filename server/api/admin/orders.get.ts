@@ -6,6 +6,8 @@ interface OrderRow {
   order_no: string; series_id: string; series_title: string; email: string | null; country: string | null;
   amount_cents: number; fee_cents: number; status: PersistedOrder['status']; paypal_order_id: string | null;
   capture_id: string | null; created_at: string; callback_at: string | null; note: string | null; entitlement_status: string | null;
+  refund_status: PersistedOrder['refund']['status']; paypal_refund_id: string | null; refund_source: PersistedOrder['refund']['source'];
+  entitlement_revoke_status: PersistedOrder['refund']['entitlementRevokeStatus']; refund_error_message: string | null; refund_updated_at: string | null;
 }
 interface CountRow { value: number }
 
@@ -14,7 +16,16 @@ const mapOrder = (row: OrderRow): PersistedOrder => ({
   amount: Number(row.amount_cents) / 100, currency: 'USD', fee: Number(row.fee_cents) / 100,
   netAmount: (Number(row.amount_cents) - Number(row.fee_cents)) / 100, status: row.status,
   paypalOrderId: row.paypal_order_id, captureId: row.capture_id, createdAt: row.created_at, callbackAt: row.callback_at,
-  entitlement: row.entitlement_status === 'granted' ? 'granted' : row.entitlement_status === 'revoked' ? 'revoked' : 'pending', note: row.note,
+  entitlement: row.entitlement_status === 'granted' ? 'granted' : row.entitlement_status === 'revoked' ? 'revoked' : 'pending',
+  refund: {
+    status: row.refund_status || null,
+    paypalRefundId: row.paypal_refund_id,
+    source: row.refund_source || null,
+    entitlementRevokeStatus: row.entitlement_revoke_status || null,
+    errorMessage: row.refund_error_message,
+    updatedAt: row.refund_updated_at,
+  },
+  note: row.note,
 });
 
 export default defineEventHandler(async (event) => {
@@ -24,6 +35,10 @@ export default defineEventHandler(async (event) => {
   const conditions: string[] = [];
   const params: unknown[] = [];
   if (query.status) { conditions.push('o.status = ?'); params.push(String(query.status)); }
+  if (query.refundStatus) {
+    conditions.push('EXISTS (SELECT 1 FROM refund_requests rf WHERE rf.order_no = o.order_no AND rf.status = ?)');
+    params.push(String(query.refundStatus));
+  }
   if (query.country) { conditions.push('o.country = ?'); params.push(String(query.country)); }
   if (query.from) { conditions.push('o.created_at >= ?'); params.push(String(query.from)); }
   if (query.to) { conditions.push('o.created_at <= ?'); params.push(String(query.to)); }
@@ -36,7 +51,14 @@ export default defineEventHandler(async (event) => {
   const today = new Date();
   const todayIso = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())).toISOString();
   const [rows, total, todayOrders, paidAmount, pending, exceptions] = await Promise.all([
-    d1All<OrderRow>(event, `SELECT o.*, e.status AS entitlement_status FROM orders o LEFT JOIN entitlements e ON e.order_no = o.order_no ${where} ORDER BY o.created_at DESC LIMIT ? OFFSET ?`, [...params, pageSize, (page - 1) * pageSize]),
+    d1All<OrderRow>(event, `SELECT o.*, e.status AS entitlement_status,
+      rr.status AS refund_status, rr.paypal_refund_id, rr.request_source AS refund_source,
+      rr.entitlement_revoke_status, rr.error_message AS refund_error_message, rr.updated_at AS refund_updated_at
+      FROM orders o
+      LEFT JOIN entitlements e ON e.order_no = o.order_no
+      LEFT JOIN refund_requests rr ON rr.order_no = o.order_no
+        AND rr.created_at = (SELECT MAX(rr2.created_at) FROM refund_requests rr2 WHERE rr2.order_no = o.order_no)
+      ${where} ORDER BY o.created_at DESC LIMIT ? OFFSET ?`, [...params, pageSize, (page - 1) * pageSize]),
     d1First<CountRow>(event, `SELECT COUNT(*) AS value FROM orders o ${where}`, params),
     d1First<CountRow>(event, 'SELECT COUNT(*) AS value FROM orders WHERE created_at >= ?', [todayIso]),
     d1First<CountRow>(event, "SELECT COALESCE(SUM(amount_cents), 0) AS value FROM orders WHERE status = 'paid' AND callback_at >= ?", [todayIso]),

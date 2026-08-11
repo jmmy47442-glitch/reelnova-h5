@@ -16,6 +16,13 @@ export default defineEventHandler(async (event) => {
   if (!user) throw createError({ statusCode: 404, statusMessage: 'User not found' });
   const paid = await d1First<{ id: string }>(event, "SELECT id FROM entitlements WHERE user_id = ? AND series_id = ? AND status = 'granted'", [userId, series.id]);
   if (paid) throw createError({ statusCode: 409, statusMessage: 'User already has this paid entitlement' });
+  const openCheckout = await d1First<{ order_no: string }>(event, `SELECT order_no FROM orders
+    WHERE user_id = ? AND series_id = ? AND status IN ('pending', 'processing') LIMIT 1`, [userId, series.id]);
+  if (openCheckout) throw createError({
+    statusCode: 409,
+    statusMessage: 'Manual entitlement cannot be granted while the user has an open checkout',
+    data: { code: 'OPEN_CHECKOUT_EXISTS', orderNo: openCheckout.order_no },
+  });
   const now = new Date().toISOString();
   const session = event.context.adminSession as { email?: string } | undefined;
   const actor = getHeader(event, 'cf-access-authenticated-user-email') || session?.email || 'Admin';

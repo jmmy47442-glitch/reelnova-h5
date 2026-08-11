@@ -5,7 +5,7 @@ import { upsertUserProfile } from '~/server/utils/user-profile';
 interface PayPalAccessToken { access_token: string }
 interface PayPalLink { rel: string; href: string }
 interface PayPalOrderResponse { id: string; status: string; links?: PayPalLink[] }
-interface PayPalRefundResponse { id: string; status: 'PENDING' | 'COMPLETED' | 'CANCELLED'; amount?: { currency_code: string; value: string } }
+interface PayPalRefundResponse { id: string; status: string; amount?: { currency_code: string; value: string } }
 interface PayPalCaptureResponse {
   id: string;
   status: string;
@@ -19,7 +19,26 @@ interface PayPalCaptureResponse {
 
 interface OrderSnapshot {
   order_no: string; series_id: string; series_slug: string; series_title: string; user_id: string;
-  amount_cents: number; currency: string; status: string; paypal_order_id: string | null;
+  amount_cents: number; currency: string; status: string; paypal_order_id: string | null; capture_id: string | null;
+}
+
+interface RefundRequestRow {
+  id: string; order_no: string; paypal_refund_id: string | null; status: string;
+  entitlement_revoke_status: string;
+}
+
+export interface PayPalWebhookResource {
+  id?: string;
+  status?: string;
+  amount?: { currency_code?: string; value?: string };
+  seller_receivable_breakdown?: { paypal_fee?: { value?: string } };
+  supplementary_data?: { related_ids?: { order_id?: string; capture_id?: string; refund_id?: string } };
+}
+
+export interface PayPalWebhookEvent {
+  id: string;
+  event_type: string;
+  resource: PayPalWebhookResource;
 }
 
 const paypalRequestTimeoutMs = 10_000;
@@ -102,28 +121,144 @@ export const getPayPalOrderDetails = async (event: H3Event, paypalOrderId: strin
   });
 };
 
-export const refundPayPalCapture = async (event: H3Event, input: { captureId: string; requestId: string; amount: string }) => {
+export const refundPayPalCapture = async (event: H3Event, input: { captureId: string; requestId: string; amount: string; currency: string }) => {
   const { token, baseUrl } = await accessToken(event);
   return $fetch<PayPalRefundResponse>(`${baseUrl}/v2/payments/captures/${encodeURIComponent(input.captureId)}/refund`, {
     method: 'POST', timeout: paypalRequestTimeoutMs,
     headers: { Authorization: `Bearer ${token}`, 'PayPal-Request-Id': input.requestId, 'Content-Type': 'application/json' },
-    body: { amount: { currency_code: 'USD', value: input.amount } },
+    body: { amount: { currency_code: input.currency, value: input.amount } },
   });
 };
 
-export const applyVerifiedRefund = async (event: H3Event, input: { paypalRefundId: string; paypalOrderId?: string | null; captureId?: string | null; status: string }) => {
-  const order = await d1First<{ order_no: string; user_id: string; series_id: string }>(event,
-    `SELECT order_no, user_id, series_id FROM orders
-     WHERE (? IS NOT NULL AND paypal_order_id = ?) OR (? IS NOT NULL AND capture_id = ?) LIMIT 1`,
-  [input.paypalOrderId || null, input.paypalOrderId || null, input.captureId || null, input.captureId || null]);
+export const getPayPalRefundDetails = async (event: H3Event, paypalRefundId: string) => {
+  const { token, baseUrl } = await accessToken(event);
+  return $fetch<PayPalRefundResponse>(`${baseUrl}/v2/payments/refunds/${encodeURIComponent(paypalRefundId)}`, {
+    timeout: paypalRequestTimeoutMs,
+    headers: { Authorization: `Bearer ${token}` },
+  });
+};
+
+const localRefundStatus = (providerStatus: string) => {
+  const status = providerStatus.toUpperCase();
+  if (['COMPLETED', 'REFUNDED', 'REVERSED'].includes(status)) return 'completed' as const;
+  if (status === 'CANCELLED') return 'cancelled' as const;
+  if (['FAILED', 'DENIED'].includes(status)) return 'failed' as const;
+  return 'processing' as const;
+};
+
+export const recordRefundEvent = async (event: H3Event, input: {
+  id?: string;
+  refundRequestId: string;
+  orderNo: string;
+  eventType: string;
+  source: 'admin' | 'paypal_api' | 'paypal_webhook' | 'system';
+  actor: string;
+  fromStatus?: string | null;
+  toStatus: string;
+  paypalEventId?: string | null;
+  paypalRefundId?: string | null;
+  detail: string;
+}) => {
+  await d1Run(event, `INSERT OR IGNORE INTO refund_events
+    (id, refund_request_id, order_no, event_type, source, actor, from_status, to_status, paypal_event_id, paypal_refund_id, detail, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+    input.id || `refund_event_${crypto.randomUUID()}`, input.refundRequestId, input.orderNo,
+    input.eventType, input.source, input.actor, input.fromStatus || null, input.toStatus,
+    input.paypalEventId || null, input.paypalRefundId || null, input.detail, new Date().toISOString(),
+  ]);
+};
+
+export const applyVerifiedRefund = async (event: H3Event, input: {
+  paypalRefundId?: string | null;
+  paypalOrderId?: string | null;
+  captureId?: string | null;
+  status: string;
+  source?: 'admin' | 'paypal_api' | 'paypal_webhook' | 'system';
+  actor?: string;
+  paypalEventId?: string | null;
+  detail?: string;
+}) => {
+  let request = input.paypalRefundId
+    ? await d1First<RefundRequestRow>(event, 'SELECT id, order_no, paypal_refund_id, status, entitlement_revoke_status FROM refund_requests WHERE paypal_refund_id = ? LIMIT 1', [input.paypalRefundId])
+    : null;
+  let order = request
+    ? await d1First<OrderSnapshot>(event, 'SELECT * FROM orders WHERE order_no = ?', [request.order_no])
+    : null;
+  if (!order && (input.paypalOrderId || input.captureId)) {
+    order = await d1First<OrderSnapshot>(event, `SELECT * FROM orders
+      WHERE (? IS NOT NULL AND paypal_order_id = ?) OR (? IS NOT NULL AND capture_id = ?) LIMIT 1`, [
+      input.paypalOrderId || null, input.paypalOrderId || null, input.captureId || null, input.captureId || null,
+    ]);
+  }
   if (!order) throw createError({ statusCode: 404, statusMessage: 'Refund order not found' });
+
+  if (!request) {
+    request = await d1First<RefundRequestRow>(event, `SELECT id, order_no, paypal_refund_id, status, entitlement_revoke_status
+      FROM refund_requests WHERE order_no = ? ORDER BY created_at DESC LIMIT 1`, [order.order_no]);
+  }
   const now = new Date().toISOString();
-  const completed = ['COMPLETED', 'REFUNDED', 'REVERSED'].includes(input.status);
-  await d1Run(event, `UPDATE refund_requests SET paypal_refund_id = COALESCE(paypal_refund_id, ?), status = ?, error_message = NULL, updated_at = ?, completed_at = ?
-    WHERE order_no = ? AND status IN ('pending', 'processing', 'failed')`, [input.paypalRefundId, completed ? 'completed' : 'processing', now, completed ? now : null, order.order_no]);
-  await d1Run(event, 'UPDATE orders SET status = ?, note = ?, updated_at = ? WHERE order_no = ?', [completed ? 'refunded' : 'refunding', completed ? `PayPal refund ${input.paypalRefundId} completed` : `PayPal refund ${input.paypalRefundId} processing`, now, order.order_no]);
-  if (completed) await d1Run(event, "UPDATE entitlements SET status = 'revoked', revoked_at = ? WHERE user_id = ? AND series_id = ? AND status = 'granted'", [now, order.user_id, order.series_id]);
-  return { ...order, completed };
+  if (!request) {
+    const captureId = order.capture_id || input.captureId;
+    if (!captureId) throw createError({ statusCode: 409, statusMessage: 'Refund order has no Capture ID' });
+    const id = `refund_${input.paypalRefundId || order.order_no}`;
+    await d1Run(event, `INSERT INTO refund_requests
+      (id, order_no, capture_id, paypal_refund_id, amount_cents, currency, status, request_source, provider_status,
+       customer_service_result, entitlement_revoke_status, reason, requested_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', 'webhook', NULL, 'approved', 'pending', ?, ?, ?, ?)`, [
+      id, order.order_no, captureId, input.paypalRefundId || null,
+      order.amount_cents, order.currency, 'PayPal refund detected by verified webhook', input.actor || 'PayPal', now, now,
+    ]);
+    request = { id, order_no: order.order_no, paypal_refund_id: input.paypalRefundId || null, status: 'pending', entitlement_revoke_status: 'pending' };
+  }
+
+  const nextStatus = request.status === 'completed' ? 'completed' : localRefundStatus(input.status);
+  const paypalRefundId = request.paypal_refund_id || input.paypalRefundId || null;
+  let entitlementRevokeStatus = request.entitlement_revoke_status;
+  if (nextStatus === 'completed') {
+    const entitlement = await d1First<{ status: string }>(event, 'SELECT status FROM entitlements WHERE order_no = ? LIMIT 1', [order.order_no]);
+    if (entitlement?.status === 'granted') {
+      await d1Run(event, "UPDATE entitlements SET status = 'revoked', revoked_at = ? WHERE order_no = ? AND status = 'granted'", [now, order.order_no]);
+      entitlementRevokeStatus = 'revoked';
+    } else {
+      entitlementRevokeStatus = entitlement?.status === 'revoked' ? 'revoked' : 'not_applicable';
+    }
+  }
+
+  await d1Run(event, `UPDATE refund_requests SET paypal_refund_id = COALESCE(paypal_refund_id, ?), status = ?, provider_status = ?,
+    entitlement_revoke_status = ?, error_message = NULL, resolved_by = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN ? ELSE resolved_by END,
+    resolution_note = COALESCE(?, resolution_note), updated_at = ?, completed_at = CASE WHEN ? = 'completed' THEN COALESCE(completed_at, ?) ELSE completed_at END
+    WHERE id = ?`, [
+    input.paypalRefundId || null, nextStatus, input.status.toUpperCase(), entitlementRevokeStatus,
+    nextStatus, input.actor || 'PayPal', input.detail || null, now, nextStatus, now, request.id,
+  ]);
+
+  if (nextStatus === 'completed') {
+    await d1Run(event, "UPDATE orders SET status = 'refunded', note = ?, updated_at = ? WHERE order_no = ?", [
+      `Refund ${paypalRefundId || request.id} confirmed; entitlement ${entitlementRevokeStatus}`, now, order.order_no,
+    ]);
+  } else if (nextStatus === 'processing') {
+    await d1Run(event, "UPDATE orders SET status = 'refunding', note = ?, updated_at = ? WHERE order_no = ? AND status != 'refunded'", [
+      `Refund ${paypalRefundId || request.id} is ${input.status.toUpperCase()}`, now, order.order_no,
+    ]);
+  } else {
+    await d1Run(event, "UPDATE orders SET status = 'paid', note = ?, updated_at = ? WHERE order_no = ? AND status = 'refunding'", [
+      `Refund ${paypalRefundId || request.id} ${nextStatus}: ${input.status.toUpperCase()}`, now, order.order_no,
+    ]);
+  }
+
+  await recordRefundEvent(event, {
+    refundRequestId: request.id,
+    orderNo: order.order_no,
+    eventType: nextStatus === 'completed' ? 'refund_confirmed' : nextStatus === 'processing' ? 'provider_processing' : 'provider_failed',
+    source: input.source || 'system',
+    actor: input.actor || 'PayPal',
+    fromStatus: request.status,
+    toStatus: nextStatus,
+    paypalEventId: input.paypalEventId,
+    paypalRefundId,
+    detail: input.detail || `Provider status: ${input.status.toUpperCase()}; entitlement: ${entitlementRevokeStatus}`,
+  });
+  return { ...order, refundRequestId: request.id, paypalRefundId, status: nextStatus, completed: nextStatus === 'completed', entitlementRevokeStatus };
 };
 
 export const applyVerifiedCapture = async (event: H3Event, paypalOrderId: string, capture: PayPalCaptureResponse) => {
@@ -131,10 +266,20 @@ export const applyVerifiedCapture = async (event: H3Event, paypalOrderId: string
   if (!order) throw createError({ statusCode: 404, statusMessage: 'Local order not found' });
   const payerEmail = capture.payer?.email_address || capture.payment_source?.paypal?.email_address || null;
   const payerCountry = capture.payer?.address?.country_code || capture.payment_source?.paypal?.address?.country_code || null;
+  if (['refunding', 'refunded'].includes(order.status)) return order;
   if (order.status === 'paid') {
+    const now = new Date().toISOString();
+    await d1Run(event, `INSERT INTO entitlements (id, user_id, series_id, order_no, status, granted_at)
+      VALUES (?, ?, ?, ?, 'granted', ?) ON CONFLICT(user_id, series_id) DO NOTHING`,
+    [crypto.randomUUID(), order.user_id, order.series_id, order.order_no, now]);
     await upsertUserProfile(event, { userId: order.user_id, country: payerCountry, includeDevice: false });
     return order;
   }
+  if (!['pending', 'processing'].includes(order.status)) throw createError({
+    statusCode: 409,
+    statusMessage: 'Local order is no longer payable',
+    data: { code: 'ORDER_NOT_PAYABLE', orderNo: order.order_no, status: order.status },
+  });
   const payment = capture.purchase_units?.[0]?.payments?.captures?.[0];
   if (!payment || payment.status !== 'COMPLETED') throw createError({ statusCode: 409, statusMessage: 'PayPal capture is not completed' });
   const paidCents = Math.round(Number(payment.amount.value) * 100);
@@ -144,16 +289,62 @@ export const applyVerifiedCapture = async (event: H3Event, paypalOrderId: string
     throw createError({ statusCode: 409, statusMessage: 'Capture amount or currency mismatch' });
   }
   const feeCents = Math.round(Number(payment.seller_receivable_breakdown?.paypal_fee?.value || 0) * 100);
-  await d1Run(event, "UPDATE orders SET status = 'paid', capture_id = ?, fee_cents = ?, email = COALESCE(?, email), country = COALESCE(?, country), callback_at = ?, updated_at = ? WHERE order_no = ? AND status != 'paid'", [payment.id, feeCents, payerEmail, payerCountry, now, now, order.order_no]);
+  // Grant first so a concurrent checkout cannot slip into the gap between the
+  // open order becoming paid and its entitlement being visible.
   await d1Run(event, `INSERT INTO entitlements (id, user_id, series_id, order_no, status, granted_at)
     VALUES (?, ?, ?, ?, 'granted', ?) ON CONFLICT(user_id, series_id) DO UPDATE SET order_no = excluded.order_no, status = 'granted', granted_at = excluded.granted_at, revoked_at = NULL`,
   [crypto.randomUUID(), order.user_id, order.series_id, order.order_no, now]);
+  await d1Run(event, "UPDATE orders SET status = 'paid', capture_id = ?, fee_cents = ?, email = COALESCE(?, email), country = COALESCE(?, country), callback_at = ?, updated_at = ? WHERE order_no = ? AND status != 'paid'", [payment.id, feeCents, payerEmail, payerCountry, now, now, order.order_no]);
   await upsertUserProfile(event, {
     userId: order.user_id,
     country: payerCountry,
     includeDevice: false,
   });
   return order;
+};
+
+export const processVerifiedPayPalWebhook = async (event: H3Event, webhook: PayPalWebhookEvent) => {
+  const relatedIds = webhook.resource.supplementary_data?.related_ids;
+  const paypalOrderId = relatedIds?.order_id || null;
+  if (webhook.event_type === 'PAYMENT.CAPTURE.COMPLETED') {
+    if (!paypalOrderId) throw createError({ statusCode: 422, statusMessage: 'Capture webhook has no PayPal Order ID' });
+    await applyVerifiedCapture(event, paypalOrderId, {
+      id: paypalOrderId,
+      status: 'COMPLETED',
+      purchase_units: [{ payments: { captures: [webhook.resource as any] } }],
+    });
+    return true;
+  }
+
+  if (['PAYMENT.CAPTURE.REFUNDED', 'PAYMENT.CAPTURE.REVERSED'].includes(webhook.event_type)) {
+    await applyVerifiedRefund(event, {
+      paypalRefundId: relatedIds?.refund_id || null,
+      paypalOrderId,
+      captureId: webhook.resource.id || relatedIds?.capture_id || null,
+      status: webhook.event_type === 'PAYMENT.CAPTURE.REVERSED' ? 'REVERSED' : 'COMPLETED',
+      source: 'paypal_webhook',
+      actor: 'PayPal Webhook',
+      paypalEventId: webhook.id,
+      detail: `Verified ${webhook.event_type}`,
+    });
+    return true;
+  }
+
+  if (webhook.event_type.startsWith('PAYMENT.REFUND.')) {
+    const eventStatus = webhook.event_type.slice('PAYMENT.REFUND.'.length);
+    await applyVerifiedRefund(event, {
+      paypalRefundId: webhook.resource.id || null,
+      paypalOrderId,
+      captureId: relatedIds?.capture_id || null,
+      status: webhook.resource.status || eventStatus,
+      source: 'paypal_webhook',
+      actor: 'PayPal Webhook',
+      paypalEventId: webhook.id,
+      detail: `Verified ${webhook.event_type}`,
+    });
+    return true;
+  }
+  return false;
 };
 
 export const verifyPayPalWebhook = async (event: H3Event, webhookEvent: unknown) => {

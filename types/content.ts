@@ -72,6 +72,8 @@ export interface Order {
   amount: number;
   currency: 'USD';
   status: OrderStatus;
+  refundStatus?: 'pending' | 'processing' | 'completed' | 'failed' | 'rejected' | 'cancelled';
+  entitlementStatus?: 'pending' | 'granted' | 'revoked';
   createdAt: string;
   paypalOrderId?: string;
   approvalUrl?: string;

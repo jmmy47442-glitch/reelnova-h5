@@ -66,9 +66,11 @@ npx wrangler d1 execute reelnova-production --remote --file=./migrations/0007_me
 npx wrangler d1 execute reelnova-production --remote --file=./migrations/0008_order_idempotency.sql
 npx wrangler d1 execute reelnova-production --remote --file=./migrations/0009_refunds.sql
 npx wrangler d1 execute reelnova-production --remote --file=./migrations/0010_normalized_content_media.sql
+npx wrangler d1 execute reelnova-production --remote --file=./migrations/0011_refund_lifecycle.sql
+npx wrangler d1 execute reelnova-production --remote --file=./migrations/0012_checkout_deduplication.sql
 ```
 
-已有数据库按尚未执行的编号顺序补齐迁移。`0010` 会把旧 `home_config` 中的 `managed-series` 和 `taxonomy` JSON 拆到规范化表；旧分集没有真实媒体资源，因此迁移后必须上传原片并完成 Stream 转码才可重新上架。
+已有数据库按尚未执行的编号顺序补齐迁移。`0010` 会把旧 `home_config` 中的 `managed-series` 和 `taxonomy` JSON 拆到规范化表；旧分集没有真实媒体资源，因此迁移后必须上传原片并完成 Stream 转码才可重新上架。`0012` 会保留每个用户同剧中最适合续付的一笔订单，将其余历史待支付订单标记为已取消，然后增加并发唯一约束和价格/活动快照字段。
 
 For Cloudflare Pages or Workers, add a D1 binding with variable name `DB`. For local Node deployment, set the REST fallback variables shown in `.env.example`:
 
@@ -139,8 +141,10 @@ Subscribe at minimum to:
 - `PAYMENT.CAPTURE.COMPLETED`
 - `PAYMENT.CAPTURE.DENIED`
 - `PAYMENT.CAPTURE.REFUNDED`
+- `PAYMENT.CAPTURE.REVERSED`
+- `PAYMENT.REFUND.PENDING`, `PAYMENT.REFUND.COMPLETED`, `PAYMENT.REFUND.FAILED` and `PAYMENT.REFUND.CANCELLED` when available for the merchant account
 
-Copy PayPal's Webhook ID to `PAYPAL_WEBHOOK_ID`. The server verifies every webhook with PayPal before updating an order. Duplicate events are recorded once by `event_id`.
+Copy PayPal's Webhook ID to `PAYPAL_WEBHOOK_ID`. The server verifies every webhook with PayPal before updating an order. Duplicate events are recorded once by `event_id`; verified processing failures can be replayed from the admin connection page.
 
 ## 6. Verify
 

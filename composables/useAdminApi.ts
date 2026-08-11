@@ -16,13 +16,15 @@ export const useAdminApi = () => {
     updateUserStatus: (userId: string, status: PersistedUserStatus) => request<{ userId: string; status: PersistedUserStatus }>(`/admin/users/${encodeURIComponent(userId)}`, { method: 'PATCH', body: { status } }),
     releaseUserDevice: (userId: string) => request<{ userId: string; status: PersistedUserStatus }>(`/admin/users/${encodeURIComponent(userId)}/release-device`, { method: 'POST' }),
     grantUserEntitlement: (userId: string, seriesId: string, reason: string) => request<{ userId: string; seriesId: string; status: 'granted' }>(`/admin/users/${encodeURIComponent(userId)}/entitlements`, { method: 'POST', body: { seriesId, reason } }),
-    verifyOrder: (orderNo: string) => request<{ paypalStatus: string; captureStatus: string | null; synchronized: boolean }>(`/admin/orders/${orderNo}/verify`, { method: 'POST' }),
-    refundOrder: (orderNo: string, reason: string) => request<{ orderNo: string; paypalRefundId?: string; status: 'refunding' | 'refunded'; synchronized: boolean }>(`/admin/orders/${orderNo}/refund`, { method: 'POST', body: { reason } }),
+    verifyOrder: (orderNo: string) => request<{ paypalStatus: string; captureStatus: string | null; refundStatus: string | null; synchronized: boolean }>(`/admin/orders/${orderNo}/verify`, { method: 'POST' }),
+    refundOrder: (orderNo: string, reason: string, input: { method?: 'paypal_api' | 'manual' | 'reject'; providerStatus?: string; paypalRefundId?: string } = {}) => request<{ orderNo: string; paypalRefundId?: string; status: 'pending' | 'processing' | 'refunding' | 'refunded' | 'paid' | 'failed' | 'rejected'; synchronized: boolean }>(`/admin/orders/${orderNo}/refund`, { method: 'POST', body: { reason, ...input } }),
+    getRefund: (orderNo: string) => request<{ orderNo: string; requests: Array<Record<string, unknown>>; events: Array<Record<string, unknown>> }>(`/admin/orders/${orderNo}/refund`),
+    retryPayPalWebhook: (eventId: string) => request<{ eventId: string; status: 'processed' | 'ignored'; retryCount: number }>(`/admin/paypal/webhooks/${encodeURIComponent(eventId)}/retry`, { method: 'POST' }),
     getReconciliation: (days: number) => request<ReconciliationResponse>('/admin/reconciliation', { query: { days } }),
     getConnection: () => request<{
       checkedAt: string;
       cloudflare: { database: boolean; databaseError: string | null; mode: string; accountConfigured: boolean; databaseConfigured: boolean; apiTokenConfigured: boolean; mediaConfigured: boolean; mediaWorkerConfigured: boolean; streamConfigured: boolean; mediaSigningConfigured: boolean };
-      paypal: { connected: boolean; ready: boolean; error: string | null; environment: string; environmentValid: boolean; credentialsConfigured: boolean; browserClientConfigured: boolean; clientIdsMatch: boolean; webhookConfigured: boolean; lastWebhookAt: string | null };
+      paypal: { connected: boolean; ready: boolean; error: string | null; environment: string; environmentValid: boolean; credentialsConfigured: boolean; browserClientConfigured: boolean; clientIdsMatch: boolean; webhookConfigured: boolean; lastWebhookAt: string | null; failedWebhooks: Array<{ eventId: string; eventType: string; errorMessage: string | null; receivedAt: string; retryCount: number; replayable: boolean }> };
     }>('/admin/connection'),
     getHomeConfig: () => request<{ items: HomeSectionConfig[] }>('/admin/home-config'),
     saveHomeConfig: (items: HomeSectionConfig[]) => request<{ items: HomeSectionConfig[] }>('/admin/home-config', { method: 'PUT', body: { items } }),
