@@ -1,5 +1,4 @@
-import type { ApiEnvelope, HomeResponse, LibraryResponse, Order, Series } from '~/types/content';
-import type { PlaybackEventInput } from '~/types/admin';
+import type { ApiEnvelope, HomeResponse, LibraryResponse, Order, PlaybackEventInput, Series, WatchHistoryItem } from '~/types/content';
 
 export const useContentApi = () => {
   const config = useRuntimeConfig();
@@ -17,7 +16,7 @@ export const useContentApi = () => {
       request<{ authorized: boolean; signedUrl?: string; expiresAt?: string; trackingToken: string; resumePositionSeconds?: number; resumeDurationSeconds?: number }>('/playback', {
         query: { seriesId, episodeNo, sessionId },
       }),
-    recordPlayback: (event: PlaybackEventInput) => request<{ accepted: true }>('/events/playback', { method: 'POST', body: event }),
+    recordPlayback: (event: PlaybackEventInput, keepalive = false) => request<{ accepted: true; positionSeconds: number; durationSeconds: number; lastWatchedAt: string }>('/me/watch-history', { method: 'POST', body: event, keepalive }),
     createOrder: (seriesId: string, idempotencyKey?: string) => request<Order>('/orders', { method: 'POST', body: { seriesId, idempotencyKey } }),
     capturePayPalOrder: (paypalOrderId: string) => request<{ orderNo: string; status: 'paid' }>('/paypal/capture', { method: 'POST', body: { paypalOrderId } }),
     getMyOrders: () => request<Order[]>('/me/orders'),
@@ -26,6 +25,7 @@ export const useContentApi = () => {
       method: 'POST',
       body: { lookup },
     }),
+    getWatchHistory: () => request<WatchHistoryItem[]>('/me/watch-history'),
     clearWatchHistory: () => request<{ cleared: true }>('/me/watch-history', { method: 'DELETE' }),
   };
 };

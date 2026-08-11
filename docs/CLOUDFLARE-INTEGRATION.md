@@ -163,7 +163,9 @@ Visit `/admin/system`. D1, PayPal and media delivery are checked independently. 
 3. Exactly one entitlement is granted.
 4. The order appears in `/admin/orders`.
 5. Starting an authorized episode increments the D1 playback count once for that session.
-6. A stopped multipart upload resumes from locally recorded completed parts.
+6. Heartbeats update `watch_history`, and a second device resumes the same episode at the stored second.
+7. Clearing watch history empties Library/Profile progress without removing `playback_events` analytics.
+8. A stopped multipart upload resumes from locally recorded completed parts.
 7. A ready Stream callback updates the episode to `ready`, generates a thumbnail, and enables publish preview.
 
 The admin user page reads `GET /api/admin/users` from D1, the administrator page reads `GET /api/admin/administrators`, and the audit page reads `GET /api/admin/audit`. Run all migrations in numeric order before opening these pages; otherwise the UI will show the explicit database migration error state. Registration creates the `users` row, and authenticated playback or order activity refreshes its country, device and last-seen fields. Verified PayPal captures update order payer details and the user's country without replacing the login email. Administrator credentials and account state use `admin_accounts`; sessions are signed HttpOnly cookies and are revalidated against that table on every protected request.

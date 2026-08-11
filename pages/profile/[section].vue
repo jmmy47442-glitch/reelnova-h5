@@ -25,7 +25,7 @@ if (!(section in pageConfig)) throw createError({ statusCode: 404, statusMessage
 const config = pageConfig[section as keyof typeof pageConfig];
 useHead({ title: `${config.title} - ReelNova` });
 
-const needsLibrary = section === 'purchases' || section === 'history';
+const needsLibrary = section === 'purchases';
 const needsOrders = section === 'orders';
 const { data: library, status: libraryStatus, error: libraryError, refresh: refreshLibrary } = await useAsyncData(
   `profile-library-${section}`,
@@ -35,9 +35,13 @@ const { data: orders, status: ordersStatus, error: ordersError, refresh: refresh
   'profile-orders',
   () => needsOrders ? api.getMyOrders() : Promise.resolve(null),
 );
+const { data: history, status: historyStatus, error: historyError, refresh: refreshHistory } = await useAsyncData(
+  'profile-watch-history',
+  () => section === 'history' ? api.getWatchHistory() : Promise.resolve(null),
+);
 
 const selectedOrder = ref('');
-const hiddenHistory = ref<string[]>([]);
+const clearingHistory = ref(false);
 const language = ref('en');
 const savedLanguage = ref('en');
 const notice = ref('');
@@ -74,13 +78,14 @@ const filteredFaqs = computed(() => {
   const query = faqQuery.value.trim().toLowerCase();
   return query ? faqs.filter((item) => `${item.question} ${item.answer}`.toLowerCase().includes(query)) : faqs;
 });
-const visibleHistory = computed(() => (library.value?.continueWatching || []).filter((item) => !hiddenHistory.value.includes(item.id)));
+const visibleHistory = computed(() => history.value || []);
 
 const orderLabels: Record<OrderStatus, string> = {
   pending: 'Pending', processing: 'Processing', paid: 'Paid', failed: 'Failed', cancelled: 'Cancelled',
   refunding: 'Refund pending', refunded: 'Refunded', risk_review: 'Under review',
 };
 const formatDate = (value: string) => new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(value));
+const formatHistoryDate = (value: string) => new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(value));
 const formatMoney = (amount: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
 
 const showNotice = (message: string) => {
@@ -101,14 +106,15 @@ const savePrivacy = () => {
 };
 
 const clearHistory = async () => {
+  if (clearingHistory.value) return;
+  clearingHistory.value = true;
   try {
     await api.clearWatchHistory();
-    hiddenHistory.value = (library.value?.continueWatching || []).map((item) => item.id);
-    await refreshLibrary();
+    history.value = [];
     showNotice('Watch history cleared from your account');
   } catch {
     showNotice('History could not be cleared. Try again.');
-  }
+  } finally { clearingHistory.value = false; }
 };
 
 const downloadData = () => {
@@ -190,14 +196,14 @@ onBeforeUnmount(() => { if (noticeTimer.value) clearTimeout(noticeTimer.value); 
       </template>
 
       <template v-else-if="section === 'history'">
-        <PageSkeleton v-if="libraryStatus === 'pending'" />
-        <EmptyState v-else-if="libraryError" title="History unavailable" action="Try again" @action="refreshLibrary" />
+        <PageSkeleton v-if="historyStatus === 'pending'" />
+        <EmptyState v-else-if="historyError" title="History unavailable" action="Try again" @action="refreshHistory" />
         <template v-else-if="visibleHistory.length">
-          <div class="account-section-label"><span>Latest activity</span><button type="button" @click="clearHistory"><Trash2 :size="14" /> Clear history</button></div>
+          <div class="account-section-label"><span>Latest activity</span><button type="button" :disabled="clearingHistory" @click="clearHistory"><Trash2 :size="14" /> {{ clearingHistory ? 'Clearing…' : 'Clear history' }}</button></div>
           <div class="account-media-list">
             <NuxtLink v-for="series in visibleHistory" :key="series.id" :to="`/watch/${series.slug}/${series.currentEpisode}`" class="account-media-row account-media-row--wide">
               <img :src="series.coverUrl" alt="" />
-              <div><span class="account-progress-label"><Clock3 :size="12" /> Episode {{ series.currentEpisode }} of {{ series.episodeCount }}</span><h2>{{ series.title }}</h2><div class="progress-track"><span :style="{ width: `${series.progress || 0}%` }" /></div><p>{{ series.progress || 0 }}% of this episode watched</p></div>
+              <div><span class="account-progress-label"><Clock3 :size="12" /> Episode {{ series.currentEpisode }} of {{ series.episodeCount }}</span><h2>{{ series.title }}</h2><div class="progress-track"><span :style="{ width: `${series.progress}%` }" /></div><p>{{ series.progress }}% watched · {{ formatHistoryDate(series.lastWatchedAt) }}</p></div>
               <span class="account-row-action"><Play :size="17" fill="currentColor" /></span>
             </NuxtLink>
           </div>

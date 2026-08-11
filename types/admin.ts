@@ -261,15 +261,3 @@ export interface ReconciliationResponse {
   generatedAt: string;
   rows: ReconciliationRow[];
 }
-
-export interface PlaybackEventInput {
-  eventId: string;
-  sessionId: string;
-  seriesId: string;
-  seriesTitle: string;
-  episodeNo: number;
-  eventType: 'start' | 'heartbeat' | 'complete';
-  positionSeconds: number;
-  durationSeconds: number;
-  authorizationToken: string;
-}

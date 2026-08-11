@@ -34,6 +34,31 @@ export interface Series {
   progress?: number;
   currentEpisode?: number;
   purchased?: boolean;
+  positionSeconds?: number;
+  durationSeconds?: number;
+  lastWatchedAt?: string;
+  completed?: boolean;
+}
+
+export interface WatchHistoryItem extends Series {
+  progress: number;
+  currentEpisode: number;
+  positionSeconds: number;
+  durationSeconds: number;
+  lastWatchedAt: string;
+  completed: boolean;
+}
+
+export interface PlaybackEventInput {
+  eventId: string;
+  sessionId: string;
+  seriesId: string;
+  seriesTitle: string;
+  episodeNo: number;
+  eventType: 'start' | 'heartbeat' | 'complete';
+  positionSeconds: number;
+  durationSeconds: number;
+  authorizationToken: string;
 }
 
 export interface HomeSection {

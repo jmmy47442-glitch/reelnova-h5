@@ -194,6 +194,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .account-section-label { display: flex; min-height: 28px; margin-bottom: 10px; color: #d8d4db; align-items: center; justify-content: space-between; gap: 12px; font-size: 10px; font-weight: 800; text-transform: uppercase; }
 .account-section-label small { color: #686570; font-size: 8px; font-weight: 700; text-transform: none; }
 .account-section-label button { display: inline-flex; min-height: 36px; padding: 0; border: 0; background: transparent; color: var(--text-muted); align-items: center; gap: 5px; font-size: 9px; font-weight: 700; text-transform: none; cursor: pointer; }
+.account-section-label button:disabled { opacity: .5; cursor: wait; }
 .account-section-label--spaced { margin-top: 28px; }
 .account-media-list { border-top: 1px solid var(--line); }
 .account-media-row { display: grid; min-height: 116px; padding: 12px 0; border-bottom: 1px solid var(--line); grid-template-columns: 58px minmax(0, 1fr) 38px; align-items: center; gap: 12px; }

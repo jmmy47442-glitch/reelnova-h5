@@ -27,9 +27,10 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | GET | `/api/explore` | Search, filter and sort series |
 | GET | `/api/series/{slug}` | Series metadata, pricing and episode entitlement states |
 | GET | `/api/playback?seriesId=&episodeNo=` | Server-authorized short-lived HLS URL |
-| POST | `/api/events/playback` | Persist authorized start, heartbeat and completion progress |
-| GET | `/api/me/library` | Purchases and watch progress for the signed-in user |
-| DELETE | `/api/me/watch-history` | Clear account watch history |
+| POST | `/api/events/playback` | Compatibility endpoint for authorized playback events |
+| GET/POST | `/api/me/watch-history` | Read history or persist an authorized start, heartbeat or completion snapshot |
+| GET | `/api/me/library` | Purchases and account-level watch progress for the signed-in user |
+| DELETE | `/api/me/watch-history` | Clear account watch history without deleting playback analytics |
 | POST | `/api/orders` | Create or reuse an idempotent local and PayPal order |
 | GET | `/api/orders/{orderNo}` | Poll server-confirmed order state |
 | POST | `/api/orders/restore` | Restore a paid order matched to the signed-in account |
@@ -58,6 +59,8 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 Episode uploads use 10 MiB R2 multipart chunks. The browser may resume an unexpired upload session, while R2 and Stream credentials remain in the media Worker. A series cannot be published until every non-deleted episode has a `ready` media asset. Cloudflare Stream reports asynchronous progress through `POST /api/media/stream-webhook`; episode list polling also reconciles missed callbacks.
 
 Order creation must use a server-side price snapshot. Playback requests must validate the user session and entitlement every time. PayPal approval in the browser is not proof of payment; only a verified capture or webhook may issue entitlement.
+
+Playback clients send a `start` when video playback begins, a `heartbeat` every 15 seconds and on pause/seek/page exit, and `complete` when the episode ends. Each write appends the authorized event to `playback_events` and updates one account-level snapshot in `watch_history`. Resume playback, Library and Profile all read that snapshot; clearing history removes only the snapshot so aggregate playback reporting remains intact.
 
 `POST /api/orders` accepts an optional client request `idempotencyKey`, while the server also derives a stable purchase key from the authenticated user and series. A granted entitlement returns `status: "paid"` and `entitlementStatus: "granted"`; an existing `pending` or `processing` checkout returns its original order and PayPal approval details. The database permits only one open checkout per user and series, and the captured price version, amount and activity fields are immutable.
 

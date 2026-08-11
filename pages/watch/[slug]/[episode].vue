@@ -27,16 +27,14 @@ const renewing = ref(false);
 const resumePosition = ref(0);
 let renewTimer: ReturnType<typeof setTimeout> | undefined;
 let hls: Hls | undefined;
+let recordQueue: Promise<void> = Promise.resolve();
 
 const { data: series, status } = await useAsyncData(`watch-${route.params.slug}`, () => api.getSeries(String(route.params.slug)));
 const currentEpisode = computed(() => series.value?.episodes.find((episode) => episode.episodeNo === episodeNo.value));
 const canPlay = computed(() => Boolean(currentEpisode.value?.isUnlocked || currentEpisode.value?.isFree || locallyUnlocked.value));
 
 const session = () => {
-  if (!sessionId.value) {
-    sessionId.value = sessionStorage.getItem('rn_playback_session') || crypto.randomUUID();
-    sessionStorage.setItem('rn_playback_session', sessionId.value);
-  }
+  if (!sessionId.value) sessionId.value = crypto.randomUUID();
   return sessionId.value;
 };
 const formatTime = (value: number) => {
@@ -45,12 +43,23 @@ const formatTime = (value: number) => {
 };
 const durationLabel = computed(() => formatTime(durationSeconds.value) !== '0:00' ? formatTime(durationSeconds.value) : currentEpisode.value?.duration || '0:00');
 
-const record = async (eventType: 'start' | 'heartbeat' | 'complete') => {
+const snapshotPlayback = () => {
+  if (!video.value) return;
+  currentTime.value = Number.isFinite(video.value.currentTime) ? Math.max(0, video.value.currentTime) : currentTime.value;
+  durationSeconds.value = Number.isFinite(video.value.duration) ? Math.max(0, video.value.duration) : durationSeconds.value;
+  progress.value = durationSeconds.value ? Math.min(100, currentTime.value / durationSeconds.value * 100) : 0;
+};
+const record = (eventType: 'start' | 'heartbeat' | 'complete', keepalive = false) => {
   if (!series.value || !currentEpisode.value || !trackingToken.value) return;
-  await api.recordPlayback({
+  snapshotPlayback();
+  const payload = {
     eventId: crypto.randomUUID(), sessionId: session(), seriesId: series.value.id, seriesTitle: series.value.title,
     episodeNo: currentEpisode.value.episodeNo, eventType, positionSeconds: currentTime.value, durationSeconds: durationSeconds.value, authorizationToken: trackingToken.value,
-  }).catch(() => undefined);
+  };
+  const submit = () => api.recordPlayback(payload, keepalive).then(() => undefined).catch(() => undefined);
+  if (keepalive) return submit();
+  recordQueue = recordQueue.then(submit, submit);
+  return recordQueue;
 };
 
 const scheduleRenewal = () => {
@@ -65,6 +74,7 @@ const loadSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
   const restore = () => {
     if (!video.value) return;
     if (restoreAt > 0 && restoreAt < (video.value.duration || Infinity) - 3) video.value.currentTime = restoreAt;
+    snapshotPlayback();
     if (shouldPlay) void video.value.play().catch(() => undefined);
     video.value.removeEventListener('loadedmetadata', restore);
   };
@@ -96,7 +106,12 @@ const authorize = async (renew = false) => {
     signedUrl.value = authorization.signedUrl;
     trackingToken.value = authorization.trackingToken;
     expiresAt.value = Date.parse(authorization.expiresAt || '') || Date.now() + 9 * 60_000;
-    if (!renew && !started.value) resumePosition.value = authorization.resumePositionSeconds || 0;
+    if (!renew && !started.value) {
+      resumePosition.value = authorization.resumePositionSeconds || 0;
+      currentTime.value = resumePosition.value;
+      durationSeconds.value = authorization.resumeDurationSeconds || durationSeconds.value;
+      progress.value = durationSeconds.value ? Math.min(100, currentTime.value / durationSeconds.value * 100) : 0;
+    }
     if (video.value) loadSource(authorization.signedUrl, !renew && resumePosition.value > 0 ? resumePosition.value : oldTime, renew && wasPlaying);
     playbackError.value = '';
     scheduleRenewal();
@@ -115,8 +130,15 @@ const togglePlayback = async () => {
     else video.value.pause();
   } catch { playbackError.value = 'Tap retry to start this episode.'; }
 };
-const onPlay = () => { isPlaying.value = true; if (!started.value) { started.value = true; void record('start'); } };
-const onPause = () => { isPlaying.value = false; void record('heartbeat'); };
+const onPlay = () => {
+  isPlaying.value = true;
+  snapshotPlayback();
+  if (!started.value) { started.value = true; lastHeartbeat.value = Date.now(); void record('start'); }
+};
+const onPause = () => {
+  isPlaying.value = false;
+  if (started.value && !video.value?.ended) void record('heartbeat');
+};
 const onTimeUpdate = () => {
   if (!video.value) return;
   currentTime.value = video.value.currentTime;
@@ -124,9 +146,16 @@ const onTimeUpdate = () => {
   progress.value = durationSeconds.value ? Math.min(100, currentTime.value / durationSeconds.value * 100) : 0;
   if (isPlaying.value && Date.now() - lastHeartbeat.value > 15_000) { lastHeartbeat.value = Date.now(); void record('heartbeat'); }
 };
-const onLoadedMetadata = () => { if (video.value && Number.isFinite(video.value.duration)) durationSeconds.value = video.value.duration; };
-const onEnded = async () => { isPlaying.value = false; progress.value = 100; await record('complete'); };
-const seek = (event: Event) => { const value = Number((event.target as HTMLInputElement).value); if (video.value && durationSeconds.value) video.value.currentTime = value / 100 * durationSeconds.value; };
+const onLoadedMetadata = () => { snapshotPlayback(); };
+const onEnded = async () => { isPlaying.value = false; snapshotPlayback(); progress.value = 100; await record('complete'); };
+const seek = (event: Event) => {
+  const value = Number((event.target as HTMLInputElement).value);
+  if (video.value && durationSeconds.value) {
+    video.value.currentTime = value / 100 * durationSeconds.value;
+    snapshotPlayback();
+  }
+};
+const persistSeek = () => { if (started.value) void record('heartbeat'); };
 const toggleMute = () => { muted.value = !muted.value; if (video.value) video.value.muted = muted.value; };
 const cycleSpeed = () => { const values = [1, 1.25, 1.5, 2]; speed.value = values[(values.indexOf(speed.value) + 1) % values.length] || 1; if (video.value) video.value.playbackRate = speed.value; };
 const fullscreen = () => { if (video.value?.requestFullscreen) void video.value.requestFullscreen(); };
@@ -134,13 +163,25 @@ const nextEpisode = () => {
   if (!series.value || episodeNo.value >= series.value.episodeCount) return;
   const next = series.value.episodes[episodeNo.value];
   if (!next?.isUnlocked && !next?.isFree && !locallyUnlocked.value) { showUnlock.value = true; return; }
-  void record('heartbeat');
+  if (!video.value?.ended) void record('heartbeat');
   navigateTo(`/watch/${series.value.slug}/${episodeNo.value + 1}`);
 };
 const retry = async () => { playbackError.value = ''; await authorize(); await togglePlayback(); };
 const share = async () => { await navigator.clipboard?.writeText(window.location.href).catch(() => undefined); };
+const persistOnExit = () => { if (started.value && !video.value?.ended) void record('heartbeat', true); };
+const persistWhenHidden = () => { if (document.visibilityState === 'hidden') persistOnExit(); };
 
-onBeforeUnmount(() => { if (renewTimer) clearTimeout(renewTimer); hls?.destroy(); void record('heartbeat'); });
+onMounted(() => {
+  window.addEventListener('pagehide', persistOnExit);
+  document.addEventListener('visibilitychange', persistWhenHidden);
+});
+onBeforeUnmount(() => {
+  if (renewTimer) clearTimeout(renewTimer);
+  window.removeEventListener('pagehide', persistOnExit);
+  document.removeEventListener('visibilitychange', persistWhenHidden);
+  if (started.value && !video.value?.ended) void record('heartbeat', true);
+  hls?.destroy();
+});
 </script>
 
 <template>
@@ -152,7 +193,7 @@ onBeforeUnmount(() => { if (renewTimer) clearTimeout(renewTimer); hls?.destroy()
     <button v-if="canPlay && !playbackError" class="watch-center" type="button" :aria-label="isPlaying ? 'Pause' : 'Play'" @click.stop="togglePlayback"><Pause v-if="isPlaying" :size="32" fill="currentColor" /><Play v-else :size="34" fill="currentColor" /></button>
     <section v-if="!canPlay" class="watch-lock" @click.stop><span><LockKeyhole :size="28" /></span><p>Episode {{ episodeNo }} is locked</p><h1>Keep the story going</h1><button class="button button--primary button--wide" type="button" @click="showUnlock = true">Unlock full series</button><button class="watch-lock__secondary" type="button" @click="$router.back()">Choose another episode</button></section>
     <section v-if="playbackError" class="watch-lock" @click.stop><span><RotateCcw :size="27" /></span><h1>Connection interrupted</h1><p>{{ playbackError }}</p><button class="button button--primary" type="button" @click="retry">Retry playback</button></section>
-    <Transition name="fade"><div v-if="showControls && canPlay" class="watch-bottom" @click.stop><input class="watch-progress-input" type="range" min="0" max="100" step="0.1" :value="progress" aria-label="Seek" @input="seek" /><div class="watch-time"><span>{{ formatTime(currentTime) }}</span><span>{{ durationLabel }}</span></div><div class="watch-controls"><button type="button" :aria-label="muted ? 'Unmute' : 'Mute'" @click="toggleMute"><VolumeX v-if="muted" :size="21" /><Volume2 v-else :size="21" /></button><button type="button" aria-label="Captions"><Captions :size="22" /><span>CC</span></button><button type="button" aria-label="Playback speed" @click="cycleSpeed"><Gauge :size="22" /><span>{{ speed }}×</span></button><button type="button" aria-label="Fullscreen" @click="fullscreen"><Maximize2 :size="21" /></button><button type="button" aria-label="Next episode" @click="nextEpisode"><SkipForward :size="22" /><span>Next</span></button></div><button v-if="episodeNo < series.episodeCount" class="up-next" type="button" @click="nextEpisode"><span>UP NEXT</span><strong>Episode {{ episodeNo + 1 }}</strong><ChevronRight :size="20" /></button></div></Transition>
+    <Transition name="fade"><div v-if="showControls && canPlay" class="watch-bottom" @click.stop><input class="watch-progress-input" type="range" min="0" max="100" step="0.1" :value="progress" aria-label="Seek" @input="seek" @change="persistSeek" /><div class="watch-time"><span>{{ formatTime(currentTime) }}</span><span>{{ durationLabel }}</span></div><div class="watch-controls"><button type="button" :aria-label="muted ? 'Unmute' : 'Mute'" @click="toggleMute"><VolumeX v-if="muted" :size="21" /><Volume2 v-else :size="21" /></button><button type="button" aria-label="Captions"><Captions :size="22" /><span>CC</span></button><button type="button" aria-label="Playback speed" @click="cycleSpeed"><Gauge :size="22" /><span>{{ speed }}×</span></button><button type="button" aria-label="Fullscreen" @click="fullscreen"><Maximize2 :size="21" /></button><button type="button" aria-label="Next episode" @click="nextEpisode"><SkipForward :size="22" /><span>Next</span></button></div><button v-if="episodeNo < series.episodeCount" class="up-next" type="button" @click="nextEpisode"><span>UP NEXT</span><strong>Episode {{ episodeNo + 1 }}</strong><ChevronRight :size="20" /></button></div></Transition>
     <UnlockSheet :series="series" :open="showUnlock" @close="showUnlock = false" @unlocked="locallyUnlocked = true; showUnlock = false" />
   </main>
   <main v-else class="watch-page watch-page--loading"><div class="skeleton skeleton--poster" /><span>{{ status === 'pending' ? 'Preparing episode…' : 'Episode unavailable' }}</span></main>

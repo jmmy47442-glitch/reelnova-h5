@@ -1,26 +1,15 @@
 import { ok } from '~/server/utils/response';
-import { d1All } from '~/server/utils/cloudflare-d1';
 import { hydrateSeriesRuntimeData } from '~/server/utils/series-runtime';
 import { getPublicSeries } from '~/server/utils/managed-content';
 import { getUserSession } from '~/server/utils/user-auth';
-
-interface ProgressRow { series_id: string; episode_no: number; position_seconds: number; duration_seconds: number }
 
 export default defineEventHandler(async (event) => {
   const seriesList = await getPublicSeries(event);
   const userSession = await getUserSession(event);
   if (!userSession) throw createError({ statusCode: 401, statusMessage: 'Login required' });
   const hydrated = await hydrateSeriesRuntimeData(event, seriesList);
-  const progressRows = await d1All<ProgressRow>(event, `
-    SELECT p.series_id, p.episode_no, p.position_seconds, p.duration_seconds FROM playback_events p
-    INNER JOIN (SELECT series_id, MAX(created_at) AS latest FROM playback_events WHERE user_id = ? GROUP BY series_id) latest
-      ON latest.series_id = p.series_id AND latest.latest = p.created_at
-    WHERE p.user_id = ?
-  `, [userSession.userId, userSession.userId]);
-  const progress = new Map(progressRows.map((row) => [row.series_id, row]));
-  const withProgress = hydrated.map((series) => {
-    const row = progress.get(series.id);
-    return row ? { ...series, currentEpisode: Number(row.episode_no), progress: row.duration_seconds ? Math.min(100, Math.round(Number(row.position_seconds) / Number(row.duration_seconds) * 100)) : 0 } : series;
-  });
-  return ok({ continueWatching: withProgress.filter((series) => series.currentEpisode), purchased: withProgress.filter((series) => series.purchased) });
+  const continueWatching = hydrated
+    .filter((series) => series.currentEpisode && series.lastWatchedAt)
+    .sort((left, right) => String(right.lastWatchedAt).localeCompare(String(left.lastWatchedAt)));
+  return ok({ continueWatching, purchased: hydrated.filter((series) => series.purchased) });
 });

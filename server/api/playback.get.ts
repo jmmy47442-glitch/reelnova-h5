@@ -41,9 +41,8 @@ export default defineEventHandler(async (event) => {
     if (!entitlement) throw createError({ statusCode: 403, statusMessage: 'Entitlement required' });
   }
   const lastProgress = await d1First<{ position_seconds: number; duration_seconds: number }>(event,
-    `SELECT position_seconds, duration_seconds FROM playback_events
-     WHERE user_id = ? AND series_id = ? AND episode_no = ? AND event_type IN ('heartbeat', 'complete')
-     ORDER BY created_at DESC LIMIT 1`, [userId, series.id, episode.episodeNo]);
+    `SELECT position_seconds, duration_seconds FROM watch_history
+     WHERE user_id = ? AND series_id = ? AND episode_no = ? LIMIT 1`, [userId, series.id, episode.episodeNo]);
   const config = useRuntimeConfig(event);
   const streamAsset = await d1First<{ stream_uid: string }>(event, `SELECT a.stream_uid FROM media_assets a
     JOIN episodes e ON e.active_media_asset_id = a.id
