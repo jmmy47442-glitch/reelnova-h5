@@ -31,6 +31,10 @@ export default defineEventHandler(async (event) => {
     ) WHERE series_id = ? AND status = 'granted' LIMIT 1`, [userId, userId, series.id]);
     if (!entitlement) throw createError({ statusCode: 403, statusMessage: 'Entitlement required' });
   }
+  const lastProgress = await d1First<{ position_seconds: number; duration_seconds: number }>(event,
+    `SELECT position_seconds, duration_seconds FROM playback_events
+     WHERE user_id = ? AND series_id = ? AND episode_no = ? AND event_type IN ('heartbeat', 'complete')
+     ORDER BY created_at DESC LIMIT 1`, [userId, series.id, episode.episodeNo]);
   const config = useRuntimeConfig(event);
   const mediaBaseUrl = String(config.cloudflareMediaBaseUrl || '').replace(/\/$/, '');
   const signingSecret = String(config.cloudflareMediaSigningSecret || '');
@@ -39,5 +43,5 @@ export default defineEventHandler(async (event) => {
   const path = `/hls/${series.id}/${episode.episodeNo}/master.m3u8`;
   const signature = await sign(`${path}:${userId}:${expires}`, signingSecret);
   const trackingSignature = await sign(`track:${userId}:${sessionId}:${series.id}:${episode.episodeNo}:${expires}`, signingSecret);
-  return ok({ authorized: true, signedUrl: `${mediaBaseUrl}${path}?user=${encodeURIComponent(userId)}&expires=${expires}&signature=${signature}`, expiresAt: new Date(expires * 1000).toISOString(), trackingToken: `${expires}.${trackingSignature}` });
+  return ok({ authorized: true, signedUrl: `${mediaBaseUrl}${path}?user=${encodeURIComponent(userId)}&expires=${expires}&signature=${signature}`, expiresAt: new Date(expires * 1000).toISOString(), trackingToken: `${expires}.${trackingSignature}`, resumePositionSeconds: Math.max(0, Number(lastProgress?.position_seconds || 0)), resumeDurationSeconds: Math.max(0, Number(lastProgress?.duration_seconds || 0)) });
 });

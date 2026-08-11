@@ -9,13 +9,72 @@ const api = useContentApi();
 const { formatPrice } = useFormatters();
 const route = useRoute();
 const { isAuthenticated } = useUserAuth();
+const runtime = useRuntimeConfig();
 const status = ref<OrderStatus>('pending');
 const error = ref('');
+const paypalContainer = ref<HTMLElement | null>(null);
+const paypalRendered = ref(false);
+const checkoutKey = ref('');
+
+const paypalWindow = () => (window as any);
+
+const loadPayPalSdk = async () => {
+  if (paypalWindow().paypal) return paypalWindow().paypal;
+  const clientId = String(runtime.public.paypalClientId || '');
+  if (!clientId) return undefined;
+  await new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>('script[data-reelnova-paypal]');
+    if (existing) { existing.addEventListener('load', () => resolve(), { once: true }); existing.addEventListener('error', () => reject(new Error('PayPal SDK failed')), { once: true }); return; }
+    const script = document.createElement('script');
+    script.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(clientId)}&currency=USD&intent=capture&components=buttons`;
+    script.async = true;
+    script.dataset.reelnovaPaypal = 'true';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('PayPal SDK failed'));
+    document.head.appendChild(script);
+  });
+  return paypalWindow().paypal;
+};
+
+const completePayment = async (paypalOrderId: string) => {
+  status.value = 'processing';
+  await api.capturePayPalOrder(paypalOrderId);
+  status.value = 'paid';
+  window.setTimeout(() => emit('unlocked'), 900);
+};
+
+const renderPayPal = async () => {
+  if (!props.open || !isAuthenticated.value || paypalRendered.value || !paypalContainer.value) return;
+  try {
+    const paypal = await loadPayPalSdk();
+    if (!paypal || !paypalContainer.value) return;
+    paypalRendered.value = true;
+    await paypal.Buttons({
+      style: { layout: 'vertical', color: 'gold', shape: 'rect', label: 'paypal', height: 48 },
+      createOrder: async () => {
+        checkoutKey.value ||= crypto.randomUUID();
+        const order = await api.createOrder(props.series.id, checkoutKey.value);
+        if (order.status === 'paid') { status.value = 'paid'; window.setTimeout(() => emit('unlocked'), 500); return order.paypalOrderId || ''; }
+        if (!order.paypalOrderId) throw new Error('PayPal order missing');
+        return order.paypalOrderId;
+      },
+      onApprove: async ({ orderID }: { orderID: string }) => completePayment(orderID),
+      onCancel: () => { status.value = 'cancelled'; error.value = 'Payment was cancelled. Your order is saved and can be resumed.'; },
+      onError: () => { status.value = 'failed'; error.value = 'PayPal could not complete checkout. Try again or contact support.'; },
+    }).render(paypalContainer.value);
+  } catch {
+    paypalRendered.value = false;
+    error.value = 'PayPal could not be loaded. Use secure checkout below or try again.';
+  }
+};
 
 watch(() => props.open, (isOpen) => {
   if (isOpen) {
     status.value = 'pending';
     error.value = '';
+    checkoutKey.value = '';
+    paypalRendered.value = false;
+    void nextTick(renderPayPal);
   }
 });
 
@@ -29,7 +88,9 @@ const checkout = async () => {
   status.value = 'processing';
   error.value = '';
   try {
-    const order = await api.createOrder(props.series.id);
+    checkoutKey.value ||= crypto.randomUUID();
+    const order = await api.createOrder(props.series.id, checkoutKey.value);
+    if (order.status === 'paid') { status.value = 'paid'; emit('unlocked'); return; }
     if (!order.approvalUrl) throw new Error('PayPal approval URL missing');
     window.location.assign(order.approvalUrl);
   } catch {
@@ -37,6 +98,8 @@ const checkout = async () => {
     error.value = 'Checkout could not be loaded. Check your connection and try again.';
   }
 };
+
+watch(paypalContainer, () => { void renderPayPal(); });
 </script>
 
 <template>
@@ -62,7 +125,7 @@ const checkout = async () => {
             <p class="legal-copy">Your preview position stays on this device.</p>
           </template>
 
-          <template v-else-if="status === 'pending' || status === 'failed'">
+          <template v-else-if="status === 'pending' || status === 'failed' || status === 'cancelled'">
             <div class="unlock-sheet__intro">
               <img :src="series.coverUrl" alt="" />
               <div>
@@ -85,11 +148,9 @@ const checkout = async () => {
               <li><Check :size="17" /> Secure checkout through PayPal</li>
             </ul>
             <div v-if="error" class="inline-error"><CircleAlert :size="18" />{{ error }}</div>
-            <div id="paypal-button-container" class="paypal-slot">
-              <button class="paypal-demo-button" type="button" @click="checkout">
-                <span class="paypal-word">Pay</span><span class="paypal-word paypal-word--blue">Pal</span>
-                <span>Continue securely</span>
-              </button>
+            <div class="paypal-slot">
+              <div v-if="runtime.public.paypalClientId" ref="paypalContainer" aria-label="PayPal checkout" />
+              <button v-else class="button button--primary button--wide" type="button" @click="checkout">Continue to PayPal</button>
             </div>
             <p class="legal-copy">By continuing, you agree to our Terms and Refund Policy. Final access is granted after server confirmation.</p>
           </template>

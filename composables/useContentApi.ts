@@ -14,16 +14,18 @@ export const useContentApi = () => {
     getSeries: (slug: string) => request<Series>(`/series/${slug}`),
     getLibrary: () => request<LibraryResponse>('/me/library'),
     getPlayback: (seriesId: string, episodeNo: number, sessionId: string) =>
-      request<{ authorized: boolean; signedUrl?: string; expiresAt?: string; trackingToken: string }>('/playback', {
+      request<{ authorized: boolean; signedUrl?: string; expiresAt?: string; trackingToken: string; resumePositionSeconds?: number; resumeDurationSeconds?: number }>('/playback', {
         query: { seriesId, episodeNo, sessionId },
       }),
     recordPlayback: (event: PlaybackEventInput) => request<{ accepted: true }>('/events/playback', { method: 'POST', body: event }),
-    createOrder: (seriesId: string) => request<Order>('/orders', { method: 'POST', body: { seriesId } }),
+    createOrder: (seriesId: string, idempotencyKey?: string) => request<Order>('/orders', { method: 'POST', body: { seriesId, idempotencyKey } }),
+    capturePayPalOrder: (paypalOrderId: string) => request<{ orderNo: string; status: 'paid' }>('/paypal/capture', { method: 'POST', body: { paypalOrderId } }),
     getMyOrders: () => request<Order[]>('/me/orders'),
     getOrder: (orderNo: string) => request<Order>(`/orders/${orderNo}`),
     restoreOrder: (lookup: string) => request<{ restored: number }>('/orders/restore', {
       method: 'POST',
       body: { lookup },
     }),
+    clearWatchHistory: () => request<{ cleared: true }>('/me/watch-history', { method: 'DELETE' }),
   };
 };

@@ -322,10 +322,6 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .unlock-list li { display: flex; color: #cbc7ce; align-items: center; gap: 8px; font-size: 10px; }
 .unlock-list svg { color: var(--mint); }
 .paypal-slot { min-height: 50px; }
-.paypal-demo-button { display: flex; width: 100%; min-height: 48px; padding: 0 15px; border: 0; border-radius: 5px; background: #ffc439; color: #172c5b; align-items: center; justify-content: center; gap: 2px; cursor: pointer; font-weight: 800; }
-.paypal-demo-button > span:last-child { margin-left: 9px; padding-left: 9px; border-left: 1px solid rgba(23,44,91,.25); color: #26334c; font-size: 10px; }
-.paypal-word { font-size: 17px; font-style: italic; }
-.paypal-word--blue { color: #0878ba; }
 .legal-copy { margin-top: 10px; color: #696671; text-align: center; font-size: 8px; line-height: 1.5; }
 .inline-error { display: flex; margin-bottom: 12px; padding: 10px; border-radius: 4px; background: rgba(255,93,104,.1); color: #ff8b94; align-items: center; gap: 8px; font-size: 10px; }
 .payment-state { display: flex; min-height: 330px; padding: 50px 24px; text-align: center; flex-direction: column; align-items: center; justify-content: center; }
@@ -342,6 +338,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 
 .watch-page { position: relative; min-height: 100dvh; overflow: hidden; background: #000; color: #fff; }
 .watch-visual { position: absolute; inset: 0; background: var(--watch-image) center / cover no-repeat; }
+.watch-video { position: absolute; inset: 0; width: 100%; height: 100%; background: #000; object-fit: contain; }
 .watch-vignette { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,.66), transparent 25%, transparent 58%, rgba(0,0,0,.9)); }
 .watch-top { position: absolute; z-index: 3; top: 0; right: 0; left: 0; display: grid; padding: max(15px, env(safe-area-inset-top)) 12px 12px; grid-template-columns: 44px 1fr 44px 44px; align-items: center; gap: 2px; }
 .watch-top button, .watch-controls button { display: grid; width: 44px; height: 44px; padding: 0; border: 0; background: transparent; color: #fff; place-items: center; }
@@ -359,6 +356,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .watch-progress { position: relative; height: 3px; background: rgba(255,255,255,.26); }
 .watch-progress span { display: block; height: 100%; background: var(--signal); }
 .watch-progress i { position: absolute; top: 50%; width: 9px; height: 9px; border-radius: 50%; background: var(--signal); transform: translate(-50%, -50%); }
+.watch-progress-input { width: 100%; height: 20px; margin: 0; accent-color: var(--signal); cursor: pointer; }
 .watch-time { display: flex; margin-top: 5px; color: rgba(255,255,255,.65); justify-content: space-between; font-size: 8px; }
 .watch-controls { display: flex; margin-top: 8px; align-items: center; justify-content: space-around; }
 .watch-controls button { height: 49px; width: 52px; gap: 2px; }

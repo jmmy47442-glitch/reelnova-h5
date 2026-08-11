@@ -100,9 +100,15 @@ const savePrivacy = () => {
   showNotice('Privacy preference saved');
 };
 
-const clearHistory = () => {
-  hiddenHistory.value = (library.value?.continueWatching || []).map((item) => item.id);
-  showNotice('Watch history cleared on this device');
+const clearHistory = async () => {
+  try {
+    await api.clearWatchHistory();
+    hiddenHistory.value = (library.value?.continueWatching || []).map((item) => item.id);
+    await refreshLibrary();
+    showNotice('Watch history cleared from your account');
+  } catch {
+    showNotice('History could not be cleared. Try again.');
+  }
 };
 
 const downloadData = () => {
