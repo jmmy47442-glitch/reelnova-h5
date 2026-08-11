@@ -39,6 +39,17 @@ const findOpenOrder = (event: Parameters<typeof d1First>[0], userId: string, ser
     FROM orders WHERE user_id = ? AND series_id = ? AND status IN ('pending', 'processing')
     ORDER BY created_at DESC LIMIT 1`, [userId, seriesId]);
 
+const findFailedCreationAttempt = (
+  event: Parameters<typeof d1First>[0],
+  userId: string,
+  seriesId: string,
+  idempotencyKey: string,
+) => d1First<OrderRow>(event, `SELECT order_no, series_id, series_slug, series_title, user_id, amount_cents, currency,
+  status, created_at, paypal_order_id, approval_url
+  FROM orders WHERE user_id = ? AND series_id = ? AND idempotency_key = ?
+    AND status = 'failed' AND paypal_order_id IS NULL
+  LIMIT 1`, [userId, seriesId, idempotencyKey]);
+
 const initializePayPal = async (event: Parameters<typeof d1First>[0], row: OrderRow) => {
   if (row.paypal_order_id && row.approval_url) return toOrder(row);
   requirePayPalConfiguration(event);
@@ -125,6 +136,21 @@ export default defineEventHandler(async (event) => {
   });
 
   requirePayPalConfiguration(event);
+
+  // A PayPal creation failure must be retried on the same local order. Creating
+  // another row with the same client key conflicts with the existing unique index.
+  const failedCreationAttempt = idempotencyKey
+    ? await findFailedCreationAttempt(event, userId, series.id, idempotencyKey)
+    : null;
+  if (failedCreationAttempt) {
+    const retryAt = new Date().toISOString();
+    await d1Run(event, `UPDATE OR IGNORE orders SET status = 'pending', note = NULL, updated_at = ?
+      WHERE order_no = ? AND status = 'failed' AND paypal_order_id IS NULL`,
+    [retryAt, failedCreationAttempt.order_no]);
+    const retryOrder = await findOpenOrder(event, userId, series.id);
+    if (retryOrder) return ok(await initializePayPal(event, retryOrder));
+  }
+
   const suffix = `${now.getTime()}-${crypto.randomUUID().slice(0, 6)}`;
   const orderNo = `RN-${now.toISOString().slice(0, 10).replaceAll('-', '')}-${suffix}`;
   const priceSource = await d1First<{
