@@ -43,8 +43,8 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | Administrators | `GET/POST /api/admin/administrators`, `PATCH /api/admin/administrators/{id}` (super administrator only) |
 | Dashboard | `GET /api/admin/dashboard` (Cloudflare D1 only) |
 | Pending items | `GET /api/admin/pending-items` (orders and PayPal Webhook failures from Cloudflare D1) |
-| Series | `GET/POST /api/admin/series`, `PUT /api/admin/series/{id}`, `PATCH /api/admin/series/{id}/status`, `POST /api/admin/series/{id}/duplicate` |
-| Episodes | Media upload requires the Cloudflare R2/Stream upload and transcoding worker; metadata is not marked complete until that service is connected |
+| Series | `GET/POST /api/admin/series`, `PUT/DELETE /api/admin/series/{id}`, `PATCH /api/admin/series/{id}/status`, `POST /api/admin/series/{id}/duplicate` |
+| Episodes | `GET /api/admin/series/{id}/episodes`, `POST /api/admin/series/{id}/episodes/uploads`, `PATCH /api/admin/media/uploads/{id}/progress`, `POST /api/admin/media/uploads/{id}/complete`, `POST /api/admin/media/{assetId}/retry`, `GET /api/admin/media/{assetId}/preview` |
 | Home sections | `GET/PUT /api/admin/home-config` |
 | Orders | `GET /api/admin/orders`, `POST /api/admin/orders/{orderNo}/verify`, `POST /api/admin/orders/{orderNo}/refund` (super administrator) |
 | Users | `GET /api/admin/users`, `PATCH /api/admin/users/{userId}`, `POST /api/admin/users/{userId}/release-device`, `POST /api/admin/users/{userId}/entitlements` |
@@ -55,4 +55,8 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | Audit | `GET /api/admin/audit` |
 | Connection health | `GET /api/admin/connection` |
 
+Episode uploads use 10 MiB R2 multipart chunks. The browser may resume an unexpired upload session, while R2 and Stream credentials remain in the media Worker. A series cannot be published until every non-deleted episode has a `ready` media asset. Cloudflare Stream reports asynchronous progress through `POST /api/media/stream-webhook`; episode list polling also reconciles missed callbacks.
+
 Order creation must use a server-side price snapshot. Playback requests must validate the user session and entitlement every time. PayPal approval in the browser is not proof of payment; only a verified capture or webhook may issue entitlement.
+
+When PayPal credentials are absent, `POST /api/orders` and refund operations return `503` with code `PAYPAL_NOT_CONFIGURED` before writing payment state. When the R2 media Worker is absent, upload creation returns `503` with code `MEDIA_PIPELINE_NOT_CONFIGURED` before creating episode or media rows. Frontend controls use the admin connection status and public PayPal Client ID to remain disabled until configuration is complete.

@@ -7,6 +7,8 @@ export interface Episode {
   duration: string;
   isFree: boolean;
   isUnlocked?: boolean;
+  mediaStatus?: 'waiting_upload' | 'uploading' | 'validating' | 'processing' | 'ready' | 'failed';
+  transcodeProgress?: number;
 }
 
 export interface Series {

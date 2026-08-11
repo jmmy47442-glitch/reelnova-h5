@@ -3,6 +3,7 @@ import { d1First } from '~/server/utils/cloudflare-d1';
 import { assertUserEnabled, upsertUserProfile } from '~/server/utils/user-profile';
 import { getUserSession } from '~/server/utils/user-auth';
 import { getPublicSeries } from '~/server/utils/managed-content';
+import { createStreamPlaybackToken } from '~/server/utils/media-pipeline';
 
 const sign = async (value: string, secret: string) => {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -44,12 +45,20 @@ export default defineEventHandler(async (event) => {
      WHERE user_id = ? AND series_id = ? AND episode_no = ? AND event_type IN ('heartbeat', 'complete')
      ORDER BY created_at DESC LIMIT 1`, [userId, series.id, episode.episodeNo]);
   const config = useRuntimeConfig(event);
+  const streamAsset = await d1First<{ stream_uid: string }>(event, `SELECT a.stream_uid FROM media_assets a
+    JOIN episodes e ON e.active_media_asset_id = a.id
+    WHERE e.series_id = ? AND e.episode_no = ? AND e.deleted_at IS NULL AND a.status = 'ready' LIMIT 1`,
+  [series.id, episode.episodeNo]).catch(() => null);
+  const customerCode = String(config.cloudflareStreamCustomerCode || '');
   const mediaBaseUrl = String(config.cloudflareMediaBaseUrl || '').replace(/\/$/, '');
   const signingSecret = String(config.cloudflareMediaSigningSecret || '');
-  if (!mediaBaseUrl || !signingSecret) throw createError({ statusCode: 503, statusMessage: 'Cloudflare media delivery is not configured' });
+  if (!signingSecret || ((!streamAsset?.stream_uid || !customerCode) && !mediaBaseUrl)) throw createError({ statusCode: 503, statusMessage: 'Cloudflare media delivery is not configured' });
   const expires = Math.floor(Date.now() / 1000) + 10 * 60;
   const path = `/hls/${series.id}/${episode.episodeNo}/master.m3u8`;
   const signature = await sign(`${path}:${userId}:${expires}`, signingSecret);
   const trackingSignature = await sign(`track:${userId}:${sessionId}:${series.id}:${episode.episodeNo}:${expires}`, signingSecret);
-  return ok({ authorized: true, signedUrl: `${mediaBaseUrl}${path}?user=${encodeURIComponent(userId)}&expires=${expires}&signature=${signature}`, expiresAt: new Date(expires * 1000).toISOString(), trackingToken: `${expires}.${trackingSignature}`, resumePositionSeconds: Math.max(0, Number(lastProgress?.position_seconds || 0)), resumeDurationSeconds: Math.max(0, Number(lastProgress?.duration_seconds || 0)) });
+  const signedUrl = streamAsset?.stream_uid && customerCode
+    ? `https://customer-${customerCode}.cloudflarestream.com/${await createStreamPlaybackToken(event, streamAsset.stream_uid)}/manifest/video.m3u8`
+    : `${mediaBaseUrl}${path}?user=${encodeURIComponent(userId)}&expires=${expires}&signature=${signature}`;
+  return ok({ authorized: true, signedUrl, expiresAt: new Date(expires * 1000).toISOString(), trackingToken: `${expires}.${trackingSignature}`, resumePositionSeconds: Math.max(0, Number(lastProgress?.position_seconds || 0)), resumeDurationSeconds: Math.max(0, Number(lastProgress?.duration_seconds || 0)) });
 });

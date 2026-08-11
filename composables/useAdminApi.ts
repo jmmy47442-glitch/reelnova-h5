@@ -1,5 +1,5 @@
 import type { ApiEnvelope } from '~/types/content';
-import type { AdminAccount, AdminAuditResponse, AdminOrdersResponse, AdminPendingItemsResponse, AdminSeries, AdminUsersResponse, DashboardSummary, DomainConfig, PersistedUserStatus, PublishStatus, ReconciliationResponse, TaxonomyItem } from '~/types/admin';
+import type { AdminAccount, AdminAuditResponse, AdminEpisode, AdminOrdersResponse, AdminPendingItemsResponse, AdminSeries, AdminUsersResponse, DashboardSummary, DomainConfig, MediaUploadPart, MediaUploadSession, PersistedUserStatus, PublishStatus, ReconciliationResponse, TaxonomyItem } from '~/types/admin';
 import type { HomeSectionConfig } from '~/composables/useAdminStore';
 
 export const useAdminApi = () => {
@@ -21,8 +21,8 @@ export const useAdminApi = () => {
     getReconciliation: (days: number) => request<ReconciliationResponse>('/admin/reconciliation', { query: { days } }),
     getConnection: () => request<{
       checkedAt: string;
-      cloudflare: { database: boolean; databaseError: string | null; mode: string; accountConfigured: boolean; databaseConfigured: boolean; apiTokenConfigured: boolean; mediaConfigured: boolean };
-      paypal: { connected: boolean; error: string | null; environment: string; webhookConfigured: boolean; lastWebhookAt: string | null };
+      cloudflare: { database: boolean; databaseError: string | null; mode: string; accountConfigured: boolean; databaseConfigured: boolean; apiTokenConfigured: boolean; mediaConfigured: boolean; mediaWorkerConfigured: boolean; streamConfigured: boolean; mediaSigningConfigured: boolean };
+      paypal: { connected: boolean; ready: boolean; error: string | null; environment: string; environmentValid: boolean; credentialsConfigured: boolean; browserClientConfigured: boolean; clientIdsMatch: boolean; webhookConfigured: boolean; lastWebhookAt: string | null };
     }>('/admin/connection'),
     getHomeConfig: () => request<{ items: HomeSectionConfig[] }>('/admin/home-config'),
     saveHomeConfig: (items: HomeSectionConfig[]) => request<{ items: HomeSectionConfig[] }>('/admin/home-config', { method: 'PUT', body: { items } }),
@@ -31,6 +31,13 @@ export const useAdminApi = () => {
     updateSeries: (id: string, input: Pick<AdminSeries, 'title' | 'description' | 'genres' | 'targetRegion' | 'freeEpisodeCount' | 'price'>) => request<AdminSeries>(`/admin/series/${encodeURIComponent(id)}`, { method: 'PUT', body: input }),
     updateSeriesStatus: (id: string, publishStatus: PublishStatus) => request<AdminSeries>(`/admin/series/${encodeURIComponent(id)}/status`, { method: 'PATCH', body: { publishStatus } }),
     duplicateSeries: (id: string) => request<AdminSeries>(`/admin/series/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }),
+    deleteSeries: (id: string) => request<{ id: string; title: string; retainedOrderCount: number }>(`/admin/series/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    getEpisodes: (seriesId: string) => request<{ items: AdminEpisode[]; generatedAt: string }>(`/admin/series/${encodeURIComponent(seriesId)}/episodes`),
+    createEpisodeUpload: (seriesId: string, input: { episodeNo: number; title: string; fileName: string; contentType: string; fileSizeBytes: number; durationSeconds: number; width: number; height: number; hasVideo: true; hasAudio: true }) =>
+      request<MediaUploadSession>(`/admin/series/${encodeURIComponent(seriesId)}/episodes/uploads`, { method: 'POST', body: input }),
+    reportUploadProgress: (uploadId: string, uploadedBytes: number) => request<{ uploadedBytes: number; fileSizeBytes: number }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}/progress`, { method: 'PATCH', body: { uploadedBytes } }),
+    completeEpisodeUpload: (uploadId: string, parts: MediaUploadPart[]) => request<{ uploadId: string; mediaAssetId: string; streamUid: string | null; status: 'processing' | 'failed'; errorMessage?: string }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}/complete`, { method: 'POST', body: { parts } }),
+    retryTranscode: (assetId: string) => request<{ assetId: string; streamUid: string; attempt: number; status: 'processing' }>(`/admin/media/${encodeURIComponent(assetId)}/retry`, { method: 'POST' }),
     getTaxonomy: () => request<{ items: TaxonomyItem[] }>('/admin/taxonomy'),
     saveTaxonomy: (items: TaxonomyItem[]) => request<{ items: TaxonomyItem[] }>('/admin/taxonomy', { method: 'PUT', body: { items } }),
     getDomains: () => request<{ items: DomainConfig[]; cnameTarget: string }>('/admin/domains'),

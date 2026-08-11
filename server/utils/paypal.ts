@@ -24,14 +24,40 @@ interface OrderSnapshot {
 
 const paypalRequestTimeoutMs = 10_000;
 
+export const getPayPalConfigurationStatus = (event: H3Event) => {
+  const config = useRuntimeConfig(event);
+  const clientId = String(config.paypalClientId || '');
+  const publicClientId = String(config.public.paypalClientId || '');
+  const environment = String(config.paypalEnvironment || 'sandbox');
+  return {
+    credentialsConfigured: Boolean(clientId && config.paypalSecret),
+    browserClientConfigured: Boolean(publicClientId),
+    clientIdsMatch: Boolean(clientId && publicClientId && clientId === publicClientId),
+    webhookConfigured: Boolean(config.paypalWebhookId),
+    environment,
+    environmentValid: environment === 'sandbox' || environment === 'production',
+  };
+};
+
 const configFor = (event: H3Event) => {
   const config = useRuntimeConfig(event);
   const clientId = config.paypalClientId as string;
   const secret = config.paypalSecret as string;
   const environment = config.paypalEnvironment as string;
-  if (!clientId || !secret) throw createError({ statusCode: 503, statusMessage: 'PayPal is not configured' });
+  if (!clientId || !secret) throw createError({
+    statusCode: 503,
+    statusMessage: 'PayPal checkout is not configured',
+    data: { code: 'PAYPAL_NOT_CONFIGURED' },
+  });
+  if (environment !== 'sandbox' && environment !== 'production') throw createError({
+    statusCode: 500,
+    statusMessage: 'PAYPAL_ENVIRONMENT must be sandbox or production',
+    data: { code: 'PAYPAL_ENVIRONMENT_INVALID' },
+  });
   return { clientId, secret, baseUrl: environment === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com' };
 };
+
+export const requirePayPalConfiguration = (event: H3Event) => configFor(event);
 
 const accessToken = async (event: H3Event) => {
   const { clientId, secret, baseUrl } = configFor(event);

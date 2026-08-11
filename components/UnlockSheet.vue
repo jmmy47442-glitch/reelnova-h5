@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Check, CircleAlert, LoaderCircle, ShieldCheck, X } from 'lucide-vue-next';
+import { Check, CircleAlert, Clock3, LoaderCircle, ShieldCheck, X } from 'lucide-vue-next';
 import { useUserAuth } from '~/composables/useUserAuth';
 import type { OrderStatus, Series } from '~/types/content';
 
@@ -14,7 +14,9 @@ const status = ref<OrderStatus>('pending');
 const error = ref('');
 const paypalContainer = ref<HTMLElement | null>(null);
 const paypalRendered = ref(false);
+const sdkFailed = ref(false);
 const checkoutKey = ref('');
+const paypalAvailable = computed(() => Boolean(runtime.public.paypalClientId));
 
 const paypalWindow = () => (window as any);
 
@@ -44,7 +46,7 @@ const completePayment = async (paypalOrderId: string) => {
 };
 
 const renderPayPal = async () => {
-  if (!props.open || !isAuthenticated.value || paypalRendered.value || !paypalContainer.value) return;
+  if (!props.open || !isAuthenticated.value || !paypalAvailable.value || paypalRendered.value || !paypalContainer.value) return;
   try {
     const paypal = await loadPayPalSdk();
     if (!paypal || !paypalContainer.value) return;
@@ -64,7 +66,8 @@ const renderPayPal = async () => {
     }).render(paypalContainer.value);
   } catch {
     paypalRendered.value = false;
-    error.value = 'PayPal could not be loaded. Use secure checkout below or try again.';
+    sdkFailed.value = true;
+    error.value = 'PayPal buttons could not be loaded. Continue with secure PayPal checkout below.';
   }
 };
 
@@ -74,6 +77,7 @@ watch(() => props.open, (isOpen) => {
     error.value = '';
     checkoutKey.value = '';
     paypalRendered.value = false;
+    sdkFailed.value = false;
     void nextTick(renderPayPal);
   }
 });
@@ -82,6 +86,11 @@ const checkout = async () => {
   if (!isAuthenticated.value) {
     emit('close');
     await navigateTo({ path: '/login', query: { redirect: route.fullPath } });
+    return;
+  }
+  if (!paypalAvailable.value) {
+    status.value = 'failed';
+    error.value = 'Checkout is not available yet.';
     return;
   }
 
@@ -93,9 +102,13 @@ const checkout = async () => {
     if (order.status === 'paid') { status.value = 'paid'; emit('unlocked'); return; }
     if (!order.approvalUrl) throw new Error('PayPal approval URL missing');
     window.location.assign(order.approvalUrl);
-  } catch {
+  } catch (reason: unknown) {
     status.value = 'failed';
-    error.value = 'Checkout could not be loaded. Check your connection and try again.';
+    const statusCode = (reason as { statusCode?: number; response?: { status?: number } }).statusCode
+      || (reason as { response?: { status?: number } }).response?.status;
+    error.value = statusCode === 503
+      ? 'Checkout is not available yet.'
+      : 'Checkout could not be loaded. Check your connection and try again.';
   }
 };
 
@@ -149,8 +162,9 @@ watch(paypalContainer, () => { void renderPayPal(); });
             </ul>
             <div v-if="error" class="inline-error"><CircleAlert :size="18" />{{ error }}</div>
             <div class="paypal-slot">
-              <div v-if="runtime.public.paypalClientId" ref="paypalContainer" aria-label="PayPal checkout" />
-              <button v-else class="button button--primary button--wide" type="button" @click="checkout">Continue to PayPal</button>
+              <div v-if="paypalAvailable && !sdkFailed" ref="paypalContainer" aria-label="PayPal checkout" />
+              <button v-else-if="paypalAvailable" class="button button--primary button--wide" type="button" @click="checkout">Continue to PayPal</button>
+              <div v-else class="payment-unavailable" role="status"><Clock3 :size="19" /><div><strong>Checkout coming soon</strong><span>PayPal payments are not available yet.</span></div></div>
             </div>
             <p class="legal-copy">By continuing, you agree to our Terms and Refund Policy. Final access is granted after server confirmation.</p>
           </template>

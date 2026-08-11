@@ -81,23 +81,109 @@ const writeConfig = async (event: H3Event, id: string, value: unknown) => {
 };
 
 export const getManagedSeries = async (event: H3Event) => {
+  if (hasD1Connection(event)) {
+    const { listNormalizedSeries } = await import('./normalized-content');
+    return listNormalizedSeries(event);
+  }
   const stored = await readConfig<ManagedSeries[]>(event, 'managed-series', memorySeries);
   if (Array.isArray(stored)) memorySeries = cloneSeries(stored);
   return cloneSeries(memorySeries);
 };
 
 export const saveManagedSeries = async (event: H3Event, items: ManagedSeries[]) => {
+  if (hasD1Connection(event)) throw createError({ statusCode: 500, statusMessage: 'Normalized series must not be written to home_config' });
   memorySeries = cloneSeries(items);
   await writeConfig(event, 'managed-series', memorySeries);
   return cloneSeries(memorySeries);
+};
+
+export const createManagedSeriesRecord = async (event: H3Event, input: Parameters<typeof createManagedSeries>[1]) => {
+  if (hasD1Connection(event)) {
+    const { createNormalizedSeries } = await import('./normalized-content');
+    return createNormalizedSeries(event, input);
+  }
+  const items = await getManagedSeries(event);
+  const created = createManagedSeries(items, input);
+  items.unshift(created);
+  await saveManagedSeries(event, items);
+  return created;
+};
+
+export const updateManagedSeriesRecord = async (event: H3Event, id: string, input: Parameters<typeof createManagedSeries>[1]) => {
+  if (hasD1Connection(event)) {
+    const { updateNormalizedSeries } = await import('./normalized-content');
+    return updateNormalizedSeries(event, id, input);
+  }
+  const items = await getManagedSeries(event);
+  const item = items.find((entry) => entry.id === id);
+  if (!item) throw createError({ statusCode: 404, statusMessage: 'Series not found' });
+  Object.assign(item, input, { genres: [...input.genres], publishAt: new Date().toISOString().slice(0, 10) });
+  item.episodes = item.episodes.map((episode) => ({ ...episode, isFree: episode.episodeNo <= item.freeEpisodeCount }));
+  await saveManagedSeries(event, items);
+  return item;
+};
+
+export const updateManagedSeriesStatusRecord = async (event: H3Event, id: string, publishStatus: PublishStatus) => {
+  if (hasD1Connection(event)) {
+    const { updateNormalizedSeriesStatus } = await import('./normalized-content');
+    return updateNormalizedSeriesStatus(event, id, publishStatus);
+  }
+  const items = await getManagedSeries(event);
+  const item = items.find((entry) => entry.id === id);
+  if (!item) throw createError({ statusCode: 404, statusMessage: 'Series not found' });
+  if (publishStatus === '已上架' && (!item.episodeCount || item.transcodeProgress < 100)) {
+    throw createError({ statusCode: 409, statusMessage: 'Episodes must finish transcoding before publishing' });
+  }
+  item.publishStatus = publishStatus;
+  item.publishAt = new Date().toISOString().slice(0, 10);
+  await saveManagedSeries(event, items);
+  return item;
+};
+
+export const duplicateManagedSeriesRecord = async (event: H3Event, id: string) => {
+  if (hasD1Connection(event)) {
+    const { duplicateNormalizedSeries } = await import('./normalized-content');
+    return duplicateNormalizedSeries(event, id);
+  }
+  const items = await getManagedSeries(event);
+  const source = items.find((entry) => entry.id === id);
+  if (!source) throw createError({ statusCode: 404, statusMessage: 'Series not found' });
+  const copy = createManagedSeries(items, {
+    title: `${source.title} Copy`, description: source.description, genres: source.genres,
+    targetRegion: source.targetRegion, freeEpisodeCount: source.freeEpisodeCount, price: source.price,
+  });
+  copy.coverUrl = source.coverUrl;
+  copy.backdropUrl = source.backdropUrl;
+  copy.tagline = source.tagline;
+  copy.cast = [...source.cast];
+  items.unshift(copy);
+  await saveManagedSeries(event, items);
+  return copy;
+};
+
+export const softDeleteManagedSeriesRecord = async (event: H3Event, id: string) => {
+  if (hasD1Connection(event)) {
+    const { softDeleteNormalizedSeries } = await import('./normalized-content');
+    return softDeleteNormalizedSeries(event, id);
+  }
+  const items = await getManagedSeries(event);
+  const index = items.findIndex((entry) => entry.id === id);
+  if (index < 0) throw createError({ statusCode: 404, statusMessage: 'Series not found' });
+  const [removed] = items.splice(index, 1);
+  await saveManagedSeries(event, items);
+  return { id, title: removed!.title, retainedOrderCount: 0 };
 };
 
 const regionCountry: Record<string, string> = { 'United States': 'US', Canada: 'CA' };
 
 export const getPublicSeries = async (event: H3Event) => {
   const country = getRequestCountry(event)?.toUpperCase() || '';
-  return (await getManagedSeries(event))
-  .filter((item) => item.publishStatus === '已上架' && (!country || item.targetRegion === 'Global' || regionCountry[item.targetRegion] === country))
+  const managed = await getManagedSeries(event);
+  const published = managed.filter((item) => item.publishStatus === '已上架');
+  const mockFallback = String(useRuntimeConfig(event).publicMockContentFallback).toLowerCase() === 'true';
+  const source = published.length || !mockFallback ? published : initialSeries();
+  return source
+  .filter((item) => !country || item.targetRegion === 'Global' || regionCountry[item.targetRegion] === country)
   .map(({ publishStatus: _publishStatus, publishAt: _publishAt, transcodeProgress: _transcodeProgress, targetRegion: _targetRegion, ...series }) => series);
 };
 
@@ -159,6 +245,10 @@ export const createManagedSeries = (items: ManagedSeries[], input: {
 };
 
 export const getTaxonomyConfig = async (event: H3Event) => {
+  if (hasD1Connection(event)) {
+    const { listNormalizedTaxonomy } = await import('./normalized-content');
+    return listNormalizedTaxonomy(event);
+  }
   const stored = await readConfig<TaxonomyItem[]>(event, 'taxonomy', memoryTaxonomy);
   if (Array.isArray(stored)) memoryTaxonomy = cloneItems(stored);
   const series = await getManagedSeries(event);
@@ -169,6 +259,10 @@ export const getTaxonomyConfig = async (event: H3Event) => {
 };
 
 export const saveTaxonomyConfig = async (event: H3Event, items: TaxonomyItem[]) => {
+  if (hasD1Connection(event)) {
+    const { saveNormalizedTaxonomy } = await import('./normalized-content');
+    return saveNormalizedTaxonomy(event, items);
+  }
   memoryTaxonomy = cloneItems(items).map((item) => ({ ...item, contentCount: 0 }));
   await writeConfig(event, 'taxonomy', memoryTaxonomy);
   return getTaxonomyConfig(event);

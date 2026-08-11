@@ -1,6 +1,6 @@
 import { ok } from '~/server/utils/response';
 import { d1First, d1Run, getRequestCountry } from '~/server/utils/cloudflare-d1';
-import { createPayPalOrder } from '~/server/utils/paypal';
+import { createPayPalOrder, requirePayPalConfiguration } from '~/server/utils/paypal';
 import { assertUserEnabled, upsertUserProfile } from '~/server/utils/user-profile';
 import { getUserSession } from '~/server/utils/user-auth';
 import { getPublicSeries } from '~/server/utils/managed-content';
@@ -15,7 +15,6 @@ export default defineEventHandler(async (event) => {
       data: { code: 'AUTH_REQUIRED_FOR_PURCHASE' },
     });
   }
-
   const body = await readBody<{ seriesId: string; idempotencyKey?: string }>(event);
   const idempotencyKey = body?.idempotencyKey?.trim().slice(0, 100) || null;
   const seriesList = await getPublicSeries(event);
@@ -45,6 +44,8 @@ export default defineEventHandler(async (event) => {
     return ok({ orderNo: existingPending.order_no, seriesId: series.id, seriesTitle: series.title, amount: Number(existingPending.amount_cents) / 100, currency: existingPending.currency, status: existingPending.status, createdAt: existingPending.created_at, paypalOrderId: existingPending.paypal_order_id || undefined, approvalUrl: existingPending.approval_url || undefined });
   }
 
+  // Reject before creating a new local order while checkout is intentionally offline.
+  requirePayPalConfiguration(event);
   const suffix = `${now.getTime()}-${crypto.randomUUID().slice(0, 6)}`;
   const orderNo = `RN-${now.toISOString().slice(0, 10).replaceAll('-', '')}-${suffix}`;
   const amountCents = Math.round(series.price * 100);

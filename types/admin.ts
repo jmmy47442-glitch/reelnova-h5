@@ -85,6 +85,40 @@ export interface AdminSeries {
   targetRegion: string;
 }
 
+export type EpisodeVideoStatus = 'waiting_upload' | 'uploading' | 'validating' | 'processing' | 'ready' | 'failed';
+
+export interface AdminEpisode {
+  id: string;
+  episodeNo: number;
+  title: string;
+  durationSeconds: number;
+  isFree: boolean;
+  videoStatus: EpisodeVideoStatus;
+  transcodeProgress: number;
+  thumbnailUrl: string;
+  mediaAssetId: string | null;
+  sourceFileName: string | null;
+  sourceSizeBytes: number | null;
+  errorMessage: string | null;
+  previewUrl: string | null;
+}
+
+export interface MediaUploadSession {
+  id: string;
+  episodeId: string;
+  mediaAssetId: string;
+  episodeNo: number;
+  uploadUrl: string;
+  uploadToken: string;
+  partSizeBytes: number;
+  expiresAt: string;
+}
+
+export interface MediaUploadPart {
+  partNumber: number;
+  etag: string;
+}
+
 export interface TaxonomyItem {
   id: string;
   name: string;

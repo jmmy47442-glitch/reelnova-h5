@@ -1,6 +1,6 @@
 import { ok } from '~/server/utils/response';
 import { d1First, d1Run } from '~/server/utils/cloudflare-d1';
-import { applyVerifiedRefund, refundPayPalCapture } from '~/server/utils/paypal';
+import { applyVerifiedRefund, refundPayPalCapture, requirePayPalConfiguration } from '~/server/utils/paypal';
 import { requireSuperAdmin } from '~/server/utils/admin-auth';
 import { recordAdminAudit } from '~/server/utils/admin-audit';
 
@@ -12,6 +12,7 @@ export default defineEventHandler(async (event) => {
   const body = await readBody<{ reason?: string }>(event);
   const reason = body?.reason?.trim() || '';
   if (reason.length < 8 || reason.length > 500) throw createError({ statusCode: 400, statusMessage: 'Refund reason must be 8-500 characters' });
+  requirePayPalConfiguration(event);
   const order = await d1First<RefundOrder>(event, 'SELECT order_no, status, capture_id, amount_cents, currency FROM orders WHERE order_no = ?', [orderNo]);
   if (!order) throw createError({ statusCode: 404, statusMessage: 'Order not found' });
   if (order.status === 'refunded') return ok({ orderNo, status: 'refunded' as const, synchronized: true });
