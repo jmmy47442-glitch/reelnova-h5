@@ -1,9 +1,9 @@
-import { seriesList } from '~/data/mock';
 import { ok } from '~/server/utils/response';
 import { d1Run, getRequestCountry } from '~/server/utils/cloudflare-d1';
 import { createPayPalOrder } from '~/server/utils/paypal';
 import { assertUserEnabled, upsertUserProfile } from '~/server/utils/user-profile';
 import { getUserSession } from '~/server/utils/user-auth';
+import { getPublicSeries } from '~/server/utils/managed-content';
 import type { Order } from '~/types/content';
 
 export default defineEventHandler(async (event) => {
@@ -17,6 +17,7 @@ export default defineEventHandler(async (event) => {
   }
 
   const body = await readBody<{ seriesId: string }>(event);
+  const seriesList = await getPublicSeries(event);
   const series = seriesList.find((item) => item.id === body.seriesId);
   if (!series) throw createError({ statusCode: 404, statusMessage: 'Series not found' });
   if (series.price <= 0) throw createError({ statusCode: 400, statusMessage: 'Free series does not require checkout' });

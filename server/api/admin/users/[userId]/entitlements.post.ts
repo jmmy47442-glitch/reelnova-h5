@@ -1,11 +1,12 @@
-import { seriesList } from '~/data/mock';
 import { ok } from '~/server/utils/response';
 import { d1First, d1Run } from '~/server/utils/cloudflare-d1';
 import { recordAdminUserAction } from '~/server/utils/user-profile';
+import { getManagedSeries } from '~/server/utils/managed-content';
 
 export default defineEventHandler(async (event) => {
   const userId = getRouterParam(event, 'userId') || '';
   const body = await readBody<{ seriesId?: string; reason?: string }>(event);
+  const seriesList = await getManagedSeries(event);
   const reason = body?.reason?.trim() || '';
   const series = seriesList.find((item) => item.id === body?.seriesId);
   if (!userId || !series || !reason || reason.length > 200) {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ArrowLeft, ChevronDown, Clock3, Eye, LockKeyhole, Play, Share2, Star } from 'lucide-vue-next';
 
+definePageMeta({ hideBottomNav: true });
 const route = useRoute();
 const api = useContentApi();
 const { formatPrice, formatViews } = useFormatters();

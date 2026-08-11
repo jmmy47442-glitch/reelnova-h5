@@ -1,12 +1,13 @@
-import { seriesList } from '~/data/mock';
 import { ok } from '~/server/utils/response';
 import { d1All } from '~/server/utils/cloudflare-d1';
 import { hydrateSeriesRuntimeData } from '~/server/utils/series-runtime';
+import { getPublicSeries } from '~/server/utils/managed-content';
 import { getUserSession } from '~/server/utils/user-auth';
 
 interface ProgressRow { series_id: string; episode_no: number; position_seconds: number; duration_seconds: number }
 
 export default defineEventHandler(async (event) => {
+  const seriesList = await getPublicSeries(event);
   const userSession = await getUserSession(event);
   if (!userSession) throw createError({ statusCode: 401, statusMessage: 'Login required' });
   const hydrated = await hydrateSeriesRuntimeData(event, seriesList);

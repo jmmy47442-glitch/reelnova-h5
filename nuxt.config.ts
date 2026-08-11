@@ -26,6 +26,7 @@ export default defineNuxtConfig({
     cloudflareApiToken: process.env.CLOUDFLARE_API_TOKEN || '',
     cloudflareMediaBaseUrl: process.env.CLOUDFLARE_MEDIA_BASE_URL || '',
     cloudflareMediaSigningSecret: process.env.CLOUDFLARE_MEDIA_SIGNING_SECRET || '',
+    domainCnameTarget: process.env.CLOUDFLARE_DOMAIN_CNAME_TARGET || 'domains.reelnova-edge.net',
     paypalClientId: process.env.PAYPAL_CLIENT_ID || '',
     paypalSecret: process.env.PAYPAL_SECRET || '',
     paypalWebhookId: process.env.PAYPAL_WEBHOOK_ID || '',

@@ -18,10 +18,11 @@ const previewItems = computed(() => previewSection.value?.itemIds.slice(0, previ
 
 onMounted(async () => {
   try {
-    const response = await adminApi.getHomeConfig();
-    state.value.homeSections = response.items;
+    const [home, series] = await Promise.all([adminApi.getHomeConfig(), adminApi.getSeries()]);
+    state.value.homeSections = home.items;
+    state.value.series = series.items;
   } catch {
-    // Keep the local demo configuration when the API is unavailable.
+    ElMessage.error('首页配置与短剧数据加载失败');
   }
 });
 

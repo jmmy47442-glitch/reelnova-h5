@@ -45,7 +45,7 @@ const menuGroups = computed(() => [
     items: [
       ...(isSuperAdmin.value ? [{ label: '管理员账号', to: '/admin/administrators', icon: UserCog }] : []),
       { label: '站点与支付', to: '/admin/system', icon: Settings },
-      { label: '域名管理', to: '/admin/domains', icon: Globe2 },
+      ...(isSuperAdmin.value ? [{ label: '域名管理', to: '/admin/domains', icon: Globe2 }] : []),
       { label: '审计日志', to: '/admin/audit', icon: ShieldCheck },
     ],
   },

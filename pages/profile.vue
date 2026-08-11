@@ -4,6 +4,7 @@ import { useUserAuth } from '~/composables/useUserAuth';
 
 const api = useContentApi();
 const { session, logout } = useUserAuth();
+const route = useRoute();
 const lookup = ref('');
 const restoring = ref(false);
 const restoreMessage = ref('');
@@ -20,8 +21,8 @@ const restore = async () => {
 };
 
 const menuGroups = [
-  [{ label: 'My purchases', icon: ShoppingBag }, { label: 'Orders & payments', icon: ReceiptText }, { label: 'Watch history', icon: History }],
-  [{ label: 'Language', value: 'English', icon: Globe2 }, { label: 'Privacy', icon: Shield }, { label: 'Terms & refund policy', icon: FileText }, { label: 'Help center', icon: CircleHelp }],
+  [{ label: 'My purchases', to: '/profile/purchases', icon: ShoppingBag }, { label: 'Orders & payments', to: '/profile/orders', icon: ReceiptText }, { label: 'Watch history', to: '/profile/history', icon: History }],
+  [{ label: 'Language', to: '/profile/language', value: 'English', icon: Globe2 }, { label: 'Privacy', to: '/profile/privacy', icon: Shield }, { label: 'Terms & refund policy', to: '/profile/terms', icon: FileText }, { label: 'Help center', to: '/profile/help', icon: CircleHelp }],
 ];
 
 const initials = computed(() => session.value?.name.trim().charAt(0).toUpperCase() || 'R');
@@ -33,11 +34,12 @@ const signOut = async () => {
 </script>
 
 <template>
-  <div class="content-width page-top profile-page">
+  <NuxtPage v-if="route.path !== '/profile'" />
+  <div v-else class="content-width page-top profile-page">
     <AppHeader compact />
     <header class="profile-identity"><span class="profile-avatar">{{ initials }}</span><div><span class="eyebrow">REELNOVA MEMBER</span><h1>{{ session?.name || 'Your profile' }}</h1><p>{{ session?.email || 'Account details unavailable.' }}</p></div></header>
     <section class="restore-panel"><div class="restore-panel__title"><span><RotateCcw :size="19" /></span><div><h2>Restore a purchase</h2><p>Use your PayPal email or ReelNova order number.</p></div></div><label class="restore-input"><Mail :size="17" /><input v-model="lookup" type="text" placeholder="Email or RN-2026-..." @keyup.enter="restore" /></label><button class="button button--primary button--wide" type="button" :disabled="!lookup.trim() || restoring" @click="restore">{{ restoring ? 'Checking purchase…' : 'Restore purchase' }}</button><p v-if="restoreMessage" class="restore-message">{{ restoreMessage }}</p></section>
-    <section v-for="(group, index) in menuGroups" :key="index" class="settings-list"><button v-for="item in group" :key="item.label" type="button"><span class="settings-list__icon"><component :is="item.icon" :size="19" /></span><strong>{{ item.label }}</strong><span v-if="item.value" class="settings-list__value">{{ item.value }}</span><ChevronRight :size="18" /></button></section>
+    <section v-for="(group, index) in menuGroups" :key="index" class="settings-list"><NuxtLink v-for="item in group" :key="item.label" :to="item.to"><span class="settings-list__icon"><component :is="item.icon" :size="19" /></span><strong>{{ item.label }}</strong><span v-if="item.value" class="settings-list__value">{{ item.value }}</span><ChevronRight :size="18" /></NuxtLink></section>
     <section class="settings-list"><button class="profile-signout" type="button" @click="signOut"><span class="settings-list__icon"><LogOut :size="19" /></span><strong>Sign out</strong><ChevronRight :size="18" /></button></section>
     <div class="profile-meta"><Clock3 :size="15" /><span>Account and watch activity are synced</span></div>
   </div>

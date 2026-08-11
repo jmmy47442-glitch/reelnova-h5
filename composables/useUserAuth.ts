@@ -2,6 +2,7 @@ import type { ApiEnvelope } from '~/types/content';
 import type { UserLoginInput, UserRegisterInput, UserSession } from '~/types/user';
 
 export const useUserAuth = () => {
+  const baseURL = useRuntimeConfig().public.apiBase;
   const session = useState<UserSession | null>('user-session', () => null);
   const sessionChecked = useState('user-session-checked', () => false);
   const isAuthenticated = computed(() => Boolean(session.value?.userId));
@@ -9,7 +10,9 @@ export const useUserAuth = () => {
   const fetchSession = async (force = false) => {
     if (sessionChecked.value && !force) return session.value;
     try {
-      const response = await $fetch<ApiEnvelope<UserSession>>('/api/auth/session', {
+      const response = await $fetch<ApiEnvelope<UserSession>>('/auth/session', {
+        baseURL,
+        credentials: 'include',
         headers: import.meta.server ? useRequestHeaders(['cookie']) : undefined,
       });
       session.value = response.data;
@@ -22,14 +25,14 @@ export const useUserAuth = () => {
   };
 
   const login = async (input: UserLoginInput) => {
-    const response = await $fetch<ApiEnvelope<UserSession>>('/api/auth/login', { method: 'POST', body: input });
+    const response = await $fetch<ApiEnvelope<UserSession>>('/auth/login', { baseURL, credentials: 'include', method: 'POST', body: input });
     session.value = response.data;
     sessionChecked.value = true;
     return response.data;
   };
 
   const register = async (input: UserRegisterInput) => {
-    const response = await $fetch<ApiEnvelope<UserSession>>('/api/auth/register', { method: 'POST', body: input });
+    const response = await $fetch<ApiEnvelope<UserSession>>('/auth/register', { baseURL, credentials: 'include', method: 'POST', body: input });
     session.value = response.data;
     sessionChecked.value = true;
     return response.data;
@@ -37,7 +40,7 @@ export const useUserAuth = () => {
 
   const logout = async () => {
     try {
-      await $fetch('/api/auth/logout', { method: 'POST' });
+      await $fetch('/auth/logout', { baseURL, credentials: 'include', method: 'POST' });
     } finally {
       session.value = null;
       sessionChecked.value = true;

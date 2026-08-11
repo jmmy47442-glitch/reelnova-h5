@@ -2,6 +2,7 @@ import type { AdminSession } from '~/types/admin';
 import type { ApiEnvelope } from '~/types/content';
 
 export const useAdminAuth = () => {
+  const baseURL = useRuntimeConfig().public.apiBase;
   const session = useState<AdminSession | null>('admin-session', () => null);
   const sessionChecked = useState('admin-session-checked', () => false);
 
@@ -19,7 +20,7 @@ export const useAdminAuth = () => {
   const fetchSession = async (force = false) => {
     if (sessionChecked.value && !force) return session.value;
     try {
-      const response = await $fetch<ApiEnvelope<AdminSession>>('/api/admin/auth/session');
+      const response = await $fetch<ApiEnvelope<AdminSession>>('/admin/auth/session', { baseURL, credentials: 'include' });
       session.value = response.data;
     } catch {
       session.value = null;
@@ -30,7 +31,9 @@ export const useAdminAuth = () => {
   };
 
   const login = async (details: { email: string; password: string; remember: boolean }) => {
-    const response = await $fetch<ApiEnvelope<AdminSession>>('/api/admin/auth/login', {
+    const response = await $fetch<ApiEnvelope<AdminSession>>('/admin/auth/login', {
+      baseURL,
+      credentials: 'include',
       method: 'POST',
       body: details,
     });
@@ -41,7 +44,7 @@ export const useAdminAuth = () => {
 
   const logout = async () => {
     try {
-      await $fetch('/api/admin/auth/logout', { method: 'POST' });
+      await $fetch('/admin/auth/logout', { baseURL, credentials: 'include', method: 'POST' });
     } finally {
       session.value = null;
       sessionChecked.value = true;

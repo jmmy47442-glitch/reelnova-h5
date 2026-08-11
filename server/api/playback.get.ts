@@ -1,8 +1,8 @@
-import { seriesList } from '~/data/mock';
 import { ok } from '~/server/utils/response';
 import { d1First } from '~/server/utils/cloudflare-d1';
 import { assertUserEnabled, upsertUserProfile } from '~/server/utils/user-profile';
 import { getUserSession } from '~/server/utils/user-auth';
+import { getPublicSeries } from '~/server/utils/managed-content';
 
 const sign = async (value: string, secret: string) => {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -12,6 +12,7 @@ const sign = async (value: string, secret: string) => {
 
 export default defineEventHandler(async (event) => {
   const query = getQuery(event);
+  const seriesList = await getPublicSeries(event);
   const series = seriesList.find((item) => item.id === query.seriesId);
   const episode = series?.episodes.find((item) => item.episodeNo === Number(query.episodeNo));
   if (!series || !episode) throw createError({ statusCode: 404, statusMessage: 'Episode not found' });

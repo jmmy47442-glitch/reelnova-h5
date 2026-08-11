@@ -66,6 +66,46 @@ export interface DashboardSummary {
 
 export type PersistedOrderStatus = 'pending' | 'processing' | 'paid' | 'failed' | 'cancelled' | 'refunding' | 'refunded' | 'risk_review';
 
+export type PublishStatus = '已上架' | '处理中' | '草稿' | '待发布' | '已下架' | '版权冻结';
+
+export interface AdminSeries {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  coverUrl: string;
+  genres: string[];
+  episodeCount: number;
+  freeEpisodeCount: number;
+  price: number;
+  originalPrice?: number;
+  publishStatus: PublishStatus;
+  publishAt: string;
+  transcodeProgress: number;
+  targetRegion: string;
+}
+
+export interface TaxonomyItem {
+  id: string;
+  name: string;
+  localeName: string;
+  type: '分类' | '标签';
+  color: string;
+  contentCount: number;
+  enabled: boolean;
+  expiresAt: string;
+}
+
+export interface DomainConfig {
+  id: string;
+  host: string;
+  role: '主域名' | '备用域名';
+  verification: '已验证' | '待验证' | '验证失败';
+  certificate: '正常' | '即将到期' | '未签发';
+  redirect: boolean;
+  updatedAt: string;
+}
+
 export interface PersistedOrder {
   orderNo: string;
   seriesId: string;

@@ -15,5 +15,5 @@ export default defineNuxtRouteMiddleware(async (to) => {
     return navigateTo({ path: '/admin/login', query: { redirect: to.fullPath } });
   }
 
-  if (to.path.startsWith('/admin/administrators') && !isSuperAdmin.value) return navigateTo('/admin');
+  if ((to.path.startsWith('/admin/administrators') || to.path.startsWith('/admin/domains')) && !isSuperAdmin.value) return navigateTo('/admin');
 });

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { Download, Film, Plus, Search, Upload } from 'lucide-vue-next';
+import { CloudOff, Download, Film, Plus, RefreshCw, Search, Upload } from 'lucide-vue-next';
 import { ElMessage, ElMessageBox, type UploadFile } from 'element-plus';
 import type { AdminSeries, PublishStatus } from '~/composables/useAdminStore';
 
 definePageMeta({ layout: 'admin' });
 
-const { state, addAudit } = useAdminStore();
+const { state } = useAdminStore();
+const api = useAdminApi();
 const keyword = ref('');
 const statusFilter = ref('全部状态');
 const categoryFilter = ref('全部分类');
@@ -15,9 +16,32 @@ const episodeDrawer = ref(false);
 const editingId = ref<string | null>(null);
 const selectedSeries = ref<AdminSeries | null>(null);
 const uploading = ref(false);
+const loading = ref(true);
+const loadError = ref(false);
+const saving = ref(false);
+const selectedFileName = ref('');
 const statuses: PublishStatus[] = ['已上架', '处理中', '草稿', '待发布', '已下架', '版权冻结'];
-const categories = computed(() => [...new Set(state.value.series.flatMap((item) => item.genres))]);
+const categories = computed(() => [...new Set([
+  ...state.value.taxonomy.filter((item) => item.type === '分类' && item.enabled).map((item) => item.name),
+  ...state.value.series.flatMap((item) => item.genres),
+])]);
 const form = reactive({ title: '', description: '', genres: [] as string[], targetRegion: 'United States', freeEpisodeCount: 3, price: 4.99 });
+
+const loadSeries = async () => {
+  loading.value = true;
+  loadError.value = false;
+  try {
+    const [series, taxonomy] = await Promise.all([api.getSeries(), api.getTaxonomy()]);
+    state.value.series = series.items;
+    state.value.taxonomy = taxonomy.items;
+  } catch {
+    loadError.value = true;
+  } finally {
+    loading.value = false;
+  }
+};
+
+onMounted(loadSeries);
 
 const filteredRows = computed(() => state.value.series.filter((row) => {
   const text = keyword.value.toLowerCase().trim();
@@ -42,30 +66,29 @@ const openEdit = (row: AdminSeries) => {
   dialogVisible.value = true;
 };
 
-const saveSeries = () => {
+const saveSeries = async () => {
   if (!form.title.trim() || !form.genres.length) {
     ElMessage.warning('请填写剧名并至少选择一个分类');
     return;
   }
-  if (editingId.value) {
-    const row = state.value.series.find((item) => item.id === editingId.value);
-    if (!row) return;
-    const before = row.title;
-    Object.assign(row, { ...form, title: form.title.trim(), genres: [...form.genres], publishAt: new Date().toISOString().slice(0, 10) });
-    addAudit({ module: '短剧管理', action: '编辑短剧', target: row.title, detail: `${before} · 内容资料已更新`, risk: '普通' });
-    ElMessage.success('短剧资料已保存');
-  } else {
-    const id = `sr-${String(Date.now()).slice(-6)}`;
-    state.value.series.unshift({
-      id,
-      slug: form.title.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || id,
-      title: form.title.trim(), description: form.description, coverUrl: '/posters/vows-vengeance.jpg', genres: [...form.genres], episodeCount: 0,
-      freeEpisodeCount: form.freeEpisodeCount, price: form.price, publishStatus: '草稿', publishAt: new Date().toISOString().slice(0, 10), transcodeProgress: 0, targetRegion: form.targetRegion,
-    });
-    addAudit({ module: '短剧管理', action: '新建短剧', target: form.title.trim(), detail: '创建草稿并等待上传分集', risk: '普通' });
-    ElMessage.success('短剧草稿已创建');
+  saving.value = true;
+  const input = { ...form, title: form.title.trim(), description: form.description.trim(), genres: [...form.genres] };
+  try {
+    if (editingId.value) {
+      const updated = await api.updateSeries(editingId.value, input);
+      const index = state.value.series.findIndex((item) => item.id === updated.id);
+      if (index >= 0) state.value.series[index] = updated;
+      ElMessage.success('短剧资料已保存并同步到服务端');
+    } else {
+      state.value.series.unshift(await api.createSeries(input));
+      ElMessage.success('短剧草稿已创建');
+    }
+    dialogVisible.value = false;
+  } catch (reason: any) {
+    ElMessage.error(reason?.data?.statusMessage || '短剧资料保存失败');
+  } finally {
+    saving.value = false;
   }
-  dialogVisible.value = false;
 };
 
 const updateStatus = async (rows: AdminSeries[], next: PublishStatus) => {
@@ -76,39 +99,35 @@ const updateStatus = async (rows: AdminSeries[], next: PublishStatus) => {
   if (['已下架', '版权冻结'].includes(next)) {
     await ElMessageBox.confirm(`确定将 ${rows.length} 部短剧设为“${next}”吗？该操作会影响前台播放。`, '高风险操作', { type: 'warning', confirmButtonText: '确认执行' });
   }
-  rows.forEach((row) => {
-    const before = row.publishStatus;
-    row.publishStatus = next;
-    addAudit({ module: '短剧管理', action: next === '已上架' ? '上架短剧' : '变更发布状态', target: row.title, detail: `${before} → ${next}`, risk: ['已下架', '版权冻结'].includes(next) ? '高风险' : '普通' });
-  });
-  ElMessage.success(`已更新 ${rows.length} 部短剧`);
+  try {
+    const updated = await Promise.all(rows.map((row) => api.updateSeriesStatus(row.id, next)));
+    updated.forEach((item) => {
+      const index = state.value.series.findIndex((row) => row.id === item.id);
+      if (index >= 0) state.value.series[index] = item;
+    });
+    selectedRows.value = [];
+    ElMessage.success(`已更新 ${rows.length} 部短剧`);
+  } catch (reason: any) {
+    await loadSeries();
+    ElMessage.error(reason?.data?.statusMessage || '发布状态更新失败');
+  }
 };
 
-const duplicate = (row: AdminSeries) => {
-  const copy = { ...row, id: `sr-${String(Date.now()).slice(-6)}`, slug: `${row.slug}-copy`, title: `${row.title} Copy`, publishStatus: '草稿' as PublishStatus, genres: [...row.genres] };
-  state.value.series.unshift(copy);
-  addAudit({ module: '短剧管理', action: '复制短剧', target: copy.title, detail: `来源：${row.id}`, risk: '普通' });
-  ElMessage.success('已创建副本草稿');
+const duplicate = async (row: AdminSeries) => {
+  try {
+    state.value.series.unshift(await api.duplicateSeries(row.id));
+    ElMessage.success('已创建副本草稿');
+  } catch (reason: any) {
+    ElMessage.error(reason?.data?.statusMessage || '复制短剧失败');
+  }
 };
 
 const openEpisodes = (row: AdminSeries) => { selectedSeries.value = row; episodeDrawer.value = true; };
-const onFileSelected = (_file: UploadFile) => { uploading.value = true; if (selectedSeries.value) selectedSeries.value.transcodeProgress = 12; };
+const onFileSelected = (file: UploadFile) => { selectedFileName.value = file.name; uploading.value = true; };
 const startTranscode = () => {
   if (!selectedSeries.value) return;
   if (!uploading.value) return ElMessage.warning('请先选择视频文件');
-  const row = selectedSeries.value;
-  row.publishStatus = '处理中';
-  const timer = window.setInterval(() => {
-    row.transcodeProgress = Math.min(100, row.transcodeProgress + 22);
-    if (row.transcodeProgress >= 100) {
-      window.clearInterval(timer);
-      row.episodeCount += 1;
-      row.publishStatus = '待发布';
-      uploading.value = false;
-      addAudit({ module: '短剧管理', action: '上传分集', target: row.title, detail: `第 ${row.episodeCount} 集转码完成`, risk: '普通' });
-      ElMessage.success('上传与 HLS 转码已完成');
-    }
-  }, 350);
+  ElMessage.warning('尚未配置媒体上传与转码 Worker，文件未上传');
 };
 
 const exportSeries = () => {
@@ -135,7 +154,9 @@ const exportSeries = () => {
       </div>
     </section>
 
-    <section class="admin-panel admin-table-panel">
+    <section v-if="loading" class="admin-panel admin-data-state"><el-skeleton :rows="8" animated /></section>
+    <section v-else-if="loadError" class="admin-panel admin-data-state"><span><CloudOff :size="28" /></span><h2>无法读取短剧数据</h2><p>管理接口未连接，或 D1 配置表未初始化。</p><el-button @click="loadSeries"><RefreshCw :size="16" />重试</el-button></section>
+    <section v-else class="admin-panel admin-table-panel">
       <el-table :data="filteredRows" row-key="id" @selection-change="(rows: AdminSeries[]) => selectedRows = rows">
         <el-table-column type="selection" width="48" />
         <el-table-column label="短剧" min-width="270"><template #default="scope"><div class="series-cell"><img :src="scope.row.coverUrl" alt="" /><div><strong>{{ scope.row.title }}</strong><span>{{ scope.row.id }} · {{ scope.row.episodeCount }} 集 · {{ scope.row.targetRegion }}</span></div></div></template></el-table-column>
@@ -157,12 +178,13 @@ const exportSeries = () => {
         <div class="form-grid"><el-form-item label="试看集数"><el-input-number v-model="form.freeEpisodeCount" :min="0" :max="10" /></el-form-item><el-form-item label="解锁价格（USD）"><el-input-number v-model="form.price" :min="0" :precision="2" :step="1" /></el-form-item></div>
         <el-form-item label="短剧简介"><el-input v-model="form.description" type="textarea" :rows="4" maxlength="500" show-word-limit /></el-form-item>
       </el-form>
-      <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" @click="saveSeries">{{ editingId ? '保存修改' : '创建草稿' }}</el-button></template>
+      <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveSeries">{{ editingId ? '保存修改' : '创建草稿' }}</el-button></template>
     </el-dialog>
 
     <el-drawer v-model="episodeDrawer" :title="`${selectedSeries?.title || ''} · 分集管理`" size="min(620px, 92vw)">
       <div v-if="selectedSeries" class="episode-manager">
-        <div class="episode-upload-box"><Upload :size="26" /><div><strong>上传下一集视频</strong><span>支持 MP4/MOV，上传后自动校验并生成多码率 HLS</span></div><el-upload :auto-upload="false" :show-file-list="true" :limit="1" accept="video/mp4,video/quicktime" :on-change="onFileSelected"><el-button>选择视频</el-button></el-upload><el-button type="primary" :loading="selectedSeries.publishStatus === '处理中'" @click="startTranscode">开始上传</el-button></div>
+        <el-alert title="视频上传需要 Cloudflare R2/Stream 与转码 Worker；未配置前不会伪造上传成功。" type="warning" :closable="false" show-icon />
+        <div class="episode-upload-box"><Upload :size="26" /><div><strong>上传下一集视频</strong><span>{{ selectedFileName || '支持 MP4/MOV，将由媒体 Worker 生成多码率 HLS' }}</span></div><el-upload :auto-upload="false" :show-file-list="true" :limit="1" accept="video/mp4,video/quicktime" :on-change="onFileSelected"><el-button>选择视频</el-button></el-upload><el-button type="primary" @click="startTranscode">开始上传</el-button></div>
         <el-progress v-if="selectedSeries.transcodeProgress < 100 || selectedSeries.publishStatus === '处理中'" :percentage="selectedSeries.transcodeProgress" :status="selectedSeries.transcodeProgress === 100 ? 'success' : undefined" />
         <div class="episode-list"><div class="episode-list__header"><strong>已上传分集</strong><span>{{ selectedSeries.episodeCount }} 集</span></div><div v-for="episode in Math.min(selectedSeries.episodeCount, 12)" :key="episode" class="episode-row"><span class="episode-index">{{ String(episode).padStart(2, '0') }}</span><div><strong>Episode {{ episode }}</strong><span>HLS 1080p / 720p / 480p · 01:{{ 38 + (episode % 20) }}</span></div><el-tag :type="episode <= selectedSeries.freeEpisodeCount ? 'success' : 'info'">{{ episode <= selectedSeries.freeEpisodeCount ? '免费试看' : '付费' }}</el-tag></div></div>
       </div>

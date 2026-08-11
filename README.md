@@ -15,7 +15,7 @@ npm run dev
 - 管理后台仅提供登录，不开放注册。所有管理员账号（包括开发环境预设超级管理员）均保存在 Cloudflare D1 `admin_accounts` 表，未连接数据库时不使用内存数据兜底。开发环境预设账号为 `admin@reelnova.com` / `ReelNova@2026`；生产部署必须通过 `SUPER_ADMIN_EMAIL`、`SUPER_ADMIN_PASSWORD` 和 `ADMIN_SESSION_SECRET` 覆盖默认值。
 - 超级管理员可在 `/admin/administrators` 直接创建管理员，系统生成的登录密码仅在创建成功时返回一次。
 - 验收命令：`npm run typecheck`、`npm run build`、`npm run visual-check`。
-- 接口约定见 [`docs/API-INTEGRATION.md`](./docs/API-INTEGRATION.md)，后台 UI 基线见 [`docs/ART-DESIGN-PRO.md`](./docs/ART-DESIGN-PRO.md)。
+- 接口约定见 [`docs/API-INTEGRATION.md`](./docs/API-INTEGRATION.md)，后台 UI 基线见 [`docs/ART-DESIGN-PRO.md`](./docs/ART-DESIGN-PRO.md)。`NUXT_PUBLIC_API_BASE` 应指向包含 `/auth`、`/admin` 和业务路由的 API 根路（本地默认为 `/api`）。
 - Cloudflare D1、播放统计与 PayPal 真实订单配置见 [`docs/CLOUDFLARE-INTEGRATION.md`](./docs/CLOUDFLARE-INTEGRATION.md)。
 
 ## 推荐技术选型

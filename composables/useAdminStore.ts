@@ -1,24 +1,9 @@
 import { homeData, seriesList } from '~/data/mock';
+import type { AdminSeries, DomainConfig, PublishStatus, TaxonomyItem } from '~/types/admin';
 
-export type PublishStatus = '已上架' | '处理中' | '草稿' | '待发布' | '已下架' | '版权冻结';
+export type { AdminSeries, DomainConfig, PublishStatus, TaxonomyItem } from '~/types/admin';
+
 export type AdminOrderStatus = '已支付' | '处理中' | '支付失败' | '退款中' | '已退款' | '风控审核';
-
-export interface AdminSeries {
-  id: string;
-  slug: string;
-  title: string;
-  description: string;
-  coverUrl: string;
-  genres: string[];
-  episodeCount: number;
-  freeEpisodeCount: number;
-  price: number;
-  originalPrice?: number;
-  publishStatus: PublishStatus;
-  publishAt: string;
-  transcodeProgress: number;
-  targetRegion: string;
-}
 
 export interface AdminOrder {
   no: string;
@@ -44,27 +29,6 @@ export interface HomeSectionConfig {
   count: number;
   source: string;
   itemIds: string[];
-}
-
-export interface TaxonomyItem {
-  id: string;
-  name: string;
-  localeName: string;
-  type: '分类' | '标签';
-  color: string;
-  contentCount: number;
-  enabled: boolean;
-  expiresAt: string;
-}
-
-export interface DomainConfig {
-  id: string;
-  host: string;
-  role: '主域名' | '备用域名';
-  verification: '已验证' | '待验证' | '验证失败';
-  certificate: '正常' | '即将到期' | '未签发';
-  redirect: boolean;
-  updatedAt: string;
 }
 
 export interface AuditLog {
@@ -165,26 +129,8 @@ const createInitialState = (): AdminState => ({
   },
 });
 
-const storageKey = 'reelnova-admin-demo-v2';
-const legacyStorageKey = 'reelnova-admin-demo-v1';
-
 export const useAdminStore = () => {
-  const state = useState<AdminState>('admin-demo-state', createInitialState);
-  const hydrated = useState('admin-demo-hydrated', () => false);
-
-  if (import.meta.client && !hydrated.value) {
-    localStorage.removeItem(legacyStorageKey);
-    const cached = localStorage.getItem(storageKey);
-    if (cached) {
-      try {
-        state.value = { ...createInitialState(), ...JSON.parse(cached) };
-      } catch {
-        localStorage.removeItem(storageKey);
-      }
-    }
-    hydrated.value = true;
-  }
-  if (import.meta.client) watch(state, (value) => localStorage.setItem(storageKey, JSON.stringify(value)), { deep: true });
+  const state = useState<AdminState>('admin-state', createInitialState);
 
   const addAudit = (entry: Omit<AuditLog, 'id' | 'actor' | 'ip' | 'createdAt'>) => {
     state.value.auditLogs.unshift({
@@ -198,7 +144,6 @@ export const useAdminStore = () => {
 
   const resetDemo = () => {
     state.value = createInitialState();
-    if (import.meta.client) localStorage.removeItem(storageKey);
   };
 
   return { state, addAudit, resetDemo };

@@ -40,14 +40,15 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | Administrators | `GET/POST /api/admin/administrators`, `PATCH /api/admin/administrators/{id}` (super administrator only) |
 | Dashboard | `GET /api/admin/dashboard` (Cloudflare D1 only) |
 | Pending items | `GET /api/admin/pending-items` (orders and PayPal Webhook failures from Cloudflare D1) |
-| Series | `GET/POST /admin/api/series`, `PUT /admin/api/series/{id}`, `POST /admin/api/series/{id}/publish` |
-| Episodes | `GET/POST /admin/api/series/{id}/episodes`, `POST /admin/api/uploads/multipart` |
-| Home sections | `GET/PUT /admin/api/home-sections`, `PUT /admin/api/home-sections/sort` |
+| Series | `GET/POST /api/admin/series`, `PUT /api/admin/series/{id}`, `PATCH /api/admin/series/{id}/status`, `POST /api/admin/series/{id}/duplicate` |
+| Episodes | Media upload requires the Cloudflare R2/Stream upload and transcoding worker; metadata is not marked complete until that service is connected |
+| Home sections | `GET/PUT /api/admin/home-config` |
 | Orders | `GET /api/admin/orders`, `POST /api/admin/orders/{orderNo}/verify` |
 | Users | `GET /api/admin/users`, `PATCH /api/admin/users/{userId}`, `POST /api/admin/users/{userId}/release-device`, `POST /api/admin/users/{userId}/entitlements` |
 | Reconciliation | `GET /api/admin/reconciliation` |
-| PayPal | `GET/PUT /admin/api/paypal/config`, `GET /admin/api/paypal/webhook-health` |
-| Site/domain | `GET/PUT /admin/api/site-config`, `GET/POST /admin/api/domains` |
+| Taxonomy | `GET/PUT /api/admin/taxonomy` |
+| PayPal | `GET /api/admin/connection` (credentials remain Cloudflare Secrets and are never returned) |
+| Site/domain | `GET/POST /api/admin/domains`, `PATCH /api/admin/domains/{id}`, `POST /api/admin/domains/{id}/verify` |
 | Audit | `GET /api/admin/audit` |
 | Connection health | `GET /api/admin/connection` |
 

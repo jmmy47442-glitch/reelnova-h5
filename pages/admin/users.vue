@@ -16,6 +16,13 @@ const activeUser = ref<PersistedUser | null>(null);
 const grantForm = reactive({ seriesId: '', reason: '' });
 const queryParams = computed(() => ({ keyword: keyword.value || undefined, status: statusFilter.value || undefined, country: country.value || undefined, pageSize: 100 }));
 const { data, status, error, refresh } = await useAsyncData('admin-users-real', () => api.getUsers(queryParams.value), { watch: [queryParams] });
+onMounted(async () => {
+  try {
+    state.value.series = (await api.getSeries()).items;
+  } catch {
+    ElMessage.error('可补发权益的短剧列表加载失败');
+  }
+});
 const rows = computed(() => data.value?.items || []);
 const statusLabels: Record<PersistedUserStatus, string> = { active: '正常', restricted: '受限', disabled: '已禁用' };
 const statusOptions: PersistedUserStatus[] = ['active', 'restricted', 'disabled'];
