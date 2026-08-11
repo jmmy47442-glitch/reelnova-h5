@@ -2,36 +2,36 @@
 import { Bell, ChevronDown, LogOut, Menu, PanelLeftClose, Search } from 'lucide-vue-next';
 import { ElMessage } from 'element-plus';
 import type { AdminPendingItem } from '~/types/admin';
+import type { AdminPermission } from '~/shared/admin-rbac';
 
 defineEmits<{ 'toggle-sidebar': []; 'open-mobile': [] }>();
 const searchOpen = ref(false);
 const query = ref('');
-const { user, isSuperAdmin, logout } = useAdminAuth();
+const { user, roleLabel, can, logout } = useAdminAuth();
 const api = useAdminApi();
 const pendingItems = ref<AdminPendingItem[]>([]);
 const pendingLoading = ref(false);
 const pendingError = ref(false);
 let pendingRefreshTimer: number | undefined;
-const commands = [
-  { label: '数据概览', description: '播放、收入与系统健康', to: '/admin' },
-  { label: '短剧管理', description: '内容资料、分集与发布', to: '/admin/series' },
-  { label: '首页配置', description: '分区排序与推荐内容', to: '/admin/operations' },
-  { label: '分类与标签', description: '分类、多语言与标签', to: '/admin/taxonomy' },
-  { label: '订单管理', description: '支付、退款与权益发放', to: '/admin/orders' },
-  { label: '用户与权益', description: '用户、设备与补发权益', to: '/admin/users' },
-  { label: '对账中心', description: '收入、手续费与异常', to: '/admin/reconciliation' },
-  { label: '站点与支付', description: 'PayPal 与业务规则', to: '/admin/system' },
-  { label: '域名管理', description: 'DNS、HTTPS 与跳转', to: '/admin/domains' },
-  { label: '审计日志', description: '高风险操作记录', to: '/admin/audit' },
+const commands: Array<{ label: string; description: string; to: string; permission: AdminPermission }> = [
+  { label: '数据概览', description: '播放、收入与系统健康', to: '/admin', permission: 'dashboard.read' },
+  { label: '短剧管理', description: '内容资料、分集与发布', to: '/admin/series', permission: 'content.read' },
+  { label: '首页配置', description: '分区排序与推荐内容', to: '/admin/operations', permission: 'content.read' },
+  { label: '分类与标签', description: '分类、多语言与标签', to: '/admin/taxonomy', permission: 'content.read' },
+  { label: '订单管理', description: '支付、退款与权益发放', to: '/admin/orders', permission: 'finance.read' },
+  { label: '用户与权益', description: '用户、设备与补发权益', to: '/admin/users', permission: 'finance.read' },
+  { label: '对账中心', description: '收入、手续费与异常', to: '/admin/reconciliation', permission: 'finance.read' },
+  { label: '站点与支付', description: 'PayPal 与业务规则', to: '/admin/system', permission: 'system.read' },
+  { label: '域名管理', description: 'DNS、HTTPS 与跳转', to: '/admin/domains', permission: 'domains.manage' },
+  { label: '审计日志', description: '高风险操作记录', to: '/admin/audit', permission: 'audit.read' },
+  { label: '管理员账号', description: '创建、分岗和停用管理员', to: '/admin/administrators', permission: 'administrators.manage' },
 ];
-const availableCommands = computed(() => isSuperAdmin.value
-  ? [...commands, { label: '管理员账号', description: '创建、停用和恢复管理员', to: '/admin/administrators' }]
-  : commands);
+const availableCommands = computed(() => commands.filter((item) => can(item.permission)));
 const filtered = computed(() => availableCommands.value.filter((item) => `${item.label} ${item.description}`.toLowerCase().includes(query.value.toLowerCase())));
 const openCommand = () => { searchOpen.value = true; nextTick(() => document.querySelector<HTMLInputElement>('.command-search input')?.focus()); };
 const go = (to: string) => { searchOpen.value = false; query.value = ''; navigateTo(to); };
 const loadPendingItems = async () => {
-  if (pendingLoading.value) return;
+  if (pendingLoading.value || !can('dashboard.read')) return;
   pendingLoading.value = true;
   pendingError.value = false;
   try {
@@ -58,8 +58,10 @@ const handleCommand = async (command: string) => {
 const onKeydown = (event: KeyboardEvent) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); openCommand(); } };
 onMounted(() => {
   window.addEventListener('keydown', onKeydown);
-  void loadPendingItems();
-  pendingRefreshTimer = window.setInterval(() => void loadPendingItems(), 60_000);
+  if (can('dashboard.read')) {
+    void loadPendingItems();
+    pendingRefreshTimer = window.setInterval(() => void loadPendingItems(), 60_000);
+  }
 });
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown);
@@ -75,9 +77,9 @@ onBeforeUnmount(() => {
       <button class="admin-search" type="button" @click="openCommand"><Search :size="17" /><span>搜索菜单或功能</span><kbd>⌘ K</kbd></button>
     </div>
     <div class="admin-header__end">
-      <el-popover placement="bottom-end" :width="300" trigger="click" @show="loadPendingItems"><template #reference><button class="admin-icon-button" :class="{ 'has-notice': pendingItems.length > 0 }" type="button" title="通知"><Bell :size="19" /></button></template><div class="notification-list"><strong>待处理事项</strong><div v-if="pendingLoading" class="notification-list__state">正在读取最新待办...</div><div v-else-if="pendingError" class="notification-list__state notification-list__state--error">暂时无法读取真实待办，请稍后重试。</div><div v-else-if="!pendingItems.length" class="notification-list__state">暂无待处理事项</div><template v-else><button v-for="item in pendingItems" :key="item.id" type="button" @click="go(item.to)"><span class="health-dot" :class="item.severity" /><div><b>{{ item.count }} {{ item.title }}</b><small>{{ item.description }}</small></div></button></template></div></el-popover>
+      <el-popover v-if="can('dashboard.read')" placement="bottom-end" :width="300" trigger="click" @show="loadPendingItems"><template #reference><button class="admin-icon-button" :class="{ 'has-notice': pendingItems.length > 0 }" type="button" title="通知"><Bell :size="19" /></button></template><div class="notification-list"><strong>待处理事项</strong><div v-if="pendingLoading" class="notification-list__state">正在读取最新待办...</div><div v-else-if="pendingError" class="notification-list__state notification-list__state--error">暂时无法读取真实待办，请稍后重试。</div><div v-else-if="!pendingItems.length" class="notification-list__state">暂无待处理事项</div><template v-else><button v-for="item in pendingItems" :key="item.id" type="button" @click="go(item.to)"><span class="health-dot" :class="item.severity" /><div><b>{{ item.count }} {{ item.title }}</b><small>{{ item.description }}</small></div></button></template></div></el-popover>
       <span class="admin-divider" />
-      <el-dropdown @command="handleCommand"><button class="admin-user" type="button"><span class="admin-avatar">{{ user.name.slice(0, 2).toUpperCase() }}</span><span class="admin-user__copy"><strong>{{ user.name }}</strong><small>{{ isSuperAdmin ? '超级管理员' : user.email }}</small></span><ChevronDown :size="15" /></button><template #dropdown><el-dropdown-menu><el-dropdown-item v-if="isSuperAdmin" command="administrators">管理员账号</el-dropdown-item><el-dropdown-item command="audit">我的操作日志</el-dropdown-item><el-dropdown-item command="session" divided>会话信息</el-dropdown-item><el-dropdown-item command="logout"><LogOut :size="14" />退出登录</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
+      <el-dropdown @command="handleCommand"><button class="admin-user" type="button"><span class="admin-avatar">{{ user.name.slice(0, 2).toUpperCase() }}</span><span class="admin-user__copy"><strong>{{ user.name }}</strong><small>{{ roleLabel }}</small></span><ChevronDown :size="15" /></button><template #dropdown><el-dropdown-menu><el-dropdown-item v-if="can('administrators.manage')" command="administrators">管理员账号</el-dropdown-item><el-dropdown-item v-if="can('audit.read')" command="audit">审计日志</el-dropdown-item><el-dropdown-item command="session" divided>会话信息</el-dropdown-item><el-dropdown-item command="logout"><LogOut :size="14" />退出登录</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
     </div>
   </header>
 

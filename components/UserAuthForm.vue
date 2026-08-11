@@ -99,6 +99,7 @@ const submit = async () => {
           <h2>{{ isRegister ? 'Create your account' : 'Sign in to watch' }}</h2>
           <p>{{ isRegister ? 'Keep purchases and watch progress connected.' : 'Pick up from the exact moment you left.' }}</p>
         </header>
+        <p v-if="!isRegister && route.query.accountDeleted === '1'" class="consumer-auth__notice" role="status"><Check :size="15" /> Your account data was deleted and you have been signed out.</p>
 
         <nav class="consumer-auth__switch" aria-label="Account access">
           <NuxtLink :to="{ path: '/login', query: route.query.redirect ? { redirect: route.query.redirect } : undefined }" :class="{ 'is-active': !isRegister }">Sign in</NuxtLink>

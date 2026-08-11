@@ -1,5 +1,7 @@
 import type { AdminSession } from '~/types/admin';
 import type { ApiEnvelope } from '~/types/content';
+import type { AdminPermission } from '~/shared/admin-rbac';
+import { adminRoleLabels, getAdminLandingPath, hasAdminPermission } from '~/shared/admin-rbac';
 
 export const useAdminAuth = () => {
   const baseURL = useRuntimeConfig().public.apiBase;
@@ -8,11 +10,14 @@ export const useAdminAuth = () => {
 
   const isAuthenticated = computed(() => Boolean(session.value?.id));
   const isSuperAdmin = computed(() => session.value?.role === 'super_admin');
+  const roleLabel = computed(() => session.value ? adminRoleLabels[session.value.role] : '管理员');
+  const landingPath = computed(() => getAdminLandingPath(session.value?.role));
+  const can = (permission: AdminPermission) => hasAdminPermission(session.value?.role, permission);
   const user = computed(() => session.value || {
     id: '',
     email: '',
     name: '管理员',
-    role: 'admin' as const,
+    role: 'content_operator' as const,
     loggedInAt: '',
     expiresAt: '',
   });
@@ -51,5 +56,5 @@ export const useAdminAuth = () => {
     }
   };
 
-  return { session, user, isAuthenticated, isSuperAdmin, fetchSession, login, logout };
+  return { session, user, isAuthenticated, isSuperAdmin, roleLabel, landingPath, can, fetchSession, login, logout };
 };

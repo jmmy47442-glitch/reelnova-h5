@@ -1,5 +1,5 @@
 import type { ApiEnvelope } from '~/types/content';
-import type { AdminAccount, AdminAuditResponse, AdminEpisode, AdminOrdersResponse, AdminPendingItemsResponse, AdminSeries, AdminUsersResponse, DashboardSummary, DomainConfig, MediaUploadPart, MediaUploadSession, PersistedUserStatus, PublishStatus, ReconciliationResponse, TaxonomyItem } from '~/types/admin';
+import type { AdminAccount, AdminAuditResponse, AdminEpisode, AdminOrdersResponse, AdminPendingItemsResponse, AdminRole, AdminSeries, AdminUserDetail, AdminUsersResponse, DashboardSummary, DomainConfig, MediaUploadPart, MediaUploadSession, PersistedUserStatus, PublishStatus, ReconciliationResponse, TaxonomyItem } from '~/types/admin';
 import type { HomeSectionConfig } from '~/composables/useAdminStore';
 
 export const useAdminApi = () => {
@@ -12,6 +12,7 @@ export const useAdminApi = () => {
     getPendingItems: () => request<AdminPendingItemsResponse>('/admin/pending-items'),
     getOrders: (query: Record<string, string | number | undefined> = {}) => request<AdminOrdersResponse>('/admin/orders', { query }),
     getUsers: (query: Record<string, string | number | undefined> = {}) => request<AdminUsersResponse>('/admin/users', { query }),
+    getUserDetail: (userId: string) => request<AdminUserDetail>(`/admin/users/${encodeURIComponent(userId)}`),
     getAudit: (query: Record<string, string | number | undefined> = {}) => request<AdminAuditResponse>('/admin/audit', { query }),
     updateUserStatus: (userId: string, status: PersistedUserStatus) => request<{ userId: string; status: PersistedUserStatus }>(`/admin/users/${encodeURIComponent(userId)}`, { method: 'PATCH', body: { status } }),
     releaseUserDevice: (userId: string) => request<{ userId: string; status: PersistedUserStatus }>(`/admin/users/${encodeURIComponent(userId)}/release-device`, { method: 'POST' }),
@@ -47,8 +48,9 @@ export const useAdminApi = () => {
     updateDomain: (id: string, input: { action: 'set-primary' } | { action: 'set-redirect'; redirect: boolean }) => request<DomainConfig>(`/admin/domains/${encodeURIComponent(id)}`, { method: 'PATCH', body: input }),
     verifyDomain: (id: string) => request<DomainConfig>(`/admin/domains/${encodeURIComponent(id)}/verify`, { method: 'POST' }),
     getAdministrators: () => request<{ items: AdminAccount[] }>('/admin/administrators'),
-    createAdministrator: (input: { name: string; email: string }) => request<{ account: AdminAccount; initialPassword: string }>('/admin/administrators', { method: 'POST', body: input }),
+    createAdministrator: (input: { name: string; email: string; role: Exclude<AdminRole, 'super_admin'> }) => request<{ account: AdminAccount; initialPassword: string }>('/admin/administrators', { method: 'POST', body: input }),
     updateAdministratorStatus: (id: string, status: 'active' | 'disabled') => request<AdminAccount>(`/admin/administrators/${encodeURIComponent(id)}`, { method: 'PATCH', body: { status } }),
+    updateAdministratorRole: (id: string, role: Exclude<AdminRole, 'super_admin'>) => request<AdminAccount>(`/admin/administrators/${encodeURIComponent(id)}`, { method: 'PATCH', body: { role } }),
     deleteAdministrator: (id: string) => request<{ id: string }>(`/admin/administrators/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   };
 };

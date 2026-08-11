@@ -14,7 +14,7 @@ import {
 import { ElMessage } from 'element-plus';
 
 const route = useRoute();
-const { login } = useAdminAuth();
+const { login, landingPath } = useAdminAuth();
 const form = reactive({ email: '', password: '', remember: true });
 const errors = reactive({ email: '', password: '', submit: '' });
 const showPassword = ref(false);
@@ -39,7 +39,7 @@ const submit = async () => {
     ElMessage.success('登录成功');
     const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/admin')
       ? route.query.redirect
-      : '/admin';
+      : landingPath.value;
     await navigateTo(redirect);
   } catch (error: unknown) {
     const statusCode = (error as { statusCode?: number; response?: { status?: number } }).statusCode

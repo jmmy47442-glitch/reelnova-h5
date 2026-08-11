@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { Compass, Home, Library, UserRound } from 'lucide-vue-next';
+import { useLocale } from '~/composables/useLocale';
 
 const route = useRoute();
-const navItems = [
-  { label: 'Home', to: '/', icon: Home },
-  { label: 'Explore', to: '/explore', icon: Compass },
-  { label: 'Library', to: '/library', icon: Library },
-  { label: 'Profile', to: '/profile', icon: UserRound },
-];
+const { t } = useLocale();
+const navItems = computed(() => [
+  { label: t('nav.home'), to: '/', icon: Home },
+  { label: t('nav.explore'), to: '/explore', icon: Compass },
+  { label: t('nav.library'), to: '/library', icon: Library },
+  { label: t('nav.profile'), to: '/profile', icon: UserRound },
+]);
 
 const isActive = (path: string) => path === '/' ? route.path === '/' : route.path.startsWith(path);
 </script>

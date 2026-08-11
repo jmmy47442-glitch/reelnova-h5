@@ -14,9 +14,9 @@ defineProps<{ compact?: boolean }>();
       <NuxtLink class="icon-button" to="/explore" aria-label="Search">
         <Search :size="21" />
       </NuxtLink>
-      <button class="icon-button" type="button" aria-label="Language and region">
+      <NuxtLink class="icon-button" to="/profile/language" aria-label="Language and region">
         <Globe2 :size="20" />
-      </button>
+      </NuxtLink>
     </div>
   </header>
 </template>

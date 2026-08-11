@@ -1,8 +1,10 @@
 import type { ApiEnvelope } from '~/types/content';
 import type { UserLoginInput, UserRegisterInput, UserSession } from '~/types/user';
+import { useAccountSettings } from '~/composables/useAccountSettings';
 
 export const useUserAuth = () => {
   const baseURL = useRuntimeConfig().public.apiBase;
+  const accountSettings = useAccountSettings();
   const session = useState<UserSession | null>('user-session', () => null);
   const sessionChecked = useState('user-session-checked', () => false);
   const isAuthenticated = computed(() => Boolean(session.value?.userId));
@@ -44,6 +46,7 @@ export const useUserAuth = () => {
     } finally {
       session.value = null;
       sessionChecked.value = true;
+      accountSettings.resetSettings();
     }
   };
 

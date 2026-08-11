@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus';
 
 definePageMeta({ layout: 'admin' });
 const api = useAdminApi();
+const { can } = useAdminAuth();
 const { formatViews } = useFormatters();
 const chartMode = ref<'播放量' | '收入'>('播放量');
 const { data, status, error, refresh } = await useAsyncData('admin-dashboard-real', () => api.getDashboard());
@@ -28,10 +29,10 @@ const downloadReport = () => {
 
 <template>
   <div>
-    <AdminPageHeader title="数据概览" description="数据来自 Cloudflare D1；播放事件与 PayPal 已确认订单实时聚合。"><el-button :disabled="!data" @click="downloadReport"><Download :size="16" />下载报表</el-button><el-button type="primary" @click="navigateTo('/admin/series')"><Plus :size="16" />创建短剧</el-button></AdminPageHeader>
+    <AdminPageHeader title="数据概览" description="数据来自 Cloudflare D1；播放事件与 PayPal 已确认订单实时聚合。"><el-button :disabled="!data" @click="downloadReport"><Download :size="16" />下载报表</el-button><el-button v-if="can('content.manage')" type="primary" @click="navigateTo('/admin/series')"><Plus :size="16" />创建短剧</el-button></AdminPageHeader>
 
     <section v-if="status === 'pending'" class="admin-panel admin-data-state"><el-skeleton :rows="8" animated /></section>
-    <section v-else-if="error || !data" class="admin-panel admin-data-state"><span><CloudOff :size="28" /></span><h2>Cloudflare 尚未连接</h2><p>{{ errorMessage }}</p><div><el-button @click="() => refresh()"><RefreshCw :size="16" />重试连接</el-button><NuxtLink to="/admin/system" class="el-button el-button--primary">检查配置</NuxtLink></div></section>
+    <section v-else-if="error || !data" class="admin-panel admin-data-state"><span><CloudOff :size="28" /></span><h2>Cloudflare 尚未连接</h2><p>{{ errorMessage }}</p><div><el-button @click="() => refresh()"><RefreshCw :size="16" />重试连接</el-button><NuxtLink v-if="can('system.read')" to="/admin/system" class="el-button el-button--primary">检查配置</NuxtLink></div></section>
 
     <template v-else>
       <div class="live-source-line"><span><i class="health-dot ok" />{{ data.source }}</span><strong>更新于 {{ new Date(data.generatedAt).toLocaleString('zh-CN', { hour12: false }) }} · {{ data.timezone }}</strong></div>

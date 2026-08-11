@@ -35,6 +35,9 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | GET | `/api/orders/{orderNo}` | Poll server-confirmed order state |
 | POST | `/api/orders/restore` | Restore a paid order matched to the signed-in account |
 | POST | `/api/paypal/capture` | Capture an approved PayPal order and issue entitlement |
+| GET/PATCH | `/api/me/settings` | Read or persist account-level language and privacy preferences |
+| POST | `/api/me/data-export` | Create an audited export of profile, activity, orders, entitlements, and refunds |
+| DELETE | `/api/me/account` | Confirm and execute account anonymization and activity deletion |
 
 ## Admin endpoints
 
@@ -48,7 +51,7 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | Episodes | `GET /api/admin/series/{id}/episodes`, `POST /api/admin/series/{id}/episodes/uploads`, `PATCH /api/admin/media/uploads/{id}/progress`, `POST /api/admin/media/uploads/{id}/complete`, `POST /api/admin/media/{assetId}/retry`, `GET /api/admin/media/{assetId}/preview` |
 | Home sections | `GET/PUT /api/admin/home-config` |
 | Orders | `GET /api/admin/orders`, `POST /api/admin/orders/{orderNo}/verify`, `GET/POST /api/admin/orders/{orderNo}/refund` (refund mutation requires super administrator) |
-| Users | `GET /api/admin/users`, `PATCH /api/admin/users/{userId}`, `POST /api/admin/users/{userId}/release-device`, `POST /api/admin/users/{userId}/entitlements` |
+| Users | `GET /api/admin/users`, `GET/PATCH /api/admin/users/{userId}`, `POST /api/admin/users/{userId}/release-device`, `POST /api/admin/users/{userId}/entitlements` |
 | Reconciliation | `GET /api/admin/reconciliation` |
 | Taxonomy | `GET/PUT /api/admin/taxonomy` |
 | PayPal | `GET /api/admin/connection`, `POST /api/admin/paypal/webhooks/{eventId}/retry` (retry requires super administrator; credentials remain Cloudflare Secrets and are never returned) |

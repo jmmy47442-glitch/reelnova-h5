@@ -1,14 +1,20 @@
 <script setup lang="ts">
 import {
-  ArrowLeft, Check, ChevronDown, ChevronRight, CircleHelp, Clock3, Download,
+  AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronRight, CircleHelp, Clock3, Download,
   ExternalLink, FileText, Globe2, History, LockKeyhole, Mail, MessageCircle,
   Play, ReceiptText, Search, Shield, ShoppingBag, Trash2,
 } from 'lucide-vue-next';
 import type { OrderStatus } from '~/types/content';
+import { useAccountSettings } from '~/composables/useAccountSettings';
+import { useLocale } from '~/composables/useLocale';
+import { useUserAuth } from '~/composables/useUserAuth';
 
 definePageMeta({ hideBottomNav: true });
 const route = useRoute();
 const api = useContentApi();
+const { session, logout } = useUserAuth();
+const { settings, updateSettings, exportData, deleteAccount } = useAccountSettings();
+const { t } = useLocale();
 const section = String(route.params.section || '');
 
 const pageConfig = {
@@ -23,7 +29,20 @@ const pageConfig = {
 
 if (!(section in pageConfig)) throw createError({ statusCode: 404, statusMessage: 'Account page not found' });
 const config = pageConfig[section as keyof typeof pageConfig];
-useHead({ title: `${config.title} - ReelNova` });
+const localizedConfigKeys: Partial<Record<typeof section, { title: string; description: string }>> = {
+  purchases: { title: 'profile.purchases', description: 'page.purchasesDesc' },
+  orders: { title: 'profile.orders', description: 'page.ordersDesc' },
+  history: { title: 'profile.history', description: 'page.historyDesc' },
+  language: { title: 'language.title', description: 'language.desc' },
+  privacy: { title: 'privacy.title', description: 'privacy.desc' },
+  terms: { title: 'profile.terms', description: 'page.termsDesc' },
+  help: { title: 'profile.help', description: 'page.helpDesc' },
+};
+const displayConfig = computed(() => {
+  const keys = localizedConfigKeys[section];
+  return keys ? { ...config, title: t(keys.title), description: t(keys.description) } : config;
+});
+useHead(() => ({ title: `${displayConfig.value.title} - ReelNova` }));
 
 const needsLibrary = section === 'purchases';
 const needsOrders = section === 'orders';
@@ -42,14 +61,24 @@ const { data: history, status: historyStatus, error: historyError, refresh: refr
 
 const selectedOrder = ref('');
 const clearingHistory = ref(false);
-const language = ref('en');
-const savedLanguage = ref('en');
+const language = ref(settings.value.language);
+const savedLanguage = ref(settings.value.language);
 const notice = ref('');
 const noticeTimer = ref<ReturnType<typeof setTimeout>>();
 const faqQuery = ref('');
 const openFaq = ref(0);
 const openTerm = ref(0);
-const privacy = reactive({ recommendations: true, analytics: true, marketing: false });
+const privacy = reactive({
+  recommendations: settings.value.recommendations,
+  analytics: settings.value.analytics,
+  marketing: settings.value.marketing,
+});
+const exporting = ref(false);
+const deleteVisible = ref(false);
+const deleting = ref(false);
+const deleteEmail = ref('');
+const deleteConfirmation = ref('');
+const deleteError = ref('');
 
 const languages = [
   { code: 'en', name: 'English', native: 'English' },
@@ -57,7 +86,7 @@ const languages = [
   { code: 'pt', name: 'Portuguese', native: 'Portugues' },
   { code: 'fr', name: 'French', native: 'Francais' },
   { code: 'de', name: 'German', native: 'Deutsch' },
-];
+] as const;
 
 const faqs = [
   { question: 'How do I restore a purchase?', answer: 'Open Profile and enter the PayPal email or ReelNova order number used at checkout. Verified titles are added to My purchases.' },
@@ -84,9 +113,10 @@ const orderLabels: Record<OrderStatus, string> = {
   pending: 'Pending', processing: 'Processing', paid: 'Paid', failed: 'Failed', cancelled: 'Cancelled',
   refunding: 'Refund pending', refunded: 'Refunded', risk_review: 'Under review',
 };
-const formatDate = (value: string) => new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(value));
-const formatHistoryDate = (value: string) => new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(value));
-const formatMoney = (amount: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
+const localeCodes = { en: 'en-US', es: 'es-ES', pt: 'pt-BR', fr: 'fr-FR', de: 'de-DE' } as const;
+const formatDate = (value: string) => new Intl.DateTimeFormat(localeCodes[settings.value.language], { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(value));
+const formatHistoryDate = (value: string) => new Intl.DateTimeFormat(localeCodes[settings.value.language], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(value));
+const formatMoney = (amount: number) => new Intl.NumberFormat(localeCodes[settings.value.language], { style: 'currency', currency: 'USD' }).format(amount);
 
 const showNotice = (message: string) => {
   notice.value = message;
@@ -94,15 +124,19 @@ const showNotice = (message: string) => {
   noticeTimer.value = setTimeout(() => { notice.value = ''; }, 2600);
 };
 
-const saveLanguage = () => {
-  savedLanguage.value = language.value;
-  localStorage.setItem('reelnova-language', language.value);
-  showNotice('Language preference saved');
+const saveLanguage = async () => {
+  try {
+    const next = await updateSettings({ language: language.value as typeof settings.value.language });
+    savedLanguage.value = next.language;
+    showNotice('Language preference saved to your account');
+  } catch { showNotice('Language could not be saved. Try again.'); }
 };
 
-const savePrivacy = () => {
-  localStorage.setItem('reelnova-privacy', JSON.stringify(privacy));
-  showNotice('Privacy preference saved');
+const savePrivacy = async () => {
+  try {
+    await updateSettings({ ...privacy });
+    showNotice('Privacy preferences saved to your account');
+  } catch { showNotice('Privacy preferences could not be saved.'); }
 };
 
 const clearHistory = async () => {
@@ -117,25 +151,40 @@ const clearHistory = async () => {
   } finally { clearingHistory.value = false; }
 };
 
-const downloadData = () => {
-  const payload = JSON.stringify({ exportedAt: new Date().toISOString(), preferences: privacy }, null, 2);
+const downloadData = async () => {
+  if (exporting.value) return;
+  exporting.value = true;
+  try {
+    const payload = JSON.stringify(await exportData(), null, 2);
   const url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }));
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = 'reelnova-account-data.json';
+    anchor.download = `reelnova-account-data-${new Date().toISOString().slice(0, 10)}.json`;
   anchor.click();
   URL.revokeObjectURL(url);
-  showNotice('Account data downloaded');
+    showNotice('Account data export downloaded');
+  } catch { showNotice('Account data could not be exported. Try again.'); }
+  finally { exporting.value = false; }
 };
 
-onMounted(() => {
-  const storedLanguage = localStorage.getItem('reelnova-language');
-  if (storedLanguage && languages.some((item) => item.code === storedLanguage)) language.value = savedLanguage.value = storedLanguage;
+const openDelete = () => {
+  deleteEmail.value = '';
+  deleteConfirmation.value = '';
+  deleteError.value = '';
+  deleteVisible.value = true;
+};
+const confirmDelete = async () => {
+  if (deleting.value || deleteEmail.value.trim().toLowerCase() !== session.value?.email.toLowerCase() || deleteConfirmation.value !== 'DELETE') return;
+  deleting.value = true;
+  deleteError.value = '';
   try {
-    const storedPrivacy = JSON.parse(localStorage.getItem('reelnova-privacy') || 'null');
-    if (storedPrivacy) Object.assign(privacy, storedPrivacy);
-  } catch { /* Ignore invalid local preferences. */ }
-});
+    await deleteAccount(deleteEmail.value.trim(), deleteConfirmation.value);
+    await logout();
+    await navigateTo({ path: '/login', query: { accountDeleted: '1' } });
+  } catch (error: any) {
+    deleteError.value = error?.data?.statusMessage || 'The account could not be deleted. Retry or contact privacy@reelnova.com.';
+  } finally { deleting.value = false; }
+};
 
 onBeforeUnmount(() => { if (noticeTimer.value) clearTimeout(noticeTimer.value); });
 </script>
@@ -144,14 +193,14 @@ onBeforeUnmount(() => { if (noticeTimer.value) clearTimeout(noticeTimer.value); 
   <div class="content-width page-top account-page">
     <header class="account-toolbar">
       <NuxtLink class="account-toolbar__back" to="/profile" aria-label="Back to profile"><ArrowLeft :size="21" /></NuxtLink>
-      <span>Account</span>
+      <span>{{ t('account.label') }}</span>
       <NuxtLink v-if="section !== 'help'" class="account-toolbar__help" to="/profile/help" aria-label="Open help center"><CircleHelp :size="20" /></NuxtLink>
       <span v-else class="account-toolbar__spacer" />
     </header>
 
     <header class="account-heading">
       <span class="account-heading__icon"><component :is="config.icon" :size="22" /></span>
-      <div><span class="eyebrow">{{ config.eyebrow }}</span><h1>{{ config.title }}</h1><p>{{ config.description }}</p></div>
+      <div><span class="eyebrow">{{ config.eyebrow }}</span><h1>{{ displayConfig.title }}</h1><p>{{ displayConfig.description }}</p></div>
     </header>
 
     <main class="account-content">
@@ -212,27 +261,27 @@ onBeforeUnmount(() => { if (noticeTimer.value) clearTimeout(noticeTimer.value); 
       </template>
 
       <template v-else-if="section === 'language'">
-        <div class="account-section-label"><span>Display language</span><small>More languages coming soon</small></div>
+        <div class="account-section-label"><span>{{ t('language.display') }}</span><small>{{ t('language.more') }}</small></div>
         <div class="language-list" role="radiogroup" aria-label="Display language">
           <button v-for="item in languages" :key="item.code" type="button" role="radio" :aria-checked="language === item.code" :class="{ 'is-selected': language === item.code }" @click="language = item.code">
             <span class="language-code">{{ item.code.toUpperCase() }}</span><span><strong>{{ item.name }}</strong><small>{{ item.native }}</small></span><span class="language-check"><Check v-if="language === item.code" :size="15" /></span>
           </button>
         </div>
-        <button class="button button--primary button--wide account-save" type="button" :disabled="language === savedLanguage" @click="saveLanguage">Save changes</button>
-        <p class="account-footnote"><Globe2 :size="14" /> Audio and subtitle options vary by story.</p>
+        <button class="button button--primary button--wide account-save" type="button" :disabled="language === savedLanguage" @click="saveLanguage">{{ t('common.save') }}</button>
+        <p class="account-footnote"><Globe2 :size="14" /> {{ t('language.audio') }}</p>
       </template>
 
       <template v-else-if="section === 'privacy'">
-        <div class="account-section-label"><span>Activity controls</span><small>Applied to this account</small></div>
+        <div class="account-section-label"><span>{{ t('privacy.controls') }}</span><small>{{ t('privacy.applied') }}</small></div>
         <section class="preference-list">
-          <label><span><strong>Personalized recommendations</strong><small>Use viewing activity to improve your Explore feed.</small></span><input v-model="privacy.recommendations" type="checkbox" @change="savePrivacy" /><i /></label>
-          <label><span><strong>Playback analytics</strong><small>Share performance data that helps fix streaming issues.</small></span><input v-model="privacy.analytics" type="checkbox" @change="savePrivacy" /><i /></label>
-          <label><span><strong>Product updates</strong><small>Receive occasional news about new stories and features.</small></span><input v-model="privacy.marketing" type="checkbox" @change="savePrivacy" /><i /></label>
+          <label><span><strong>{{ t('privacy.recommendations') }}</strong><small>{{ t('privacy.recommendationsDesc') }}</small></span><input v-model="privacy.recommendations" type="checkbox" @change="savePrivacy" /><i /></label>
+          <label><span><strong>{{ t('privacy.analytics') }}</strong><small>{{ t('privacy.analyticsDesc') }}</small></span><input v-model="privacy.analytics" type="checkbox" @change="savePrivacy" /><i /></label>
+          <label><span><strong>{{ t('privacy.marketing') }}</strong><small>{{ t('privacy.marketingDesc') }}</small></span><input v-model="privacy.marketing" type="checkbox" @change="savePrivacy" /><i /></label>
         </section>
-        <div class="account-section-label account-section-label--spaced"><span>Your information</span></div>
+        <div class="account-section-label account-section-label--spaced"><span>{{ t('privacy.information') }}</span></div>
         <section class="account-action-list">
-          <button type="button" @click="downloadData"><span><Download :size="18" /></span><div><strong>Download account data</strong><small>Export your current preferences as a JSON file.</small></div><ChevronRight :size="18" /></button>
-          <a href="mailto:privacy@reelnova.com"><span><Mail :size="18" /></span><div><strong>Privacy request</strong><small>Ask to review or delete personal information.</small></div><ExternalLink :size="17" /></a>
+          <button type="button" :disabled="exporting" @click="downloadData"><span><Download :size="18" /></span><div><strong>{{ t('privacy.download') }}</strong><small>{{ t('privacy.downloadDesc') }}</small></div><ChevronRight :size="18" /></button>
+          <button class="account-delete-action" type="button" @click="openDelete"><span><Trash2 :size="18" /></span><div><strong>{{ t('privacy.delete') }}</strong><small>{{ t('privacy.deleteDesc') }}</small></div><ChevronRight :size="18" /></button>
         </section>
         <p class="account-footnote"><Shield :size="14" /> Payment credentials are never stored by ReelNova.</p>
       </template>
@@ -261,6 +310,8 @@ onBeforeUnmount(() => { if (noticeTimer.value) clearTimeout(noticeTimer.value); 
         <section class="support-band"><span><MessageCircle :size="21" /></span><div><strong>Still need help?</strong><p>Support usually replies within one business day.</p></div><a href="mailto:support@reelnova.com">Email support <ExternalLink :size="14" /></a></section>
       </template>
     </main>
+
+    <Teleport to="body"><div v-if="deleteVisible" class="account-modal-backdrop" @click.self="deleteVisible = false"><section class="account-delete-modal" role="dialog" aria-modal="true" aria-labelledby="delete-account-title"><span class="account-delete-modal__icon"><AlertTriangle :size="24" /></span><h2 id="delete-account-title">Delete this account permanently?</h2><p>Viewing activity and account identifiers will be erased, and all access rights will be revoked. Anonymized order and refund records remain for financial compliance.</p><label><span>Account email</span><input v-model="deleteEmail" type="email" autocomplete="email" :placeholder="session?.email" /></label><label><span>Type DELETE to confirm</span><input v-model="deleteConfirmation" type="text" autocomplete="off" placeholder="DELETE" /></label><p v-if="deleteError" class="account-delete-modal__error">{{ deleteError }}</p><div><button class="button button--secondary" type="button" :disabled="deleting" @click="deleteVisible = false">Cancel</button><button class="button button--danger" type="button" :disabled="deleting || deleteEmail.trim().toLowerCase() !== session?.email.toLowerCase() || deleteConfirmation !== 'DELETE'" @click="confirmDelete">{{ deleting ? 'Deleting account...' : 'Delete permanently' }}</button></div></section></div></Teleport>
 
     <Transition name="account-toast"><div v-if="notice" class="account-toast" role="status"><Check :size="16" /> {{ notice }}</div></Transition>
   </div>

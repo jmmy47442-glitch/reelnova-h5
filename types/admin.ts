@@ -1,10 +1,12 @@
+import type { AdminRole } from '~/shared/admin-rbac';
+
 export interface DashboardMetric {
   value: number;
   previousValue: number;
   changePercent: number | null;
 }
 
-export type AdminRole = 'super_admin' | 'admin';
+export type { AdminRole } from '~/shared/admin-rbac';
 export type AdminAccountStatus = 'invited' | 'active' | 'disabled';
 
 export interface AdminSession {
@@ -221,6 +223,31 @@ export interface AdminUsersResponse {
   items: PersistedUser[];
   total: number;
   countries: string[];
+}
+
+export interface AdminUserDetail {
+  profile: PersistedUser & {
+    language: string;
+    privacy: { recommendations: boolean; analytics: boolean; marketing: boolean };
+  };
+  entitlements: Array<{
+    seriesId: string;
+    seriesTitle: string;
+    source: 'order' | 'manual';
+    status: 'granted' | 'revoked';
+    grantedAt: string;
+    revokedAt: string | null;
+  }>;
+  watchHistory: Array<{
+    seriesId: string;
+    seriesTitle: string;
+    episodeNo: number;
+    positionSeconds: number;
+    durationSeconds: number;
+    completed: boolean;
+    lastWatchedAt: string;
+  }>;
+  orders: PersistedOrder[];
 }
 
 export type AuditRisk = '普通' | '高风险';

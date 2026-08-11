@@ -7,7 +7,7 @@ import {
   refundPayPalCapture,
   requirePayPalConfiguration,
 } from '~/server/utils/paypal';
-import { requireSuperAdmin } from '~/server/utils/admin-auth';
+import { requireAdminPermission } from '~/server/utils/admin-rbac';
 import { recordAdminAudit } from '~/server/utils/admin-audit';
 
 interface RefundOrder { order_no: string; status: string; capture_id: string | null; amount_cents: number; currency: string }
@@ -20,7 +20,7 @@ const assertReason = (reason: unknown) => {
 };
 
 export default defineEventHandler(async (event) => {
-  const admin = requireSuperAdmin(event);
+  const admin = requireAdminPermission(event, 'finance.manage');
   const orderNo = getRouterParam(event, 'orderNo') || '';
   const body = await readBody<{ reason?: string; method?: 'paypal_api' | 'manual' | 'reject'; providerStatus?: string; paypalRefundId?: string }>(event);
   const reason = assertReason(body?.reason);

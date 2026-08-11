@@ -1,7 +1,9 @@
 import type { H3Event } from 'h3';
+import type { AdminRole, AssignableAdminRole } from '../../shared/admin-rbac';
+import { isAdminRole } from '../../shared/admin-rbac';
 import { d1All, d1First, d1Run } from './cloudflare-d1';
 
-export type AdminRole = 'super_admin' | 'admin';
+type AdminAccountTier = 'super_admin' | 'admin';
 export type AdminStatus = 'invited' | 'active' | 'disabled';
 
 export interface AdminSession {
@@ -17,7 +19,8 @@ interface AdminAccountRow {
   id: string;
   email: string;
   name: string;
-  role: AdminRole;
+  role: AdminAccountTier;
+  permission_role: AssignableAdminRole;
   status: AdminStatus;
   password_salt: string;
   password_hash: string;
@@ -78,7 +81,7 @@ const toAccount = (row: AdminAccountRow): AdminAccount => ({
   id: row.id,
   email: row.email,
   name: row.name,
-  role: row.role,
+  role: row.role === 'super_admin' ? 'super_admin' : row.permission_role || 'content_operator',
   status: row.status,
   invitedBy: row.invited_by,
   invitedAt: row.invited_at,
@@ -100,9 +103,9 @@ const findById = async (event: H3Event, id: string) => d1First<AdminAccountRow>(
 
 const insertAccount = async (event: H3Event, row: AdminAccountRow) => {
   await d1Run(event, `INSERT INTO admin_accounts
-    (id, email, name, role, status, password_salt, password_hash, invited_by, invited_at, last_login_at, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
-    row.id, row.email, row.name, row.role, row.status, row.password_salt, row.password_hash,
+    (id, email, name, role, permission_role, status, password_salt, password_hash, invited_by, invited_at, last_login_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+    row.id, row.email, row.name, row.role, row.permission_role, row.status, row.password_salt, row.password_hash,
     row.invited_by, row.invited_at, row.last_login_at, row.created_at, row.updated_at,
   ]);
 };
@@ -126,6 +129,7 @@ export const ensureSuperAdmin = async (event: H3Event) => {
     email,
     name: String(config.superAdminName).trim() || '超级管理员',
     role: 'super_admin',
+    permission_role: 'content_operator',
     status: 'active',
     password_salt: salt,
     password_hash: await derivePasswordHash(String(config.superAdminPassword), salt),
@@ -195,9 +199,9 @@ export const getAdminSession = async (event: H3Event): Promise<AdminSession | nu
   if (!constantTimeEqual(signature, expected)) return null;
   try {
     const session = decodeJson<AdminSession>(payload);
-    if (!session.id || !session.email || !session.role || Date.parse(session.expiresAt) <= Date.now()) return null;
+    if (!session.id || !session.email || !isAdminRole(session.role) || Date.parse(session.expiresAt) <= Date.now()) return null;
     const account = await findById(event, session.id);
-    if (!account || account.status === 'disabled' || account.role !== session.role || account.email !== session.email) return null;
+    if (!account || account.status === 'disabled' || toAccount(account).role !== session.role || account.email !== session.email) return null;
     return session;
   } catch {
     return null;
@@ -216,7 +220,7 @@ export const listAdminAccounts = async (event: H3Event) => {
   return rows.map(toAccount);
 };
 
-export const createAdminAccount = async (event: H3Event, input: { email: string; name: string; createdBy: string }) => {
+export const createAdminAccount = async (event: H3Event, input: { email: string; name: string; role: AssignableAdminRole; createdBy: string }) => {
   const email = input.email.trim().toLowerCase();
   if (await findByEmail(event, email)) throw createError({ statusCode: 409, statusMessage: 'Administrator email already exists' });
 
@@ -228,6 +232,7 @@ export const createAdminAccount = async (event: H3Event, input: { email: string;
     email,
     name: input.name.trim(),
     role: 'admin',
+    permission_role: input.role,
     status: 'invited',
     password_salt: salt,
     password_hash: await derivePasswordHash(password, salt),
@@ -248,6 +253,15 @@ export const updateAdminStatus = async (event: H3Event, id: string, status: Extr
   const now = new Date().toISOString();
   await d1Run(event, 'UPDATE admin_accounts SET status = ?, updated_at = ? WHERE id = ?', [status, now, id]);
   return { ...toAccount(account), status };
+};
+
+export const updateAdminRole = async (event: H3Event, id: string, role: AssignableAdminRole) => {
+  const account = await findById(event, id);
+  if (!account) throw createError({ statusCode: 404, statusMessage: 'Administrator not found' });
+  if (account.role === 'super_admin') throw createError({ statusCode: 400, statusMessage: 'Super administrator role cannot be changed' });
+  const now = new Date().toISOString();
+  await d1Run(event, 'UPDATE admin_accounts SET permission_role = ?, updated_at = ? WHERE id = ?', [role, now, id]);
+  return { ...toAccount(account), role };
 };
 
 export const deleteAdminAccount = async (event: H3Event, id: string) => {

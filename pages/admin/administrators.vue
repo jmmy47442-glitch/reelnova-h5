@@ -2,6 +2,8 @@
 import { CheckCircle2, Copy, Plus, ShieldCheck, ShieldOff, Trash2, UserCog } from 'lucide-vue-next';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { AdminAccount } from '~/types/admin';
+import type { AssignableAdminRole } from '~/shared/admin-rbac';
+import { adminRoleLabels } from '~/shared/admin-rbac';
 
 definePageMeta({ layout: 'admin' });
 useHead({ title: '管理员账号 · ReelNova Admin' });
@@ -11,10 +13,15 @@ const { data, status, refresh } = await useAsyncData('admin-accounts', () => api
 const dialogVisible = ref(false);
 const submitting = ref(false);
 const changingId = ref('');
+const changingRoleId = ref('');
 const deletingId = ref('');
-const createdCredentials = ref<{ name: string; email: string; password: string } | null>(null);
-const form = reactive({ name: '', email: '' });
+const createdCredentials = ref<{ name: string; email: string; password: string; role: AssignableAdminRole } | null>(null);
+const form = reactive<{ name: string; email: string; role: AssignableAdminRole }>({ name: '', email: '', role: 'content_operator' });
 const rows = computed(() => data.value?.items || []);
+const roleOptions: Array<{ label: string; value: AssignableAdminRole }> = [
+  { label: adminRoleLabels.content_operator, value: 'content_operator' },
+  { label: adminRoleLabels.finance_operator, value: 'finance_operator' },
+];
 
 const formatDate = (value: string | null) => value
   ? new Date(value).toLocaleString('zh-CN', { hour12: false }).replaceAll('/', '-')
@@ -23,6 +30,7 @@ const formatDate = (value: string | null) => value
 const openCreate = () => {
   form.name = '';
   form.email = '';
+  form.role = 'content_operator';
   createdCredentials.value = null;
   dialogVisible.value = true;
 };
@@ -32,8 +40,8 @@ const createAdministrator = async () => {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) return ElMessage.warning('请输入有效邮箱地址');
   submitting.value = true;
   try {
-    const result = await api.createAdministrator({ name: form.name.trim(), email: form.email.trim().toLowerCase() });
-    createdCredentials.value = { name: result.account.name, email: result.account.email, password: result.initialPassword };
+    const result = await api.createAdministrator({ name: form.name.trim(), email: form.email.trim().toLowerCase(), role: form.role });
+    createdCredentials.value = { name: result.account.name, email: result.account.email, password: result.initialPassword, role: form.role };
     await refresh();
     ElMessage.success('管理员账号已创建');
   } catch (error: unknown) {
@@ -52,8 +60,27 @@ const copy = async (value: string, label: string) => {
 
 const copyCredentials = async () => {
   if (!createdCredentials.value) return;
-  const { name, email, password } = createdCredentials.value;
-  await copy(`ReelNova 管理后台\n姓名：${name}\n登录邮箱：${email}\n初始密码：${password}`, '登录信息');
+  const { name, email, password, role } = createdCredentials.value;
+  await copy(`ReelNova 管理后台\n姓名：${name}\n岗位：${adminRoleLabels[role]}\n登录邮箱：${email}\n初始密码：${password}`, '登录信息');
+};
+
+const changeRole = async (account: AdminAccount, nextRole: string) => {
+  if (!['content_operator', 'finance_operator'].includes(nextRole)) return;
+  const role = nextRole as AssignableAdminRole;
+  if (account.role === role) return;
+  await ElMessageBox.confirm(
+    `将 ${account.name} 的岗位调整为${adminRoleLabels[role]}？新权限将在其下次请求时生效。`,
+    '调整管理员岗位',
+    { type: 'warning', confirmButtonText: '确认调整', cancelButtonText: '取消' },
+  );
+  changingRoleId.value = account.id;
+  try {
+    await api.updateAdministratorRole(account.id, role);
+    await refresh();
+    ElMessage.success('管理员岗位已更新');
+  } finally {
+    changingRoleId.value = '';
+  }
 };
 
 const changeStatus = async (account: AdminAccount) => {
@@ -95,13 +122,13 @@ const deleteAdministrator = async (account: AdminAccount) => {
 
 <template>
   <div>
-    <AdminPageHeader title="管理员账号" description="由超级管理员创建账号、转交初始密码并控制登录权限。"><el-button type="primary" @click="openCreate"><Plus :size="16" />创建管理员</el-button></AdminPageHeader>
+    <AdminPageHeader title="管理员账号" description="按内容运营、财务运营岗位分配最小权限，并控制账号状态。"><el-button type="primary" @click="openCreate"><Plus :size="16" />创建管理员</el-button></AdminPageHeader>
     <el-alert title="登录密码仅在创建成功时显示一次。请通过可信渠道转交并妥善保管。" type="warning" show-icon :closable="false" class="admin-alert" />
 
     <section class="admin-panel admin-table-panel">
       <el-table v-loading="status === 'pending'" :data="rows" row-key="id">
         <el-table-column label="管理员" min-width="220"><template #default="scope"><div class="administrator-identity"><span><ShieldCheck v-if="scope.row.role === 'super_admin'" :size="17" /><UserCog v-else :size="17" /></span><div><strong>{{ scope.row.name }}</strong><small>{{ scope.row.email }}</small></div></div></template></el-table-column>
-        <el-table-column label="角色" width="120"><template #default="scope"><el-tag :type="scope.row.role === 'super_admin' ? 'danger' : 'info'" effect="plain">{{ scope.row.role === 'super_admin' ? '超级管理员' : '管理员' }}</el-tag></template></el-table-column>
+        <el-table-column label="岗位权限" min-width="180"><template #default="scope"><el-tag v-if="scope.row.role === 'super_admin'" type="danger" effect="plain">{{ adminRoleLabels.super_admin }}</el-tag><el-select v-else :model-value="scope.row.role" class="administrator-role-select" :loading="changingRoleId === scope.row.id" :disabled="changingId === scope.row.id || deletingId === scope.row.id" @change="changeRole(scope.row, $event)"><el-option v-for="option in roleOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></template></el-table-column>
         <el-table-column label="状态" width="110"><template #default="scope"><span class="administrator-status" :class="scope.row.status"><i />{{ scope.row.status === 'active' ? '正常' : scope.row.status === 'invited' ? '待首次登录' : '已停用' }}</span></template></el-table-column>
         <el-table-column label="最近登录" min-width="170"><template #default="scope">{{ formatDate(scope.row.lastLoginAt) }}</template></el-table-column>
         <el-table-column label="创建时间" min-width="170"><template #default="scope">{{ formatDate(scope.row.createdAt) }}</template></el-table-column>
@@ -115,11 +142,13 @@ const deleteAdministrator = async (account: AdminAccount) => {
         <el-form label-position="top" @submit.prevent="createAdministrator">
           <el-form-item label="管理员姓名" required><el-input v-model="form.name" maxlength="80" placeholder="例如：Olivia Chen" /></el-form-item>
           <el-form-item label="登录邮箱" required><el-input v-model="form.email" type="email" placeholder="olivia@reelnova.com" /></el-form-item>
+          <el-form-item label="岗位权限" required><el-select v-model="form.role" style="width: 100%"><el-option v-for="option in roleOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
         </el-form>
         <el-alert title="系统将自动生成初始密码，创建后由你手动转交给管理员。" type="info" :closable="false" show-icon />
       </template>
       <div v-else class="created-credentials">
         <div class="created-credentials__success"><CheckCircle2 :size="21" /><div><strong>{{ createdCredentials.name }}</strong><span>账号已写入管理员数据库</span></div></div>
+        <div class="credential-row"><span>岗位权限</span><code>{{ adminRoleLabels[createdCredentials.role] }}</code><i /></div>
         <div class="credential-row"><span>登录邮箱</span><code>{{ createdCredentials.email }}</code><button type="button" title="复制邮箱" @click="copy(createdCredentials.email, '邮箱')"><Copy :size="15" /></button></div>
         <div class="credential-row is-password"><span>初始密码</span><code>{{ createdCredentials.password }}</code><button type="button" title="复制密码" @click="copy(createdCredentials.password, '密码')"><Copy :size="15" /></button></div>
         <p>关闭窗口后无法再次查看该密码。</p>

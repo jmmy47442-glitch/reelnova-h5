@@ -1,6 +1,8 @@
 import { ok } from '~/server/utils/response';
 import { d1First } from '~/server/utils/cloudflare-d1';
 import type { AdminPendingItem, AdminPendingItemsResponse } from '~/types/admin';
+import { hasAdminPermission } from '~/shared/admin-rbac';
+import type { AdminSession } from '~/server/utils/admin-auth';
 
 interface PendingRow {
   count: number;
@@ -20,6 +22,7 @@ const countRefunds = (event: Parameters<typeof d1First>[0], statuses: string[]) 
 );
 
 export default defineEventHandler(async (event) => {
+  const session = event.context.adminSession as AdminSession;
   const [awaitingOrders, refundingOrders, failedRefunds, riskOrders, failedWebhooks] = await Promise.all([
     countOrders(event, ['pending', 'processing']),
     countOrders(event, ['refunding']),
@@ -62,13 +65,15 @@ export default defineEventHandler(async (event) => {
     severity: 'danger',
     to: '/admin/orders',
   });
-  addItem(failedWebhooks, {
-    id: 'paypal-webhooks-failed',
-    title: '条 PayPal Webhook 处理失败',
-    description: '检查失败原因并重新核验相关订单',
-    severity: 'danger',
-    to: '/admin/system',
-  });
+  if (hasAdminPermission(session.role, 'system.read')) {
+    addItem(failedWebhooks, {
+      id: 'paypal-webhooks-failed',
+      title: '条 PayPal Webhook 处理失败',
+      description: '检查失败原因并重新核验相关订单',
+      severity: 'danger',
+      to: '/admin/system',
+    });
+  }
 
   items.sort((a, b) => (b.latestAt || '').localeCompare(a.latestAt || ''));
   const data: AdminPendingItemsResponse = {
