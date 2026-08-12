@@ -9,20 +9,20 @@ const api = useContentApi();
 const { formatPrice } = useFormatters();
 const route = useRoute();
 const { isAuthenticated } = useUserAuth();
-const runtime = useRuntimeConfig();
+const { data: paymentConfig } = await useAsyncData('paypal-checkout-config', () => api.getPayPalConfig());
 const status = ref<OrderStatus>('pending');
 const error = ref('');
 const paypalContainer = ref<HTMLElement | null>(null);
 const paypalRendered = ref(false);
 const sdkFailed = ref(false);
 const checkoutKey = ref('');
-const paypalAvailable = computed(() => Boolean(runtime.public.paypalClientId));
+const paypalAvailable = computed(() => Boolean(paymentConfig.value?.available && paymentConfig.value.clientId));
 
 const paypalWindow = () => (window as any);
 
 const loadPayPalSdk = async () => {
   if (paypalWindow().paypal) return paypalWindow().paypal;
-  const clientId = String(runtime.public.paypalClientId || '');
+  const clientId = String(paymentConfig.value?.clientId || '');
   if (!clientId) return undefined;
   await new Promise<void>((resolve, reject) => {
     const existing = document.querySelector<HTMLScriptElement>('script[data-reelnova-paypal]');

@@ -1,6 +1,7 @@
 import type { H3Event } from 'h3';
 import { d1First, d1Run } from '~/server/utils/cloudflare-d1';
 import { upsertUserProfile } from '~/server/utils/user-profile';
+import { getSystemConfig, saveSystemConfig } from '~/server/utils/system-config';
 
 interface PayPalAccessToken { access_token: string }
 interface PayPalLink { rel: string; href: string }
@@ -20,6 +21,7 @@ interface PayPalCaptureResponse {
 interface OrderSnapshot {
   order_no: string; series_id: string; series_slug: string; series_title: string; user_id: string;
   amount_cents: number; currency: string; status: string; paypal_order_id: string | null; capture_id: string | null;
+  paypal_environment: PayPalEnvironment | null;
 }
 
 interface RefundRequestRow {
@@ -43,43 +45,88 @@ export interface PayPalWebhookEvent {
 
 const paypalRequestTimeoutMs = 10_000;
 
-export const getPayPalConfigurationStatus = (event: H3Event) => {
+export type PayPalEnvironment = 'sandbox' | 'production';
+
+const isPayPalEnvironment = (value: unknown): value is PayPalEnvironment => value === 'sandbox' || value === 'production';
+
+export const getActivePayPalEnvironment = async (event: H3Event): Promise<PayPalEnvironment> => {
   const config = useRuntimeConfig(event);
-  const clientId = String(config.paypalClientId || '');
-  const publicClientId = String(config.public.paypalClientId || '');
-  const environment = String(config.paypalEnvironment || 'sandbox');
+  const fallback = isPayPalEnvironment(config.paypalEnvironment) ? config.paypalEnvironment : 'sandbox';
+  const saved = await getSystemConfig<{ environment?: string }>(event, 'paypal-runtime', { environment: fallback });
+  return isPayPalEnvironment(saved.environment) ? saved.environment : fallback;
+};
+
+export const setActivePayPalEnvironment = async (event: H3Event, environment: PayPalEnvironment) => {
+  await saveSystemConfig(event, 'paypal-runtime', { environment, updatedAt: new Date().toISOString() });
+};
+
+const credentialsForEnvironment = (event: H3Event, environment: PayPalEnvironment) => {
+  const config = useRuntimeConfig(event);
+  const legacyEnvironment: PayPalEnvironment = isPayPalEnvironment(config.paypalEnvironment) ? config.paypalEnvironment : 'sandbox';
+  const specific = environment === 'production'
+    ? {
+        clientId: String(config.paypalProductionClientId || ''),
+        secret: String(config.paypalProductionSecret || ''),
+        webhookId: String(config.paypalProductionWebhookId || ''),
+        browserClientId: String(config.paypalProductionBrowserClientId || ''),
+      }
+    : {
+        clientId: String(config.paypalSandboxClientId || ''),
+        secret: String(config.paypalSandboxSecret || ''),
+        webhookId: String(config.paypalSandboxWebhookId || ''),
+        browserClientId: String(config.paypalSandboxBrowserClientId || ''),
+      };
+  if (environment !== legacyEnvironment) return specific;
   return {
-    credentialsConfigured: Boolean(clientId && config.paypalSecret),
-    browserClientConfigured: Boolean(publicClientId),
-    clientIdsMatch: Boolean(clientId && publicClientId && clientId === publicClientId),
-    webhookConfigured: Boolean(config.paypalWebhookId),
-    environment,
-    environmentValid: environment === 'sandbox' || environment === 'production',
+    clientId: specific.clientId || String(config.paypalClientId || ''),
+    secret: specific.secret || String(config.paypalSecret || ''),
+    webhookId: specific.webhookId || String(config.paypalWebhookId || ''),
+    browserClientId: specific.browserClientId || String(config.public.paypalClientId || ''),
   };
 };
 
-const configFor = (event: H3Event) => {
-  const config = useRuntimeConfig(event);
-  const clientId = config.paypalClientId as string;
-  const secret = config.paypalSecret as string;
-  const environment = config.paypalEnvironment as string;
-  if (!clientId || !secret) throw createError({
-    statusCode: 503,
-    statusMessage: 'PayPal checkout is not configured',
-    data: { code: 'PAYPAL_NOT_CONFIGURED' },
-  });
-  if (environment !== 'sandbox' && environment !== 'production') throw createError({
-    statusCode: 500,
-    statusMessage: 'PAYPAL_ENVIRONMENT must be sandbox or production',
-    data: { code: 'PAYPAL_ENVIRONMENT_INVALID' },
-  });
-  return { clientId, secret, baseUrl: environment === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com' };
+const environmentStatus = (event: H3Event, environment: PayPalEnvironment) => {
+  const values = credentialsForEnvironment(event, environment);
+  return {
+    credentialsConfigured: Boolean(values.clientId && values.secret),
+    browserClientConfigured: Boolean(values.browserClientId),
+    clientIdsMatch: Boolean(values.clientId && values.browserClientId && values.clientId === values.browserClientId),
+    webhookConfigured: Boolean(values.webhookId),
+  };
 };
 
-export const requirePayPalConfiguration = (event: H3Event) => configFor(event);
+export const getPayPalConfigurationStatus = async (event: H3Event) => {
+  const environment = await getActivePayPalEnvironment(event);
+  const current = environmentStatus(event, environment);
+  return {
+    ...current,
+    environment,
+    environmentValid: true,
+    environments: {
+      sandbox: environmentStatus(event, 'sandbox'),
+      production: environmentStatus(event, 'production'),
+    },
+  };
+};
 
-const accessToken = async (event: H3Event) => {
-  const { clientId, secret, baseUrl } = configFor(event);
+const configFor = async (event: H3Event, requestedEnvironment?: PayPalEnvironment) => {
+  const environment = requestedEnvironment || await getActivePayPalEnvironment(event);
+  const { clientId, secret, webhookId, browserClientId } = credentialsForEnvironment(event, environment);
+  if (!clientId || !secret) throw createError({
+    statusCode: 503,
+    statusMessage: `PayPal ${environment} checkout is not configured`,
+    data: { code: 'PAYPAL_NOT_CONFIGURED' },
+  });
+  return {
+    clientId, secret, webhookId, browserClientId, environment,
+    baseUrl: environment === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com',
+  };
+};
+
+export const requirePayPalConfiguration = (event: H3Event, environment?: PayPalEnvironment) => configFor(event, environment);
+
+const accessToken = async (event: H3Event, environment?: PayPalEnvironment) => {
+  const { clientId, secret, baseUrl } = await configFor(event, environment);
   const auth = btoa(`${clientId}:${secret}`);
   const response = await $fetch<PayPalAccessToken>(`${baseUrl}/v1/oauth2/token`, {
     method: 'POST', timeout: paypalRequestTimeoutMs, headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'grant_type=client_credentials',
@@ -87,10 +134,10 @@ const accessToken = async (event: H3Event) => {
   return { token: response.access_token, baseUrl };
 };
 
-export const testPayPalConnection = async (event: H3Event) => Boolean((await accessToken(event)).token);
+export const testPayPalConnection = async (event: H3Event, environment?: PayPalEnvironment) => Boolean((await accessToken(event, environment)).token);
 
-export const createPayPalOrder = async (event: H3Event, input: { orderNo: string; seriesTitle: string; amount: string; returnUrl: string; cancelUrl: string }) => {
-  const { token, baseUrl } = await accessToken(event);
+export const createPayPalOrder = async (event: H3Event, input: { orderNo: string; seriesTitle: string; amount: string; returnUrl: string; cancelUrl: string; environment?: PayPalEnvironment }) => {
+  const { token, baseUrl } = await accessToken(event, input.environment);
   const response = await $fetch<PayPalOrderResponse>(`${baseUrl}/v2/checkout/orders`, {
     method: 'POST',
     timeout: paypalRequestTimeoutMs,
@@ -106,23 +153,23 @@ export const createPayPalOrder = async (event: H3Event, input: { orderNo: string
   return { paypalOrderId: response.id, approvalUrl };
 };
 
-export const capturePayPalOrder = async (event: H3Event, paypalOrderId: string) => {
-  const { token, baseUrl } = await accessToken(event);
+export const capturePayPalOrder = async (event: H3Event, paypalOrderId: string, environment?: PayPalEnvironment) => {
+  const { token, baseUrl } = await accessToken(event, environment);
   return $fetch<PayPalCaptureResponse>(`${baseUrl}/v2/checkout/orders/${encodeURIComponent(paypalOrderId)}/capture`, {
     method: 'POST', timeout: paypalRequestTimeoutMs, headers: { Authorization: `Bearer ${token}`, 'PayPal-Request-Id': `capture-${paypalOrderId}`, 'Content-Type': 'application/json' }, body: {},
   });
 };
 
-export const getPayPalOrderDetails = async (event: H3Event, paypalOrderId: string) => {
-  const { token, baseUrl } = await accessToken(event);
+export const getPayPalOrderDetails = async (event: H3Event, paypalOrderId: string, environment?: PayPalEnvironment) => {
+  const { token, baseUrl } = await accessToken(event, environment);
   return $fetch<PayPalCaptureResponse>(`${baseUrl}/v2/checkout/orders/${encodeURIComponent(paypalOrderId)}`, {
     timeout: paypalRequestTimeoutMs,
     headers: { Authorization: `Bearer ${token}` },
   });
 };
 
-export const refundPayPalCapture = async (event: H3Event, input: { captureId: string; requestId: string; amount: string; currency: string }) => {
-  const { token, baseUrl } = await accessToken(event);
+export const refundPayPalCapture = async (event: H3Event, input: { captureId: string; requestId: string; amount: string; currency: string; environment?: PayPalEnvironment }) => {
+  const { token, baseUrl } = await accessToken(event, input.environment);
   return $fetch<PayPalRefundResponse>(`${baseUrl}/v2/payments/captures/${encodeURIComponent(input.captureId)}/refund`, {
     method: 'POST', timeout: paypalRequestTimeoutMs,
     headers: { Authorization: `Bearer ${token}`, 'PayPal-Request-Id': input.requestId, 'Content-Type': 'application/json' },
@@ -130,8 +177,8 @@ export const refundPayPalCapture = async (event: H3Event, input: { captureId: st
   });
 };
 
-export const getPayPalRefundDetails = async (event: H3Event, paypalRefundId: string) => {
-  const { token, baseUrl } = await accessToken(event);
+export const getPayPalRefundDetails = async (event: H3Event, paypalRefundId: string, environment?: PayPalEnvironment) => {
+  const { token, baseUrl } = await accessToken(event, environment);
   return $fetch<PayPalRefundResponse>(`${baseUrl}/v2/payments/refunds/${encodeURIComponent(paypalRefundId)}`, {
     timeout: paypalRequestTimeoutMs,
     headers: { Authorization: `Bearer ${token}` },
@@ -347,11 +394,27 @@ export const processVerifiedPayPalWebhook = async (event: H3Event, webhook: PayP
   return false;
 };
 
-export const verifyPayPalWebhook = async (event: H3Event, webhookEvent: unknown) => {
-  const config = useRuntimeConfig(event);
-  const webhookId = config.paypalWebhookId as string;
+export const resolvePayPalWebhookEnvironment = async (event: H3Event, webhook: PayPalWebhookEvent) => {
+  const related = webhook.resource.supplementary_data?.related_ids;
+  const paypalOrderId = related?.order_id || null;
+  const captureId = related?.capture_id || (webhook.event_type.startsWith('PAYMENT.CAPTURE.') ? webhook.resource.id || null : null);
+  let order = await d1First<{ paypal_environment: PayPalEnvironment | null }>(event, `SELECT paypal_environment FROM orders
+    WHERE (? IS NOT NULL AND paypal_order_id = ?) OR (? IS NOT NULL AND capture_id = ?) LIMIT 1`, [
+    paypalOrderId, paypalOrderId, captureId, captureId,
+  ]);
+  if (!order && webhook.resource.id) {
+    order = await d1First<{ paypal_environment: PayPalEnvironment | null }>(event, `SELECT o.paypal_environment
+      FROM refund_requests rr JOIN orders o ON o.order_no = rr.order_no
+      WHERE rr.paypal_refund_id = ? LIMIT 1`, [webhook.resource.id]);
+  }
+  return isPayPalEnvironment(order?.paypal_environment) ? order.paypal_environment : getActivePayPalEnvironment(event);
+};
+
+export const verifyPayPalWebhook = async (event: H3Event, webhookEvent: unknown, requestedEnvironment?: PayPalEnvironment) => {
+  const environment = requestedEnvironment || await getActivePayPalEnvironment(event);
+  const { webhookId } = await configFor(event, environment);
   if (!webhookId) throw createError({ statusCode: 503, statusMessage: 'PAYPAL_WEBHOOK_ID is not configured' });
-  const { token, baseUrl } = await accessToken(event);
+  const { token, baseUrl } = await accessToken(event, environment);
   const response = await $fetch<{ verification_status: 'SUCCESS' | 'FAILURE' }>(`${baseUrl}/v1/notifications/verify-webhook-signature`, {
     method: 'POST', timeout: paypalRequestTimeoutMs, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: {

@@ -133,14 +133,26 @@ export interface TaxonomyItem {
   expiresAt: string;
 }
 
+export interface DomainValidationRecord {
+  type: 'TXT';
+  name: string;
+  value: string;
+  status: string;
+}
+
 export interface DomainConfig {
   id: string;
   host: string;
   role: '主域名' | '备用域名';
   verification: '已验证' | '待验证' | '验证失败';
-  certificate: '正常' | '即将到期' | '未签发';
+  certificate: '正常' | '即将到期' | '签发中' | '未签发';
   redirect: boolean;
   updatedAt: string;
+  cloudflareHostnameId?: string | null;
+  cloudflareStatus?: string;
+  sslStatus?: string;
+  validationRecords?: DomainValidationRecord[];
+  provisioningError?: string | null;
 }
 
 export interface PersistedOrder {

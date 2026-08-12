@@ -6,11 +6,12 @@ import {
   recordRefundEvent,
   refundPayPalCapture,
   requirePayPalConfiguration,
+  type PayPalEnvironment,
 } from '~/server/utils/paypal';
 import { requireAdminPermission } from '~/server/utils/admin-rbac';
 import { recordAdminAudit } from '~/server/utils/admin-audit';
 
-interface RefundOrder { order_no: string; status: string; capture_id: string | null; amount_cents: number; currency: string }
+interface RefundOrder { order_no: string; status: string; capture_id: string | null; amount_cents: number; currency: string; paypal_environment: PayPalEnvironment | null }
 interface ExistingRefund { id: string; paypal_refund_id: string | null; status: string; request_source: string; attempt_count: number; provider_request_id: string | null }
 
 const assertReason = (reason: unknown) => {
@@ -25,9 +26,9 @@ export default defineEventHandler(async (event) => {
   const body = await readBody<{ reason?: string; method?: 'paypal_api' | 'manual' | 'reject'; providerStatus?: string; paypalRefundId?: string }>(event);
   const reason = assertReason(body?.reason);
   const method = body?.method || 'paypal_api';
-  if (method === 'paypal_api') requirePayPalConfiguration(event);
-  const order = await d1First<RefundOrder>(event, 'SELECT order_no, status, capture_id, amount_cents, currency FROM orders WHERE order_no = ?', [orderNo]);
+  const order = await d1First<RefundOrder>(event, 'SELECT order_no, status, capture_id, amount_cents, currency, paypal_environment FROM orders WHERE order_no = ?', [orderNo]);
   if (!order) throw createError({ statusCode: 404, statusMessage: 'Order not found' });
+  if (method === 'paypal_api') await requirePayPalConfiguration(event, order.paypal_environment || undefined);
   const existing = await d1First<ExistingRefund>(event, 'SELECT id, paypal_refund_id, status, request_source, attempt_count, provider_request_id FROM refund_requests WHERE order_no = ? ORDER BY created_at DESC LIMIT 1', [orderNo]);
   if (existing?.status === 'completed' || order.status === 'refunded') return ok({ orderNo, status: 'refunded' as const, synchronized: true, refundRequestId: existing?.id });
   if (!['paid', 'refunding'].includes(order.status) && method !== 'reject') throw createError({ statusCode: 409, statusMessage: 'Only captured paid orders can be refunded' });
@@ -96,15 +97,15 @@ export default defineEventHandler(async (event) => {
   let applied!: Awaited<ReturnType<typeof applyVerifiedRefund>>;
   try {
     if (existing?.paypal_refund_id) {
-      refund = await getPayPalRefundDetails(event, existing.paypal_refund_id);
+      refund = await getPayPalRefundDetails(event, existing.paypal_refund_id, order.paypal_environment || undefined);
       if (['FAILED', 'CANCELLED', 'DENIED'].includes(refund.status.toUpperCase())) {
         const retryRequestId = `${requestId}-retry-${Number(existing.attempt_count) + 1}`;
         await recordRefundEvent(event, { refundRequestId: requestId, orderNo, eventType: 'refund_retry_requested', source: 'admin', actor: admin.email, fromStatus: existing.status, toStatus: 'processing', paypalRefundId: existing.paypal_refund_id, detail: `Retrying terminal provider status ${refund.status}` });
         await d1Run(event, 'UPDATE refund_requests SET paypal_refund_id = NULL, provider_request_id = ? WHERE id = ?', [retryRequestId, requestId]);
-        refund = await refundPayPalCapture(event, { captureId: order.capture_id, requestId: retryRequestId, amount: (Number(order.amount_cents) / 100).toFixed(2), currency: order.currency });
+        refund = await refundPayPalCapture(event, { captureId: order.capture_id, requestId: retryRequestId, amount: (Number(order.amount_cents) / 100).toFixed(2), currency: order.currency, environment: order.paypal_environment || undefined });
       }
     } else {
-      refund = await refundPayPalCapture(event, { captureId: order.capture_id, requestId: existing?.provider_request_id || requestId, amount: (Number(order.amount_cents) / 100).toFixed(2), currency: order.currency });
+      refund = await refundPayPalCapture(event, { captureId: order.capture_id, requestId: existing?.provider_request_id || requestId, amount: (Number(order.amount_cents) / 100).toFixed(2), currency: order.currency, environment: order.paypal_environment || undefined });
     }
     applied = await applyVerifiedRefund(event, { paypalRefundId: refund.id, captureId: order.capture_id, status: refund.status, source: 'paypal_api', actor: admin.email, detail: `PayPal API refund: ${refund.status}` });
   } catch (error) {

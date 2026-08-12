@@ -24,9 +24,10 @@ export const useAdminApi = () => {
     getReconciliation: (days: number) => request<ReconciliationResponse>('/admin/reconciliation', { query: { days } }),
     getConnection: () => request<{
       checkedAt: string;
-      cloudflare: { database: boolean; databaseError: string | null; mode: string; accountConfigured: boolean; databaseConfigured: boolean; apiTokenConfigured: boolean; mediaConfigured: boolean; mediaWorkerConfigured: boolean; streamConfigured: boolean; mediaSigningConfigured: boolean };
-      paypal: { connected: boolean; ready: boolean; error: string | null; environment: string; environmentValid: boolean; credentialsConfigured: boolean; browserClientConfigured: boolean; clientIdsMatch: boolean; webhookConfigured: boolean; lastWebhookAt: string | null; failedWebhooks: Array<{ eventId: string; eventType: string; errorMessage: string | null; receivedAt: string; retryCount: number; replayable: boolean }> };
+      cloudflare: { database: boolean; databaseError: string | null; mode: string; accountConfigured: boolean; databaseConfigured: boolean; apiTokenConfigured: boolean; mediaConfigured: boolean; mediaWorkerConfigured: boolean; streamConfigured: boolean; mediaSigningConfigured: boolean; customHostnamesConfigured: boolean };
+      paypal: { connected: boolean; ready: boolean; error: string | null; environment: 'sandbox' | 'production'; environmentValid: boolean; credentialsConfigured: boolean; browserClientConfigured: boolean; clientIdsMatch: boolean; webhookConfigured: boolean; environments: Record<'sandbox' | 'production', { credentialsConfigured: boolean; browserClientConfigured: boolean; clientIdsMatch: boolean; webhookConfigured: boolean }>; lastWebhookAt: string | null; failedWebhooks: Array<{ eventId: string; eventType: string; errorMessage: string | null; receivedAt: string; retryCount: number; replayable: boolean }> };
     }>('/admin/connection'),
+    switchPayPalEnvironment: (environment: 'sandbox' | 'production') => request<{ environment: 'sandbox' | 'production'; changed: boolean }>('/admin/paypal/environment', { method: 'PATCH', body: { environment } }),
     getHomeConfig: () => request<{ items: HomeSectionConfig[] }>('/admin/home-config'),
     saveHomeConfig: (items: HomeSectionConfig[]) => request<{ items: HomeSectionConfig[] }>('/admin/home-config', { method: 'PUT', body: { items } }),
     getSeries: () => request<{ items: AdminSeries[]; generatedAt: string }>('/admin/series'),
@@ -43,10 +44,21 @@ export const useAdminApi = () => {
     retryTranscode: (assetId: string) => request<{ assetId: string; streamUid: string; attempt: number; status: 'processing' }>(`/admin/media/${encodeURIComponent(assetId)}/retry`, { method: 'POST' }),
     getTaxonomy: () => request<{ items: TaxonomyItem[] }>('/admin/taxonomy'),
     saveTaxonomy: (items: TaxonomyItem[]) => request<{ items: TaxonomyItem[] }>('/admin/taxonomy', { method: 'PUT', body: { items } }),
-    getDomains: () => request<{ items: DomainConfig[]; cnameTarget: string }>('/admin/domains'),
+    getDomains: () => request<{
+      items: DomainConfig[];
+      settings: { zoneId: string; cnameTarget: string; apiTokenConfigured: boolean };
+      missingFields: Array<'zoneId' | 'apiToken' | 'cnameTarget'>;
+      automationConfigured: boolean;
+    }>('/admin/domains'),
+    saveDomainSettings: (input: { zoneId: string; cnameTarget: string }) => request<{
+      settings: { zoneId: string; cnameTarget: string; apiTokenConfigured: boolean };
+      missingFields: Array<'zoneId' | 'apiToken' | 'cnameTarget'>;
+      automationConfigured: boolean;
+    }>('/admin/domains/settings', { method: 'PUT', body: input }),
     addDomain: (host: string) => request<DomainConfig>('/admin/domains', { method: 'POST', body: { host } }),
     updateDomain: (id: string, input: { action: 'set-primary' } | { action: 'set-redirect'; redirect: boolean }) => request<DomainConfig>(`/admin/domains/${encodeURIComponent(id)}`, { method: 'PATCH', body: input }),
     verifyDomain: (id: string) => request<DomainConfig>(`/admin/domains/${encodeURIComponent(id)}/verify`, { method: 'POST' }),
+    deleteDomain: (id: string) => request<{ id: string; host: string }>(`/admin/domains/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     getAdministrators: () => request<{ items: AdminAccount[] }>('/admin/administrators'),
     createAdministrator: (input: { name: string; email: string; role: Exclude<AdminRole, 'super_admin'> }) => request<{ account: AdminAccount; initialPassword: string }>('/admin/administrators', { method: 'POST', body: input }),
     updateAdministratorStatus: (id: string, status: 'active' | 'disabled') => request<AdminAccount>(`/admin/administrators/${encodeURIComponent(id)}`, { method: 'PATCH', body: { status } }),

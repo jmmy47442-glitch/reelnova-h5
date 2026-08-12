@@ -12,7 +12,7 @@ export default defineEventHandler(async (event) => {
   if (!domain) throw createError({ statusCode: 404, statusMessage: 'Domain not found' });
 
   if (body?.action === 'set-primary') {
-    if (domain.verification !== '已验证' || domain.certificate !== '正常') {
+    if (!domain.cloudflareHostnameId || domain.cloudflareStatus !== 'active' || domain.verification !== '已验证' || domain.certificate !== '正常') {
       throw createError({ statusCode: 409, statusMessage: 'DNS and HTTPS must be healthy before switching the primary domain' });
     }
     const before = items.find((item) => item.role === '主域名');
@@ -26,6 +26,9 @@ export default defineEventHandler(async (event) => {
 
   if (body?.action === 'set-redirect' && typeof body.redirect === 'boolean') {
     if (domain.role === '主域名' && body.redirect) throw createError({ statusCode: 409, statusMessage: 'Primary domain cannot redirect to itself' });
+    if (body.redirect && (!domain.cloudflareHostnameId || domain.cloudflareStatus !== 'active' || domain.verification !== '已验证' || domain.certificate !== '正常')) {
+      throw createError({ statusCode: 409, statusMessage: 'Cloudflare route, DNS and HTTPS must be active before enabling 301' });
+    }
     domain.redirect = body.redirect;
     domain.updatedAt = new Date().toISOString();
     await saveDomainConfig(event, items);

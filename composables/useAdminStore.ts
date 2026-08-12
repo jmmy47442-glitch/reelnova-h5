@@ -113,11 +113,7 @@ const createInitialState = (): AdminState => ({
     { id: 'tag-03', name: 'Exclusive', localeName: '独家', type: '标签', color: '#8256c9', contentCount: 3, enabled: true, expiresAt: '—' },
     { id: 'tag-04', name: 'Free', localeName: '免费', type: '标签', color: '#26966f', contentCount: 1, enabled: false, expiresAt: '—' },
   ],
-  domains: [
-    { id: 'dom-01', host: 'www.reelnova.com', role: '主域名', verification: '已验证', certificate: '正常', redirect: false, updatedAt: `${today} 18:20` },
-    { id: 'dom-02', host: 'watch.reelnova.com', role: '备用域名', verification: '已验证', certificate: '正常', redirect: true, updatedAt: '2026-08-08 10:12' },
-    { id: 'dom-03', host: 'reelnova.tv', role: '备用域名', verification: '待验证', certificate: '未签发', redirect: false, updatedAt: `${today} 09:41` },
-  ],
+  domains: [],
   auditLogs: [
     { id: 'audit-001', actor: 'Admin', module: '支付配置', action: '切换运行环境', target: 'PayPal', detail: 'Sandbox → Production', risk: '高风险', ip: '172.16.24.18', createdAt: `${today} 18:20:41` },
     { id: 'audit-002', actor: 'Olivia Chen', module: '短剧管理', action: '上架短剧', target: 'Vows & Vengeance', detail: '待发布 → 已上架', risk: '普通', ip: '172.16.24.31', createdAt: `${today} 17:48:12` },

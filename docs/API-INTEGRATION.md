@@ -54,8 +54,9 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | Users | `GET /api/admin/users`, `GET/PATCH /api/admin/users/{userId}`, `POST /api/admin/users/{userId}/release-device`, `POST /api/admin/users/{userId}/entitlements` |
 | Reconciliation | `GET /api/admin/reconciliation` |
 | Taxonomy | `GET/PUT /api/admin/taxonomy` |
-| PayPal | `GET /api/admin/connection`, `POST /api/admin/paypal/webhooks/{eventId}/retry` (retry requires super administrator; credentials remain Cloudflare Secrets and are never returned) |
-| Site/domain | `GET/POST /api/admin/domains`, `PATCH /api/admin/domains/{id}`, `POST /api/admin/domains/{id}/verify` |
+| PayPal | `GET /api/admin/connection`, `PATCH /api/admin/paypal/environment`, `POST /api/admin/paypal/webhooks/{eventId}/retry` (mutations require super administrator; credentials remain Cloudflare Secrets and are never returned) |
+| Domains | `GET /api/admin/domains`, `PUT /api/admin/domains/settings`, `POST /api/admin/domains`, `POST /api/admin/domains/{id}/verify`, `PATCH /api/admin/domains/{id}`, `DELETE /api/admin/domains/{id}` (Zone ID and CNAME target are editable; API Token remains a deployment secret) |
+| Site/domain | `GET/POST /api/admin/domains`, `PATCH/DELETE /api/admin/domains/{id}`, `POST /api/admin/domains/{id}/verify` (Cloudflare Custom Hostnames and SSL state) |
 | Audit | `GET /api/admin/audit` |
 | Connection health | `GET /api/admin/connection` |
 
@@ -67,4 +68,4 @@ Playback clients send a `start` when video playback begins, a `heartbeat` every 
 
 `POST /api/orders` accepts an optional client request `idempotencyKey`, while the server also derives a stable purchase key from the authenticated user and series. A granted entitlement returns `status: "paid"` and `entitlementStatus: "granted"`; an existing `pending` or `processing` checkout returns its original order and PayPal approval details. The database permits only one open checkout per user and series, and the captured price version, amount and activity fields are immutable.
 
-When PayPal credentials are absent, `POST /api/orders` and refund operations return `503` with code `PAYPAL_NOT_CONFIGURED` before writing payment state. When the R2 media Worker is absent, upload creation returns `503` with code `MEDIA_PIPELINE_NOT_CONFIGURED` before creating episode or media rows. Frontend controls use the admin connection status and public PayPal Client ID to remain disabled until configuration is complete.
+When PayPal credentials are absent, `POST /api/orders` and refund operations return `503` with code `PAYPAL_NOT_CONFIGURED` before writing payment state. `GET /api/paypal/config` exposes only the active environment's public browser Client ID. Environment changes validate the target credentials against PayPal and are rejected while unresolved payments or refunds exist. When the R2 media Worker is absent, upload creation returns `503` with code `MEDIA_PIPELINE_NOT_CONFIGURED` before creating episode or media rows. Frontend controls use the admin connection status and public PayPal Client ID to remain disabled until configuration is complete.

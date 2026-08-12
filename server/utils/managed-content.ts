@@ -34,11 +34,7 @@ const initialTaxonomy = (): TaxonomyItem[] => [
   { id: 'tag-04', name: 'Free', localeName: '免费', type: '标签', color: '#26966f', contentCount: 0, enabled: false, expiresAt: '—' },
 ];
 
-const initialDomains = (): DomainConfig[] => [
-  { id: 'dom-01', host: 'www.reelnova.com', role: '主域名', verification: '已验证', certificate: '正常', redirect: false, updatedAt: '2026-08-11T08:20:00.000Z' },
-  { id: 'dom-02', host: 'watch.reelnova.com', role: '备用域名', verification: '已验证', certificate: '正常', redirect: true, updatedAt: '2026-08-10T02:12:00.000Z' },
-  { id: 'dom-03', host: 'reelnova.tv', role: '备用域名', verification: '待验证', certificate: '未签发', redirect: false, updatedAt: '2026-08-11T01:41:00.000Z' },
-];
+const initialDomains = (): DomainConfig[] => [];
 
 let memorySeries = initialSeries();
 let memoryTaxonomy = initialTaxonomy();

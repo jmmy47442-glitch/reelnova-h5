@@ -68,6 +68,10 @@ npx wrangler d1 execute reelnova-production --remote --file=./migrations/0009_re
 npx wrangler d1 execute reelnova-production --remote --file=./migrations/0010_normalized_content_media.sql
 npx wrangler d1 execute reelnova-production --remote --file=./migrations/0011_refund_lifecycle.sql
 npx wrangler d1 execute reelnova-production --remote --file=./migrations/0012_checkout_deduplication.sql
+npx wrangler d1 execute reelnova-production --remote --file=./migrations/0013_watch_history.sql
+npx wrangler d1 execute reelnova-production --remote --file=./migrations/0014_account_privacy.sql
+npx wrangler d1 execute reelnova-production --remote --file=./migrations/0015_admin_rbac.sql
+npx wrangler d1 execute reelnova-production --remote --file=./migrations/0016_paypal_environment.sql
 ```
 
 已有数据库按尚未执行的编号顺序补齐迁移。`0010` 会把旧 `home_config` 中的 `managed-series` 和 `taxonomy` JSON 拆到规范化表；旧分集没有真实媒体资源，因此迁移后必须上传原片并完成 Stream 转码才可重新上架。`0012` 会保留每个用户同剧中最适合续付的一笔订单，将其余历史待支付订单标记为已取消，然后增加并发唯一约束和价格/活动快照字段。
@@ -90,6 +94,14 @@ PAYPAL_SECRET
 PAYPAL_WEBHOOK_ID
 PAYPAL_ENVIRONMENT=production
 NUXT_PUBLIC_PAYPAL_CLIENT_ID
+PAYPAL_SANDBOX_CLIENT_ID
+PAYPAL_SANDBOX_SECRET
+PAYPAL_SANDBOX_WEBHOOK_ID
+NUXT_PUBLIC_PAYPAL_SANDBOX_CLIENT_ID
+PAYPAL_PRODUCTION_CLIENT_ID
+PAYPAL_PRODUCTION_SECRET
+PAYPAL_PRODUCTION_WEBHOOK_ID
+NUXT_PUBLIC_PAYPAL_PRODUCTION_CLIENT_ID
 CLOUDFLARE_MEDIA_BASE_URL
 CLOUDFLARE_MEDIA_SIGNING_SECRET
 CLOUDFLARE_MEDIA_WORKER_URL
@@ -104,6 +116,7 @@ ADMIN_SESSION_SECRET
 
 `CLOUDFLARE_MEDIA_BASE_URL` is retained for legacy R2 HLS playback. New media uses Stream tokens; `CLOUDFLARE_MEDIA_SIGNING_SECRET` still signs playback tracking authorization.
 `NUXT_PUBLIC_PAYPAL_CLIENT_ID` is intentionally public and must equal `PAYPAL_CLIENT_ID`. Keep both empty until PayPal is available; setting only one leaves checkout disabled or marks the connection incomplete.
+The legacy `PAYPAL_*` values remain a fallback for the initial `PAYPAL_ENVIRONMENT`. Configure both named Sandbox and Production sets to enable environment switching from `/admin/system`. The selected environment is the only payment configuration stored in D1; Client Secrets remain encrypted deployment secrets. Each order also stores its immutable PayPal environment so later Capture, verification, refunds and Webhooks keep using the correct API after a switch. The first switch attributes pre-0016 orders to the currently active environment. A switch first verifies the target OAuth credentials and is blocked while pending payments, refunds, or risk-review orders exist.
 `SUPER_ADMIN_PASSWORD` initializes the preset super administrator on first use. `ADMIN_SESSION_SECRET` signs the HttpOnly admin session cookie and must be a separate high-entropy production secret.
 
 ## 4. Deploy the private media Worker
@@ -146,7 +159,20 @@ Subscribe at minimum to:
 
 Copy PayPal's Webhook ID to `PAYPAL_WEBHOOK_ID`. The server verifies every webhook with PayPal before updating an order. Duplicate events are recorded once by `event_id`; verified processing failures can be replayed from the admin connection page.
 
-## 6. Verify
+## 6. Custom domains and HTTPS
+
+Enable Cloudflare for SaaS on the zone that fronts the application and configure its fallback origin. Add these encrypted/runtime values:
+
+```dotenv
+CLOUDFLARE_ZONE_ID=
+CLOUDFLARE_DOMAIN_CNAME_TARGET=customers.example.com
+```
+
+The API token also needs `Zone / Zone / Read` and `Zone / SSL and Certificates / Edit` for Custom Hostnames. `CLOUDFLARE_API_TOKEN` must remain a deployment secret. Super administrators can maintain the non-secret Zone ID and CNAME target from **域名管理 → 接入设置**; saved values take precedence over the environment-variable fallbacks above. `/admin/domains` creates the Custom Hostname before saving the local record, which starts DV certificate issuance. Point the requested hostname to the configured CNAME target, add any TXT validation records shown by Cloudflare, then use **同步状态** until the route and certificate are active.
+
+Only an active hostname with healthy CNAME and HTTPS can become primary or enable redirect. Requests arriving on an enabled old hostname receive an application-level `301` to the current primary hostname while preserving path and query. Removing a backup domain also removes its Cloudflare Custom Hostname and certificate.
+
+## 7. Verify
 
 Protect `/api/admin/*` with a Cloudflare Access application. In production the server requires the `Cf-Access-Jwt-Assertion` header that Access adds after validating the user. Set `CLOUDFLARE_ACCESS_REQUIRED=false` only for local development.
 

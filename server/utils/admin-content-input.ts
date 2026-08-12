@@ -29,4 +29,4 @@ export const isTaxonomyItem = (item: TaxonomyItem) => Boolean(item && typeof ite
 export const isDomainConfig = (item: DomainConfig) => Boolean(item && typeof item.id === 'string'
   && /^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(item.host) && ['主域名', '备用域名'].includes(item.role)
   && ['已验证', '待验证', '验证失败'].includes(item.verification)
-  && ['正常', '即将到期', '未签发'].includes(item.certificate) && typeof item.redirect === 'boolean');
+  && ['正常', '即将到期', '签发中', '未签发'].includes(item.certificate) && typeof item.redirect === 'boolean');

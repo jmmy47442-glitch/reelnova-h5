@@ -1,6 +1,7 @@
 import { ok } from '~/server/utils/response';
 import { d1All, d1First } from '~/server/utils/cloudflare-d1';
 import { getPayPalConfigurationStatus, testPayPalConnection } from '~/server/utils/paypal';
+import { getCloudflareDomainAutomationStatus } from '~/server/utils/cloudflare-domains';
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig(event);
@@ -10,12 +11,16 @@ export default defineEventHandler(async (event) => {
   let paypalError: string | null = null;
   let lastWebhookAt: string | null = null;
   let failedWebhooks: Array<{ eventId: string; eventType: string; errorMessage: string | null; receivedAt: string; retryCount: number; replayable: boolean }> = [];
-  const paypalConfiguration = getPayPalConfigurationStatus(event);
+  const paypalConfiguration = await getPayPalConfigurationStatus(event);
+  const domainAutomation = await getCloudflareDomainAutomationStatus(event);
   try {
     await d1First<{ value: number }>(event, 'SELECT 1 AS value');
     await d1First<{ value: number }>(event, `SELECT
       (SELECT COUNT(*) FROM series) + (SELECT COUNT(*) FROM episodes) +
       (SELECT COUNT(*) FROM tags) + (SELECT COUNT(*) FROM media_assets) AS value`);
+    const paypalEnvironmentColumn = await d1First<{ value: number }>(event,
+      "SELECT COUNT(*) AS value FROM pragma_table_info('orders') WHERE name = 'paypal_environment'");
+    if (!Number(paypalEnvironmentColumn?.value || 0)) throw new Error('Migration 0016_paypal_environment.sql is not applied');
     database = true;
     lastWebhookAt = (await d1First<{ value: string | null }>(event, 'SELECT MAX(received_at) AS value FROM paypal_webhook_events'))?.value || null;
     const failedRows = await d1All<{ event_id: string; event_type: string; error_message: string | null; received_at: string; retry_count: number; payload_json: string | null }>(event,
@@ -37,6 +42,7 @@ export default defineEventHandler(async (event) => {
       mediaWorkerConfigured: Boolean(config.cloudflareMediaWorkerUrl && config.cloudflareMediaWorkerSecret),
       streamConfigured: Boolean(config.cloudflareStreamCustomerCode && config.cloudflareStreamWebhookSecret),
       mediaSigningConfigured: Boolean(config.cloudflareMediaSigningSecret),
+      customHostnamesConfigured: domainAutomation.automationConfigured,
     },
     paypal: {
       connected: paypal,

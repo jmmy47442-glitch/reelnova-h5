@@ -1,6 +1,6 @@
 import { ok } from '~/server/utils/response';
 import { d1First, d1Run } from '~/server/utils/cloudflare-d1';
-import { processVerifiedPayPalWebhook, verifyPayPalWebhook, type PayPalWebhookEvent } from '~/server/utils/paypal';
+import { processVerifiedPayPalWebhook, resolvePayPalWebhookEnvironment, verifyPayPalWebhook, type PayPalWebhookEvent } from '~/server/utils/paypal';
 
 const replayablePayload = (body: PayPalWebhookEvent): PayPalWebhookEvent => ({
   id: body.id,
@@ -20,7 +20,8 @@ export default defineEventHandler(async (event) => {
   const existing = await d1First<{ processing_status: string }>(event, 'SELECT processing_status FROM paypal_webhook_events WHERE event_id = ?', [body.id]);
   if (existing?.processing_status === 'processed') return ok({ received: true, duplicate: true });
 
-  const verification = await verifyPayPalWebhook(event, body);
+  const environment = await resolvePayPalWebhookEnvironment(event, body);
+  const verification = await verifyPayPalWebhook(event, body, environment);
   const paypalOrderId = body.resource.supplementary_data?.related_ids?.order_id || null;
   const now = new Date().toISOString();
   await d1Run(event, `INSERT INTO paypal_webhook_events

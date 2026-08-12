@@ -1,6 +1,6 @@
 import { ok } from '~/server/utils/response';
 import { d1First, d1Run, getRequestCountry } from '~/server/utils/cloudflare-d1';
-import { createPayPalOrder, requirePayPalConfiguration } from '~/server/utils/paypal';
+import { createPayPalOrder, getActivePayPalEnvironment, requirePayPalConfiguration, type PayPalEnvironment } from '~/server/utils/paypal';
 import { assertUserEnabled, upsertUserProfile } from '~/server/utils/user-profile';
 import { getUserSession } from '~/server/utils/user-auth';
 import { getPublicSeries } from '~/server/utils/managed-content';
@@ -18,6 +18,7 @@ interface OrderRow {
   created_at: string;
   paypal_order_id: string | null;
   approval_url: string | null;
+  paypal_environment: PayPalEnvironment | null;
 }
 
 const toOrder = (row: OrderRow, entitlementStatus: Order['entitlementStatus'] = 'pending'): Order => ({
@@ -35,7 +36,7 @@ const toOrder = (row: OrderRow, entitlementStatus: Order['entitlementStatus'] = 
 
 const findOpenOrder = (event: Parameters<typeof d1First>[0], userId: string, seriesId: string) =>
   d1First<OrderRow>(event, `SELECT order_no, series_id, series_slug, series_title, user_id, amount_cents, currency,
-    status, created_at, paypal_order_id, approval_url
+    status, created_at, paypal_order_id, approval_url, paypal_environment
     FROM orders WHERE user_id = ? AND series_id = ? AND status IN ('pending', 'processing')
     ORDER BY created_at DESC LIMIT 1`, [userId, seriesId]);
 
@@ -45,14 +46,14 @@ const findFailedCreationAttempt = (
   seriesId: string,
   idempotencyKey: string,
 ) => d1First<OrderRow>(event, `SELECT order_no, series_id, series_slug, series_title, user_id, amount_cents, currency,
-  status, created_at, paypal_order_id, approval_url
+  status, created_at, paypal_order_id, approval_url, paypal_environment
   FROM orders WHERE user_id = ? AND series_id = ? AND idempotency_key = ?
     AND status = 'failed' AND paypal_order_id IS NULL
   LIMIT 1`, [userId, seriesId, idempotencyKey]);
 
 const initializePayPal = async (event: Parameters<typeof d1First>[0], row: OrderRow) => {
   if (row.paypal_order_id && row.approval_url) return toOrder(row);
-  requirePayPalConfiguration(event);
+  await requirePayPalConfiguration(event, row.paypal_environment || undefined);
   const origin = getRequestURL(event).origin;
   try {
     const paypal = await createPayPalOrder(event, {
@@ -61,13 +62,14 @@ const initializePayPal = async (event: Parameters<typeof d1First>[0], row: Order
       amount: (Number(row.amount_cents) / 100).toFixed(2),
       returnUrl: `${origin}/api/paypal/return?orderNo=${encodeURIComponent(row.order_no)}`,
       cancelUrl: `${origin}/series/${row.series_slug}?payment=cancelled&orderNo=${encodeURIComponent(row.order_no)}`,
+      environment: row.paypal_environment || undefined,
     });
     const updatedAt = new Date().toISOString();
     await d1Run(event, `UPDATE orders SET paypal_order_id = ?, approval_url = ?, status = 'processing', updated_at = ?
       WHERE order_no = ? AND paypal_order_id IS NULL AND status IN ('pending', 'failed')`,
     [paypal.paypalOrderId, paypal.approvalUrl, updatedAt, row.order_no]);
     const current = await d1First<OrderRow>(event, `SELECT order_no, series_id, series_slug, series_title, user_id,
-      amount_cents, currency, status, created_at, paypal_order_id, approval_url FROM orders WHERE order_no = ?`, [row.order_no]);
+      amount_cents, currency, status, created_at, paypal_order_id, approval_url, paypal_environment FROM orders WHERE order_no = ?`, [row.order_no]);
     if (!current?.paypal_order_id || !current.approval_url) {
       throw createError({ statusCode: 409, statusMessage: 'Checkout initialization is still in progress', data: { code: 'CHECKOUT_INITIALIZING' } });
     }
@@ -109,7 +111,7 @@ export default defineEventHandler(async (event) => {
   if (entitlement || manualEntitlement) {
     const entitlementOrderNo = entitlement?.order_no || `MANUAL-${series.id}`;
     const existing = await d1First<OrderRow>(event, `SELECT order_no, series_id, series_slug, series_title, user_id,
-      amount_cents, currency, status, created_at, paypal_order_id, approval_url FROM orders WHERE order_no = ?`, [entitlementOrderNo]);
+      amount_cents, currency, status, created_at, paypal_order_id, approval_url, paypal_environment FROM orders WHERE order_no = ?`, [entitlementOrderNo]);
     if (existing) return ok({ ...toOrder(existing, 'granted'), status: 'paid' as const, approvalUrl: undefined });
     return ok({ orderNo: entitlementOrderNo, seriesId: series.id, seriesTitle: series.title,
       amount: series.price, currency: 'USD' as const, status: 'paid' as const, createdAt: now.toISOString(), entitlementStatus: 'granted' as const });
@@ -119,7 +121,7 @@ export default defineEventHandler(async (event) => {
   if (existingPending) return ok(await initializePayPal(event, existingPending));
 
   const blockingOrder = await d1First<OrderRow>(event, `SELECT order_no, series_id, series_slug, series_title, user_id,
-    amount_cents, currency, status, created_at, paypal_order_id, approval_url FROM orders
+    amount_cents, currency, status, created_at, paypal_order_id, approval_url, paypal_environment FROM orders
     WHERE user_id = ? AND series_id = ? AND status IN ('paid', 'refunding', 'risk_review')
     ORDER BY created_at DESC LIMIT 1`, [userId, series.id]);
   if (blockingOrder?.status === 'paid') {
@@ -135,7 +137,7 @@ export default defineEventHandler(async (event) => {
     data: { code: 'PURCHASE_ALREADY_IN_REVIEW', orderNo: blockingOrder.order_no, status: blockingOrder.status },
   });
 
-  requirePayPalConfiguration(event);
+  await requirePayPalConfiguration(event);
 
   // A PayPal creation failure must be retried on the same local order. Creating
   // another row with the same client key conflicts with the existing unique index.
@@ -178,14 +180,15 @@ export default defineEventHandler(async (event) => {
       : 0,
   });
   const businessIdempotencyKey = `series-purchase:${userId}:${series.id}`;
+  const paypalEnvironment = await getActivePayPalEnvironment(event);
 
   // The INSERT is the concurrency boundary: entitlement and blocking-order checks
   // happen in the same database statement as the unique open-checkout claim.
   await d1Run(event, `INSERT OR IGNORE INTO orders
     (order_no, series_id, series_slug, series_title, user_id, email, country, amount_cents, currency,
      status, idempotency_key, business_idempotency_key, price_version, pricing_snapshot_json,
-     activity_snapshot_json, created_at, updated_at)
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'USD', 'pending', ?, ?, ?, ?, ?, ?, ?
+     activity_snapshot_json, paypal_environment, created_at, updated_at)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'USD', 'pending', ?, ?, ?, ?, ?, ?, ?, ?
     WHERE NOT EXISTS (
       SELECT 1 FROM entitlements WHERE user_id = ? AND series_id = ? AND status = 'granted'
     ) AND NOT EXISTS (
@@ -195,7 +198,7 @@ export default defineEventHandler(async (event) => {
         AND status IN ('pending', 'processing', 'paid', 'refunding', 'risk_review')
     )`, [
     orderNo, series.id, series.slug, series.title, userId, userSession.email, getRequestCountry(event), amountCents,
-    idempotencyKey, businessIdempotencyKey, priceVersion, pricingSnapshot, activitySnapshot,
+    idempotencyKey, businessIdempotencyKey, priceVersion, pricingSnapshot, activitySnapshot, paypalEnvironment,
     now.toISOString(), now.toISOString(), userId, series.id, userId, series.id, userId, series.id,
   ]);
 
@@ -203,7 +206,7 @@ export default defineEventHandler(async (event) => {
     WHERE user_id = ? AND series_id = ? AND status = 'granted' LIMIT 1`, [userId, series.id]);
   if (concurrentEntitlement) {
     const paid = await d1First<OrderRow>(event, `SELECT order_no, series_id, series_slug, series_title, user_id,
-      amount_cents, currency, status, created_at, paypal_order_id, approval_url FROM orders WHERE order_no = ?`, [concurrentEntitlement.order_no]);
+      amount_cents, currency, status, created_at, paypal_order_id, approval_url, paypal_environment FROM orders WHERE order_no = ?`, [concurrentEntitlement.order_no]);
     if (paid) return ok({ ...toOrder(paid, 'granted'), status: 'paid' as const, approvalUrl: undefined });
   }
 
@@ -212,7 +215,7 @@ export default defineEventHandler(async (event) => {
 
   const repeatedRequest = idempotencyKey
     ? await d1First<OrderRow>(event, `SELECT order_no, series_id, series_slug, series_title, user_id,
-      amount_cents, currency, status, created_at, paypal_order_id, approval_url FROM orders
+      amount_cents, currency, status, created_at, paypal_order_id, approval_url, paypal_environment FROM orders
       WHERE user_id = ? AND series_id = ? AND idempotency_key = ? LIMIT 1`, [userId, series.id, idempotencyKey])
     : null;
   if (repeatedRequest) return ok(toOrder(repeatedRequest));
