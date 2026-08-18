@@ -35,6 +35,12 @@ Keep the PayPal and media variables in `.env` empty. The application deliberatel
 
 No temporary PayPal or R2 mock credentials are required. After provisioning, fill the variables below, restart/redeploy the Nuxt application, deploy the media Worker, and re-run the checks on `/admin/system`.
 
+For a local, redacted Cloudflare check without opening the admin UI, run:
+
+```bash
+npm run check:cloudflare
+```
+
 ## 1. API token
 
 An API token is needed for local Node development, D1 initialization and automated deployment. It is not needed by the deployed application when a D1 binding named `DB` is available.
@@ -139,7 +145,9 @@ In Cloudflare Stream, set the notification URL to:
 https://YOUR_DOMAIN/api/media/stream-webhook
 ```
 
-Store the returned webhook signing secret in `CLOUDFLARE_STREAM_WEBHOOK_SECRET`, and copy the Stream customer code to `CLOUDFLARE_STREAM_CUSTOMER_CODE`. The Worker keeps original objects private, exposes only a one-hour signed ingest URL to Stream, and creates every Stream video with `requireSignedURLs=true`.
+Store the returned webhook signing secret in `CLOUDFLARE_STREAM_WEBHOOK_SECRET`. Copy the Stream customer code to `CLOUDFLARE_STREAM_CUSTOMER_CODE` when available; for new uploads the application can also use the HLS URL returned by Stream after the video becomes ready, so the customer code is a fallback rather than a hard requirement. The Worker keeps original objects private, exposes only a one-hour signed ingest URL to Stream, and creates every Stream video with `requireSignedURLs=true`.
+
+The same `CLOUDFLARE_API_TOKEN` used by the media Worker must include `Account / Stream / Edit`; otherwise R2 uploads can start, but Stream copy, status sync and signed playback token creation fail with a Cloudflare `403 Authentication error`.
 
 ## 5. PayPal webhook
 

@@ -129,6 +129,24 @@ export const authenticateUser = async (event: H3Event, email: string, password: 
   return { ...toAccount(account), lastLoginAt: loggedInAt };
 };
 
+export const resetUserPassword = async (event: H3Event, email: string, password: string) => {
+  const account = await findByEmail(event, email.trim().toLowerCase());
+  if (!account) return null;
+  if (account.status !== 'active') {
+    throw createError({ statusCode: 403, statusMessage: 'This account cannot reset its password' });
+  }
+  const salt = randomToken();
+  const updatedAt = new Date().toISOString();
+  const passwordHash = await derivePasswordHash(password, salt);
+  await d1Run(event, 'UPDATE users SET password_salt = ?, password_hash = ?, updated_at = ? WHERE user_id = ?', [
+    salt,
+    passwordHash,
+    updatedAt,
+    account.user_id,
+  ]);
+  return toAccount({ ...account, password_salt: salt, password_hash: passwordHash });
+};
+
 const sign = async (payload: string, secret: string) => {
   const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   const signed = await crypto.subtle.sign('HMAC', key, encoder.encode(payload));

@@ -1,6 +1,7 @@
 name = "reelnova-media"
 main = "workers/media-worker.mjs"
 compatibility_date = "2026-08-01"
+workers_dev = true
 
 [[r2_buckets]]
 binding = "MEDIA_BUCKET"
@@ -8,7 +9,7 @@ bucket_name = "reelnova-media-private"
 
 [vars]
 APP_ORIGINS = "http://localhost:3000,https://www.reelnova.com"
-PUBLIC_BASE_URL = "https://media-upload.reelnova.workers.dev"
+PUBLIC_BASE_URL = "https://reelnova-media.tkdjshop001.workers.dev"
 
 # Configure as encrypted Worker secrets:
 # MEDIA_WORKER_SECRET

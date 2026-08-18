@@ -1,5 +1,8 @@
 import { defineNuxtConfig } from 'nuxt/config';
 
+const devHost = process.env.NUXT_HOST || process.env.NITRO_HOST || process.env.HOST || '0.0.0.0';
+const devPort = Number(process.env.NUXT_PORT || process.env.NITRO_PORT || process.env.PORT || 3000);
+
 const adminSpaRoutes = {
   routeRules: {
     '/admin/**': { ssr: false },
@@ -9,6 +12,10 @@ const adminSpaRoutes = {
 export default defineNuxtConfig({
   compatibilityDate: '2024-11-01',
   buildDir: process.env.REELNOVA_NUXT_BUILD_DIR || '.nuxt',
+  devServer: {
+    host: devHost,
+    port: Number.isFinite(devPort) ? devPort : 3000,
+  },
   devtools: { enabled: false },
   css: ['~/assets/css/main.css'],
   modules: ['@nuxtjs/google-fonts', '@element-plus/nuxt'],

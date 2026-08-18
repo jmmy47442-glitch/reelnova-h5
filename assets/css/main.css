@@ -741,7 +741,12 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .consumer-auth__field button:hover { background: rgba(255,255,255,.06); }
 .consumer-auth__field small, .consumer-auth__inline-error { color: #ff7b84; font-size: 9px; font-weight: 500; line-height: 1.4; }
 .consumer-auth__options { display: flex; margin-top: -1px; align-items: center; justify-content: space-between; gap: 16px; }
-.consumer-auth__options > a { min-height: 32px; color: #b7b3bd; font-size: 9px; font-weight: 700; line-height: 32px; }
+.consumer-auth__options--end { justify-content: flex-end; }
+.consumer-auth__options > a,
+.consumer-auth__link-action { min-height: 32px; color: #b7b3bd; font-size: 9px; font-weight: 700; line-height: 32px; }
+.consumer-auth__link-action { padding: 0; border: 0; background: transparent; font-family: inherit; cursor: pointer; }
+.consumer-auth__link-action:hover { color: #fff; }
+.consumer-auth__link-action:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
 .consumer-auth__checkbox { display: inline-flex; position: relative; color: #8c8993; align-items: center; gap: 8px; font-size: 9px; cursor: pointer; }
 .consumer-auth__checkbox input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .consumer-auth__checkbox > span { display: grid; width: 16px; height: 16px; border: 1px solid #46434d; border-radius: 4px; background: var(--auth-field); color: transparent; flex: 0 0 auto; place-items: center; }
@@ -882,8 +887,10 @@ html[data-theme='light'] .consumer-auth__field button:hover { background: #f0f2f
 html[data-theme='light'] .consumer-auth__field small,
 html[data-theme='light'] .consumer-auth__inline-error { color: var(--danger); }
 html[data-theme='light'] .consumer-auth__options > a,
+html[data-theme='light'] .consumer-auth__link-action,
 html[data-theme='light'] .consumer-auth__checkbox,
 html[data-theme='light'] .consumer-auth__terms em { color: #656976; }
+html[data-theme='light'] .consumer-auth__link-action:hover { color: var(--text); }
 html[data-theme='light'] .consumer-auth__checkbox > span { border-color: #c4c8d1; background: #fff; }
 html[data-theme='light'] .consumer-auth__submit-error { color: var(--danger); }
 html[data-theme='light'] .consumer-auth__alternate { color: #717582; }

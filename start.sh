@@ -23,6 +23,10 @@ if [[ ! -x node_modules/.bin/nuxt ]]; then
   npm install
 fi
 
+node scripts/check-dev-port.mjs "$HOST" "$PORT"
+
+export HOST PORT
+
 echo "Starting ReelNova frontend and API server..."
 echo "Frontend: http://localhost:${PORT}/"
 echo "Admin:    http://localhost:${PORT}/admin"

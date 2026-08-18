@@ -14,13 +14,16 @@ import { useUserAuth } from '~/composables/useUserAuth';
 
 const props = defineProps<{ mode: 'login' | 'register' }>();
 const route = useRoute();
-const { login, register } = useUserAuth();
+const { login, register, resetPassword } = useUserAuth();
 const form = reactive({ name: '', email: '', password: '', confirmPassword: '', remember: true, agreement: false });
 const errors = reactive({ name: '', email: '', password: '', confirmPassword: '', agreement: '', submit: '' });
 const showPassword = ref(false);
 const submitting = ref(false);
+const resetMode = ref(false);
+const successMessage = ref('');
 
 const isRegister = computed(() => props.mode === 'register');
+const isPasswordReset = computed(() => !isRegister.value && resetMode.value);
 const redirect = computed(() => typeof route.query.redirect === 'string'
   && route.query.redirect.startsWith('/')
   && !route.query.redirect.startsWith('/admin')
@@ -30,22 +33,51 @@ const alternateTo = computed(() => ({
   path: isRegister.value ? '/login' : '/register',
   query: route.query.redirect ? { redirect: route.query.redirect } : undefined,
 }));
+const headingLabel = computed(() => isPasswordReset.value ? 'RESET ACCESS' : isRegister.value ? 'START YOUR STORY' : 'WELCOME BACK');
+const headingTitle = computed(() => isPasswordReset.value ? 'Reset password' : isRegister.value ? 'Create your account' : 'Sign in to watch');
+const headingCopy = computed(() => isPasswordReset.value
+  ? 'Choose a new password for your ReelNova account.'
+  : isRegister.value
+    ? 'Keep purchases and watch progress connected.'
+    : 'Pick up from the exact moment you left.');
 
 const clearErrors = () => {
   Object.keys(errors).forEach(key => { errors[key as keyof typeof errors] = ''; });
 };
 
-watch(() => props.mode, clearErrors);
+watch(() => props.mode, () => {
+  clearErrors();
+  resetMode.value = false;
+  successMessage.value = '';
+});
+
+const openReset = () => {
+  clearErrors();
+  successMessage.value = '';
+  resetMode.value = true;
+  form.password = '';
+  form.confirmPassword = '';
+  showPassword.value = false;
+};
+
+const closeReset = () => {
+  clearErrors();
+  resetMode.value = false;
+  form.password = '';
+  form.confirmPassword = '';
+  showPassword.value = false;
+};
 
 const validate = () => {
   clearErrors();
+  successMessage.value = '';
   if (isRegister.value && (form.name.trim().length < 2 || form.name.trim().length > 40)) errors.name = 'Enter a name between 2 and 40 characters.';
   if (!form.email.trim()) errors.email = 'Enter your email address.';
   else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) errors.email = 'Enter a valid email address.';
-  if (!form.password) errors.password = 'Enter your password.';
+  if (!form.password) errors.password = isPasswordReset.value ? 'Enter a new password.' : 'Enter your password.';
   else if (form.password.length < 8) errors.password = 'Use at least 8 characters.';
-  else if (isRegister.value && (!/[A-Za-z]/.test(form.password) || !/\d/.test(form.password))) errors.password = 'Include at least one letter and one number.';
-  if (isRegister.value && form.confirmPassword !== form.password) errors.confirmPassword = 'Passwords do not match.';
+  else if ((isRegister.value || isPasswordReset.value) && (!/[A-Za-z]/.test(form.password) || !/\d/.test(form.password))) errors.password = 'Include at least one letter and one number.';
+  if ((isRegister.value || isPasswordReset.value) && form.confirmPassword !== form.password) errors.confirmPassword = 'Passwords do not match.';
   if (isRegister.value && !form.agreement) errors.agreement = 'Accept the terms to create your account.';
   return !Object.values(errors).some(Boolean);
 };
@@ -55,13 +87,29 @@ const submit = async () => {
   submitting.value = true;
   try {
     const credentials = { email: form.email.trim().toLowerCase(), password: form.password, remember: form.remember };
+    if (isPasswordReset.value) {
+      const result = await resetPassword({ email: credentials.email, password: credentials.password });
+      successMessage.value = `Password reset for ${result.email}. Sign in with your new password.`;
+      resetMode.value = false;
+      form.password = '';
+      form.confirmPassword = '';
+      return;
+    }
     if (isRegister.value) await register({ ...credentials, name: form.name.trim() });
     else await login(credentials);
     await navigateTo(redirect.value);
   } catch (error: unknown) {
     const statusCode = (error as { statusCode?: number; response?: { status?: number } }).statusCode
       || (error as { response?: { status?: number } }).response?.status;
-    errors.submit = statusCode === 401
+    errors.submit = isPasswordReset.value
+      ? statusCode === 404
+        ? 'No ReelNova account was found for this email.'
+        : statusCode === 403
+          ? 'This account cannot reset its password right now.'
+          : statusCode === 503
+            ? 'Account service is temporarily unavailable. Try again shortly.'
+            : 'We could not reset your password. Try again.'
+      : statusCode === 401
       ? 'That email and password combination was not found.'
       : statusCode === 409
         ? 'An account with this email or browser is already linked. Sign in instead, or sign out before creating another account.'
@@ -75,7 +123,7 @@ const submit = async () => {
 </script>
 
 <template>
-  <main class="consumer-auth" :class="`consumer-auth--${mode}`">
+  <main class="consumer-auth" :class="[`consumer-auth--${mode}`, { 'consumer-auth--reset': isPasswordReset }]">
     <section class="consumer-auth__visual" aria-label="ReelNova original short dramas">
       <NuxtLink class="consumer-auth__brand" to="/login" aria-label="ReelNova">
         <span>R</span><strong>REELNOVA</strong>
@@ -95,14 +143,15 @@ const submit = async () => {
       <div class="consumer-auth__mobile-brand"><span>R</span><strong>REELNOVA</strong></div>
       <div class="consumer-auth__form-wrap">
         <header class="consumer-auth__heading">
-          <span>{{ isRegister ? 'START YOUR STORY' : 'WELCOME BACK' }}</span>
-          <h2>{{ isRegister ? 'Create your account' : 'Sign in to watch' }}</h2>
-          <p>{{ isRegister ? 'Keep purchases and watch progress connected.' : 'Pick up from the exact moment you left.' }}</p>
+          <span>{{ headingLabel }}</span>
+          <h2>{{ headingTitle }}</h2>
+          <p>{{ headingCopy }}</p>
         </header>
         <p v-if="!isRegister && route.query.accountDeleted === '1'" class="consumer-auth__notice" role="status"><Check :size="15" /> Your account data was deleted and you have been signed out.</p>
+        <p v-if="successMessage" class="consumer-auth__notice" role="status"><Check :size="15" /> {{ successMessage }}</p>
 
         <nav class="consumer-auth__switch" aria-label="Account access">
-          <NuxtLink :to="{ path: '/login', query: route.query.redirect ? { redirect: route.query.redirect } : undefined }" :class="{ 'is-active': !isRegister }">Sign in</NuxtLink>
+          <NuxtLink :to="{ path: '/login', query: route.query.redirect ? { redirect: route.query.redirect } : undefined }" :class="{ 'is-active': !isRegister }" @click="resetMode = false">Sign in</NuxtLink>
           <NuxtLink :to="{ path: '/register', query: route.query.redirect ? { redirect: route.query.redirect } : undefined }" :class="{ 'is-active': isRegister }">Register</NuxtLink>
         </nav>
 
@@ -118,30 +167,33 @@ const submit = async () => {
             <small v-if="errors.email">{{ errors.email }}</small>
           </label>
           <label class="consumer-auth__field">
-            <span>Password</span>
-            <div :class="{ 'has-error': errors.password }"><LockKeyhole :size="18" /><input v-model="form.password" :type="showPassword ? 'text' : 'password'" :autocomplete="isRegister ? 'new-password' : 'current-password'" placeholder="At least 8 characters" @input="errors.password = ''; errors.submit = ''"><button type="button" :aria-label="showPassword ? 'Hide password' : 'Show password'" @click="showPassword = !showPassword"><EyeOff v-if="showPassword" :size="18" /><Eye v-else :size="18" /></button></div>
+            <span>{{ isPasswordReset ? 'New password' : 'Password' }}</span>
+            <div :class="{ 'has-error': errors.password }"><LockKeyhole :size="18" /><input v-model="form.password" :type="showPassword ? 'text' : 'password'" :autocomplete="isRegister || isPasswordReset ? 'new-password' : 'current-password'" placeholder="At least 8 characters" @input="errors.password = ''; errors.submit = ''"><button type="button" :aria-label="showPassword ? 'Hide password' : 'Show password'" @click="showPassword = !showPassword"><EyeOff v-if="showPassword" :size="18" /><Eye v-else :size="18" /></button></div>
             <small v-if="errors.password">{{ errors.password }}</small>
           </label>
-          <label v-if="isRegister" class="consumer-auth__field">
-            <span>Confirm password</span>
+          <label v-if="isRegister || isPasswordReset" class="consumer-auth__field">
+            <span>{{ isPasswordReset ? 'Confirm new password' : 'Confirm password' }}</span>
             <div :class="{ 'has-error': errors.confirmPassword }"><ShieldCheck :size="18" /><input v-model="form.confirmPassword" :type="showPassword ? 'text' : 'password'" autocomplete="new-password" placeholder="Enter it again" @input="errors.confirmPassword = ''; errors.submit = ''"></div>
             <small v-if="errors.confirmPassword">{{ errors.confirmPassword }}</small>
           </label>
 
-          <div v-if="!isRegister" class="consumer-auth__options">
+          <div v-if="!isRegister && !isPasswordReset" class="consumer-auth__options">
             <label class="consumer-auth__checkbox"><input v-model="form.remember" type="checkbox"><span><Check :size="12" /></span>Keep me signed in</label>
-            <a href="mailto:support@reelnova.com">Forgot password?</a>
+            <button class="consumer-auth__link-action" type="button" @click="openReset">Forgot password?</button>
+          </div>
+          <div v-else-if="isPasswordReset" class="consumer-auth__options consumer-auth__options--end">
+            <button class="consumer-auth__link-action" type="button" @click="closeReset">Back to sign in</button>
           </div>
           <label v-else class="consumer-auth__checkbox consumer-auth__terms"><input v-model="form.agreement" type="checkbox" @change="errors.agreement = ''"><span><Check :size="12" /></span><em>I agree to the Terms and Privacy Policy.</em></label>
           <small v-if="errors.agreement" class="consumer-auth__inline-error">{{ errors.agreement }}</small>
           <p v-if="errors.submit" class="consumer-auth__submit-error" role="alert">{{ errors.submit }}</p>
           <button class="consumer-auth__submit" type="submit" :disabled="submitting">
-            {{ submitting ? 'Please wait...' : isRegister ? 'Create account' : 'Sign in' }}
+            {{ submitting ? 'Please wait...' : isPasswordReset ? 'Reset password' : isRegister ? 'Create account' : 'Sign in' }}
             <ChevronRight v-if="!submitting" :size="18" />
           </button>
         </form>
 
-        <p class="consumer-auth__alternate">{{ isRegister ? 'Already have an account?' : 'New to ReelNova?' }} <NuxtLink :to="alternateTo">{{ isRegister ? 'Sign in' : 'Register' }}</NuxtLink></p>
+        <p v-if="!isPasswordReset" class="consumer-auth__alternate">{{ isRegister ? 'Already have an account?' : 'New to ReelNova?' }} <NuxtLink :to="alternateTo">{{ isRegister ? 'Sign in' : 'Register' }}</NuxtLink></p>
       </div>
       <p class="consumer-auth__legal">By continuing, you confirm you are 18 or older.</p>
     </section>

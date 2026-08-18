@@ -1,5 +1,5 @@
 import type { ApiEnvelope } from '~/types/content';
-import type { UserLoginInput, UserRegisterInput, UserSession } from '~/types/user';
+import type { UserLoginInput, UserPasswordResetInput, UserRegisterInput, UserSession } from '~/types/user';
 import { useAccountSettings } from '~/composables/useAccountSettings';
 
 export const useUserAuth = () => {
@@ -40,6 +40,11 @@ export const useUserAuth = () => {
     return response.data;
   };
 
+  const resetPassword = async (input: UserPasswordResetInput) => {
+    const response = await $fetch<ApiEnvelope<{ email: string }>>('/auth/password-reset', { baseURL, credentials: 'include', method: 'POST', body: input });
+    return response.data;
+  };
+
   const logout = async () => {
     try {
       await $fetch('/auth/logout', { baseURL, credentials: 'include', method: 'POST' });
@@ -50,5 +55,5 @@ export const useUserAuth = () => {
     }
   };
 
-  return { session, sessionChecked, isAuthenticated, fetchSession, login, register, logout };
+  return { session, sessionChecked, isAuthenticated, fetchSession, login, register, resetPassword, logout };
 };
