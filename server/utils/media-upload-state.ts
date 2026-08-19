@@ -22,6 +22,7 @@ export interface MediaUploadStateRow {
   reconciled_at: string | null;
   r2_completion_key: string;
   stream_idempotency_key: string;
+  asset_stream_uid: string | null;
   episode_id: string;
   episode_no: number;
   series_id: string;
@@ -43,7 +44,7 @@ interface WorkerCompletion {
 }
 
 export const getMediaUploadState = (event: H3Event, uploadId: string) => d1First<MediaUploadStateRow>(event, `SELECT
-    u.*, a.episode_id, e.episode_no, e.series_id, s.title AS series_title
+    u.*, a.stream_uid AS asset_stream_uid, a.episode_id, e.episode_no, e.series_id, s.title AS series_title
   FROM media_upload_sessions u
   JOIN media_assets a ON a.id = u.media_asset_id
   JOIN episodes e ON e.id = a.episode_id
@@ -75,7 +76,7 @@ export const completeMediaUpload = async (
   audit = true,
 ): Promise<UploadCompletionResult> => {
   if (initial.status === 'completed') {
-    return { uploadId: initial.id, mediaAssetId: initial.media_asset_id, streamUid: initial.stream_uid, status: 'processing' };
+    return { uploadId: initial.id, mediaAssetId: initial.media_asset_id, streamUid: initial.stream_uid || initial.asset_stream_uid, status: 'processing' };
   }
   if (!['created', 'uploading', 'completing', 'failed'].includes(initial.status)) {
     throw createError({ statusCode: 409, statusMessage: 'Upload cannot be completed in its current state' });
@@ -115,7 +116,7 @@ export const completeMediaUpload = async (
     }
 
     const externalSavedAt = new Date().toISOString();
-    await d1Run(event, `UPDATE media_upload_sessions SET source_etag = ?, r2_completed_at = COALESCE(r2_completed_at, ?),
+    await d1Run(event, `UPDATE media_upload_sessions SET uploaded_bytes = file_size_bytes, source_etag = ?, r2_completed_at = COALESCE(r2_completed_at, ?),
       stream_uid = COALESCE(?, stream_uid), stream_created_at = CASE WHEN ? IS NULL THEN stream_created_at ELSE COALESCE(stream_created_at, ?) END,
       last_error = ?, reconciled_at = ?, updated_at = ? WHERE id = ?`,
     [result.etag, externalSavedAt, result.streamUid, result.streamUid, externalSavedAt,

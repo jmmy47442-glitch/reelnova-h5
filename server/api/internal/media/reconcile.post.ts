@@ -59,12 +59,12 @@ export default defineEventHandler(async (event) => {
     WHERE source_object_key IS NOT NULL AND deleted_at IS NULL AND status <> 'superseded'
       AND NOT EXISTS (SELECT 1 FROM media_upload_sessions u WHERE u.media_asset_id = media_assets.id
         AND (u.status IN ('aborted', 'expired') OR (u.status IN ('created', 'uploading') AND u.expires_at < ?)))
-    LIMIT 10000`, [now]);
+    `, [now]);
   const keepStreams = await d1All<{ value: string }>(event, `SELECT stream_uid AS value FROM media_assets
     WHERE stream_uid IS NOT NULL AND deleted_at IS NULL AND status <> 'superseded'
-    UNION SELECT stream_uid AS value FROM media_upload_sessions WHERE stream_uid IS NOT NULL AND status = 'completing' LIMIT 10000`);
+    UNION SELECT stream_uid AS value FROM media_upload_sessions WHERE stream_uid IS NOT NULL AND status = 'completing'`);
   const keepSessions = await d1All<{ value: string }>(event, `SELECT id AS value FROM media_upload_sessions
-    WHERE status IN ('created', 'uploading', 'completing') AND (expires_at >= ? OR status = 'completing') LIMIT 10000`, [now]);
+    WHERE status IN ('created', 'uploading', 'completing') AND (expires_at >= ? OR status = 'completing')`, [now]);
 
   const cleanup = await mediaWorkerRequest<CleanupResult>(event, '/reconcile', {
     graceHours: 24,

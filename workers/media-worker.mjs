@@ -78,13 +78,21 @@ const streamApi = async (env, path, options = {}) => {
   return payload.result;
 };
 
-const findStreamCopy = async (env, idempotencyKey) => {
+const findStreamCopy = async (env, idempotencyKey, metadata = {}) => {
   const videos = await streamApi(env, `?creator=${encodeURIComponent(idempotencyKey)}&limit=10&asc=true`);
-  return Array.isArray(videos) ? videos.find((video) => video.creator === idempotencyKey) || null : null;
+  const exact = Array.isArray(videos) ? videos.find((video) => video.creator === idempotencyKey) : null;
+  if (exact) return exact;
+  // Pre-0017 copies did not set creator; recover those by their immutable asset metadata.
+  const assetId = String(metadata.assetId || '');
+  if (!assetId) return null;
+  const legacyVideos = await streamApi(env, `?search=${encodeURIComponent(assetId)}&limit=10&asc=true`);
+  return Array.isArray(legacyVideos)
+    ? legacyVideos.find((video) => String(video.meta?.assetId || '') === assetId) || null
+    : null;
 };
 
 const startStreamCopy = async (env, objectKey, metadata, idempotencyKey) => {
-  const existing = await findStreamCopy(env, idempotencyKey);
+  const existing = await findStreamCopy(env, idempotencyKey, metadata);
   if (existing?.uid) return existing;
   const ingestToken = await createToken({ key: objectKey, expires: Math.floor(Date.now() / 1000) + 3600 }, env.MEDIA_WORKER_SECRET);
   const sourceUrl = `${env.PUBLIC_BASE_URL.replace(/\/$/, '')}/ingest/${encodeURIComponent(ingestToken)}`;
@@ -191,7 +199,8 @@ const reconcileResources = async (env, body) => {
   do {
     const listed = await env.MEDIA_BUCKET.list({ prefix: 'originals/', limit: 1000, cursor, include: ['customMetadata'] });
     for (const object of listed.objects) {
-      if (object.customMetadata?.managedBy !== 'reelnova' || keepObjectKeys.has(object.key) || object.uploaded.getTime() >= cutoff) continue;
+      if (object.customMetadata?.managedBy !== 'reelnova' && !object.key.startsWith('originals/')) continue;
+      if (keepObjectKeys.has(object.key) || object.uploaded.getTime() >= cutoff) continue;
       try {
         await env.MEDIA_BUCKET.delete(object.key);
         result.deletedObjectKeys.push(object.key);
@@ -231,7 +240,8 @@ const reconcileResources = async (env, body) => {
       const videos = await streamApi(env, `?limit=1000&asc=true${start ? `&start=${encodeURIComponent(start)}` : ''}`);
       const pageVideos = Array.isArray(videos) ? videos : [];
       for (const video of pageVideos) {
-        if (!String(video.creator || '').startsWith('reelnova:') || keepStreamUids.has(video.uid)
+        if (!String(video.creator || '').startsWith('reelnova:') && !video.meta?.assetId) continue;
+        if (keepStreamUids.has(video.uid)
           || !video.created || Date.parse(video.created) >= cutoff) continue;
         try {
           await streamApi(env, `/${encodeURIComponent(video.uid)}`, { method: 'DELETE' });
