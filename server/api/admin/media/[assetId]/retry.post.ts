@@ -9,7 +9,9 @@ export default defineEventHandler(async (event) => {
     `SELECT a.id, a.episode_id, a.source_object_key, a.status, e.episode_no, e.series_id, s.title AS series_title
      FROM media_assets a JOIN episodes e ON e.id = a.episode_id JOIN series s ON s.id = e.series_id WHERE a.id = ? AND a.deleted_at IS NULL`, [assetId]);
   if (!asset) throw createError({ statusCode: 404, statusMessage: 'Media asset not found' });
-  if (asset.status !== 'failed' || !asset.source_object_key) throw createError({ statusCode: 409, statusMessage: 'Only failed transcoding jobs can be retried' });
+  if (!['failed', 'uploaded'].includes(asset.status) || !asset.source_object_key) {
+    throw createError({ statusCode: 409, statusMessage: 'Only failed or pending Stream jobs can be retried' });
+  }
   const previous = await d1First<{ attempt: number }>(event, 'SELECT MAX(attempt) AS attempt FROM transcode_jobs WHERE media_asset_id = ?', [assetId]);
   const attempt = Number(previous?.attempt || 0) + 1;
   if (attempt > 5) throw createError({ statusCode: 409, statusMessage: 'Maximum retry attempts reached' });

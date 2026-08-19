@@ -88,6 +88,27 @@ export const createStreamManifestUrl = (streamUid: string, token: string, hlsUrl
   return code ? `https://customer-${code}.cloudflarestream.com/${token}/manifest/video.m3u8` : null;
 };
 
+export const createStreamThumbnailUrl = (
+  streamUid: string,
+  token: string,
+  thumbnailUrl?: string | null,
+  customerCode?: string | null,
+  variant: 'cover' | 'backdrop' = 'cover',
+) => {
+  const storedUrl = String(thumbnailUrl || '');
+  const code = String(customerCode || '');
+  const base = storedUrl
+    ? storedUrl.replace(`/${streamUid}/`, `/${token}/`)
+    : code ? `https://customer-${code}.cloudflarestream.com/${token}/thumbnails/thumbnail.jpg` : '';
+  if (!base) return null;
+  const url = new URL(base);
+  url.searchParams.set('time', '3s');
+  url.searchParams.set('fit', 'crop');
+  url.searchParams.set('width', variant === 'cover' ? '600' : '1600');
+  url.searchParams.set('height', variant === 'cover' ? '900' : '900');
+  return url.toString();
+};
+
 export const applyStreamStatus = async (event: H3Event, assetId: string, video: StreamVideo) => {
   const now = new Date().toISOString();
   const asset = await d1First<{ id: string; episode_id: string }>(event, 'SELECT id, episode_id FROM media_assets WHERE id = ?', [assetId]);

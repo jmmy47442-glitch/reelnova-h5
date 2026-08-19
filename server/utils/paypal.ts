@@ -1,4 +1,5 @@
 import type { H3Event } from 'h3';
+import { ofetch, type FetchOptions } from 'ofetch';
 import { d1First, d1Run } from '~/server/utils/cloudflare-d1';
 import { upsertUserProfile } from '~/server/utils/user-profile';
 import { getSystemConfig, saveSystemConfig } from '~/server/utils/system-config';
@@ -44,6 +45,33 @@ export interface PayPalWebhookEvent {
 }
 
 const paypalRequestTimeoutMs = 10_000;
+
+const paypalRequest = async <T>(
+  url: string,
+  options: FetchOptions<'json'>,
+  operation: string,
+): Promise<T> => {
+  try {
+    return await ofetch<T>(url, options);
+  } catch (error: unknown) {
+    const providerStatus = (error as { statusCode?: number; response?: { status?: number } }).statusCode
+      || (error as { response?: { status?: number } }).response?.status;
+    if (providerStatus) {
+      throw createError({
+        statusCode: 502,
+        statusMessage: providerStatus === 401
+          ? 'PayPal rejected the configured credentials'
+          : `PayPal rejected the ${operation} request`,
+        data: { code: providerStatus === 401 ? 'PAYPAL_CREDENTIALS_REJECTED' : 'PAYPAL_PROVIDER_ERROR' },
+      });
+    }
+    throw createError({
+      statusCode: 503,
+      statusMessage: 'The server cannot connect to PayPal',
+      data: { code: 'PAYPAL_CONNECTION_FAILED' },
+    });
+  }
+};
 
 export type PayPalEnvironment = 'sandbox' | 'production';
 
@@ -125,20 +153,20 @@ const configFor = async (event: H3Event, requestedEnvironment?: PayPalEnvironmen
 
 export const requirePayPalConfiguration = (event: H3Event, environment?: PayPalEnvironment) => configFor(event, environment);
 
-const accessToken = async (event: H3Event, environment?: PayPalEnvironment) => {
+const accessToken = async (event: H3Event, environment?: PayPalEnvironment): Promise<{ token: string; baseUrl: string }> => {
   const { clientId, secret, baseUrl } = await configFor(event, environment);
   const auth = btoa(`${clientId}:${secret}`);
-  const response = await $fetch<PayPalAccessToken>(`${baseUrl}/v1/oauth2/token`, {
+  const response = await paypalRequest<PayPalAccessToken>(`${baseUrl}/v1/oauth2/token`, {
     method: 'POST', timeout: paypalRequestTimeoutMs, headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'grant_type=client_credentials',
-  });
+  }, 'authentication');
   return { token: response.access_token, baseUrl };
 };
 
-export const testPayPalConnection = async (event: H3Event, environment?: PayPalEnvironment) => Boolean((await accessToken(event, environment)).token);
+export const testPayPalConnection = async (event: H3Event, environment?: PayPalEnvironment): Promise<boolean> => Boolean((await accessToken(event, environment)).token);
 
 export const createPayPalOrder = async (event: H3Event, input: { orderNo: string; seriesTitle: string; amount: string; returnUrl: string; cancelUrl: string; environment?: PayPalEnvironment }) => {
   const { token, baseUrl } = await accessToken(event, input.environment);
-  const response = await $fetch<PayPalOrderResponse>(`${baseUrl}/v2/checkout/orders`, {
+  const response = await paypalRequest<PayPalOrderResponse>(`${baseUrl}/v2/checkout/orders`, {
     method: 'POST',
     timeout: paypalRequestTimeoutMs,
     headers: { Authorization: `Bearer ${token}`, 'PayPal-Request-Id': input.orderNo, 'Content-Type': 'application/json' },
@@ -147,7 +175,7 @@ export const createPayPalOrder = async (event: H3Event, input: { orderNo: string
       purchase_units: [{ reference_id: input.orderNo, invoice_id: input.orderNo, description: `ReelNova: ${input.seriesTitle}`, amount: { currency_code: 'USD', value: input.amount } }],
       payment_source: { paypal: { experience_context: { brand_name: 'ReelNova', user_action: 'PAY_NOW', return_url: input.returnUrl, cancel_url: input.cancelUrl } } },
     },
-  });
+  }, 'checkout');
   const approvalUrl = response.links?.find((link) => link.rel === 'payer-action' || link.rel === 'approve')?.href;
   if (!approvalUrl) throw createError({ statusCode: 502, statusMessage: 'PayPal approval URL missing' });
   return { paypalOrderId: response.id, approvalUrl };

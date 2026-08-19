@@ -17,7 +17,7 @@ export const useContentApi = () => {
         query: { seriesId, episodeNo, sessionId },
       }),
     recordPlayback: (event: PlaybackEventInput, keepalive = false) => request<{ accepted: true; positionSeconds: number; durationSeconds: number; lastWatchedAt: string }>('/me/watch-history', { method: 'POST', body: event, keepalive }),
-    createOrder: (seriesId: string, idempotencyKey?: string) => request<Order>('/orders', { method: 'POST', body: { seriesId, idempotencyKey } }),
+    createOrder: (seriesId: string, idempotencyKey?: string) => request<Order>('/orders', { method: 'POST', timeout: 15_000, body: { seriesId, idempotencyKey } }),
     getPayPalConfig: () => request<{ environment: 'sandbox' | 'production'; clientId: string; available: boolean }>('/paypal/config'),
     capturePayPalOrder: (paypalOrderId: string) => request<{ orderNo: string; status: 'paid' }>('/paypal/capture', { method: 'POST', body: { paypalOrderId } }),
     getMyOrders: () => request<Order[]>('/me/orders'),

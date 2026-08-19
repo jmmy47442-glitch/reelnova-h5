@@ -74,8 +74,67 @@ const streamApi = async (env, path, options = {}) => {
     headers: { authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`, 'content-type': 'application/json', ...(options.headers || {}) },
   });
   const payload = await response.json();
-  if (!response.ok || !payload.success) throw new Error(payload.errors?.[0]?.message || 'Cloudflare Stream request failed');
+  if (!response.ok || !payload.success) {
+    const details = [...(payload.errors || []), ...(payload.messages || [])]
+      .map((item) => item?.message)
+      .filter(Boolean)
+      .join('; ');
+    throw new Error(details || 'Cloudflare Stream request failed');
+  }
   return payload.result;
+};
+
+const parseByteRange = (value, size) => {
+  if (!value) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value.trim());
+  if (!match || (!match[1] && !match[2]) || size <= 0) return false;
+  if (!match[1]) {
+    const suffixLength = Number(match[2]);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return false;
+    const length = Math.min(suffixLength, size);
+    return { offset: size - length, length };
+  }
+  const offset = Number(match[1]);
+  const requestedEnd = match[2] ? Number(match[2]) : size - 1;
+  if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(requestedEnd)
+    || offset < 0 || offset >= size || requestedEnd < offset) return false;
+  const end = Math.min(requestedEnd, size - 1);
+  return { offset, length: end - offset + 1 };
+};
+
+const writeObjectHeaders = (headers, object, contentLength = object.size) => {
+  object.writeHttpMetadata(headers);
+  headers.set('etag', object.httpEtag);
+  headers.set('accept-ranges', 'bytes');
+  headers.set('cache-control', 'private, max-age=0');
+  headers.set('content-length', String(contentLength));
+};
+
+const serveIngestObject = async (request, env, encodedToken) => {
+  const payload = await readToken(decodeURIComponent(encodedToken), env.MEDIA_WORKER_SECRET);
+  if (!payload?.key) return new Response('Expired ingest URL', { status: 403 });
+  const metadata = await env.MEDIA_BUCKET.head(payload.key);
+  if (!metadata) return new Response('Not found', { status: 404 });
+  const headers = new Headers();
+
+  if (request.method === 'HEAD') {
+    writeObjectHeaders(headers, metadata);
+    return new Response(null, { status: 200, headers });
+  }
+
+  const range = parseByteRange(request.headers.get('range'), metadata.size);
+  if (range === false) {
+    headers.set('accept-ranges', 'bytes');
+    headers.set('content-range', `bytes */${metadata.size}`);
+    return new Response(null, { status: 416, headers });
+  }
+  const object = await env.MEDIA_BUCKET.get(payload.key, range ? { range } : undefined);
+  if (!object) return new Response('Not found', { status: 404 });
+  writeObjectHeaders(headers, object, range?.length ?? metadata.size);
+  if (range) {
+    headers.set('content-range', `bytes ${range.offset}-${range.offset + range.length - 1}/${metadata.size}`);
+  }
+  return new Response(object.body, { status: range ? 206 : 200, headers });
 };
 
 const findStreamCopy = async (env, idempotencyKey, metadata = {}) => {
@@ -323,16 +382,8 @@ export default {
       }
 
       const ingestMatch = url.pathname.match(/^\/ingest\/(.+)$/);
-      if (ingestMatch && request.method === 'GET') {
-        const payload = await readToken(decodeURIComponent(ingestMatch[1]), env.MEDIA_WORKER_SECRET);
-        if (!payload?.key) return new Response('Expired ingest URL', { status: 403 });
-        const object = await env.MEDIA_BUCKET.get(payload.key);
-        if (!object) return new Response('Not found', { status: 404 });
-        const headers = new Headers();
-        object.writeHttpMetadata(headers);
-        headers.set('etag', object.httpEtag);
-        headers.set('cache-control', 'private, max-age=0');
-        return new Response(object.body, { headers });
+      if (ingestMatch && ['GET', 'HEAD'].includes(request.method)) {
+        return serveIngestObject(request, env, ingestMatch[1]);
       }
 
       return json({ error: 'Not found' }, 404, requestCors);

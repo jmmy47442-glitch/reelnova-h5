@@ -2,7 +2,7 @@
 import { CloudOff, Download, Eye, Film, FileVideo, Plus, RefreshCw, Search, Upload } from 'lucide-vue-next';
 import Hls from 'hls.js';
 import { createFile as createMp4File } from 'mp4box';
-import { ElMessage, ElMessageBox, type UploadFile, type UploadFiles } from 'element-plus';
+import { ElMessage, ElMessageBox, type UploadFile, type UploadFiles, type UploadInstance } from 'element-plus';
 import type { AdminEpisode, MediaUploadPart, MediaUploadSession } from '~/types/admin';
 import type { AdminSeries, PublishStatus } from '~/composables/useAdminStore';
 
@@ -23,6 +23,7 @@ const loading = ref(true);
 const loadError = ref(false);
 const saving = ref(false);
 const selectedFiles = ref<File[]>([]);
+const uploadControl = ref<UploadInstance>();
 const episodeStart = ref(1);
 const uploadProgress = ref(0);
 const uploadLabel = ref('');
@@ -58,7 +59,7 @@ const loadSeries = async () => {
 
 const loadMediaAvailability = async () => {
   mediaAvailabilityLoading.value = true;
-  try { mediaAvailable.value = (await api.getConnection()).cloudflare.mediaConfigured; }
+  try { mediaAvailable.value = (await api.getConnection()).cloudflare.uploadConfigured; }
   catch { mediaAvailable.value = false; }
   finally { mediaAvailabilityLoading.value = false; }
 };
@@ -93,6 +94,11 @@ const saveSeries = async () => {
     ElMessage.warning('请填写剧名并至少选择一个分类');
     return;
   }
+  const current = editingId.value ? state.value.series.find((item) => item.id === editingId.value) : undefined;
+  if (current && current.episodeCount > form.freeEpisodeCount && form.price <= 0) {
+    ElMessage.warning('仍有付费分集时，解锁价格必须大于 0 美元');
+    return;
+  }
   saving.value = true;
   const input = { ...form, title: form.title.trim(), description: form.description.trim(), genres: [...form.genres] };
   try {
@@ -117,6 +123,9 @@ const updateStatus = async (rows: AdminSeries[], next: PublishStatus) => {
   if (!rows.length) return ElMessage.warning('请先选择短剧');
   if (next === '已上架' && rows.some((row) => row.episodeCount === 0 || row.transcodeProgress < 100)) {
     return ElMessage.warning('存在未上传分集或转码未完成的短剧，无法上架');
+  }
+  if (next === '已上架' && rows.some((row) => row.episodeCount > row.freeEpisodeCount && row.price <= 0)) {
+    return ElMessage.warning('存在零价但仍有锁定分集的短剧，请先设置解锁价格');
   }
   if (['已下架', '版权冻结'].includes(next)) {
     await ElMessageBox.confirm(`确定将 ${rows.length} 部短剧设为“${next}”吗？该操作会影响前台播放。`, '高风险操作', { type: 'warning', confirmButtonText: '确认执行' });
@@ -160,10 +169,15 @@ const formatBytes = (value: number | null) => {
   return `${(value / 1024 ** index).toFixed(index > 1 ? 1 : 0)} ${units[index]}`;
 };
 const formatDuration = (value: number) => `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, '0')}`;
-const mediaStatus = (episode: AdminEpisode) => ({
+const mediaStatus = (episode: AdminEpisode) => episode.videoStatus === 'validating' && episode.errorMessage
+  ? ['待恢复', 'danger'] as [string, string]
+  : ({
   waiting_upload: ['待上传', 'info'], uploading: ['上传中', 'warning'], validating: ['校验中', 'warning'],
   processing: [`转码 ${episode.transcodeProgress}%`, 'warning'], ready: ['可发布', 'success'], failed: ['处理失败', 'danger'],
 }[episode.videoStatus] || ['未知', 'info']) as [string, string];
+const mediaErrorMessage = (message: string) => /Bad Request: The request was invalid/i.test(message)
+  ? 'Stream 无法读取原片，请重试转码；如仍失败，请检查媒体 Worker。'
+  : message;
 
 const loadEpisodes = async (showLoading = true) => {
   if (!selectedSeries.value) return;
@@ -194,6 +208,10 @@ const openEpisodes = (row: AdminSeries) => {
 };
 
 const onFileSelected = (_file: UploadFile, files: UploadFiles) => {
+  if (!uploading.value) {
+    uploadProgress.value = 0;
+    uploadLabel.value = '';
+  }
   selectedFiles.value = files.reduce<File[]>((result, item) => {
     if (item.raw) result.push(item.raw);
     return result;
@@ -304,7 +322,10 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
     void api.reportUploadProgress(session.id, completedBytes).catch(() => undefined);
   }
   const completion = await api.completeEpisodeUpload(session.id, [...parts.values()]);
-  if (completion.status === 'completing') throw new Error(completion.errorMessage || '原片已保留，正在恢复 Stream 转码任务');
+  if (completion.status === 'completing') {
+    const detail = completion.errorMessage ? `：${mediaErrorMessage(completion.errorMessage)}` : '';
+    throw new Error(`原片已保存到 R2，Stream 转码暂未提交${detail}`);
+  }
   localStorage.removeItem(key);
   localStorage.removeItem(idempotencyStorageKey);
 };
@@ -327,12 +348,15 @@ const startTranscode = async () => {
       completedBefore += file.size;
     }
     uploadProgress.value = 100;
+    uploadLabel.value = '上传完成';
     selectedFiles.value = [];
+    uploadControl.value?.clearFiles();
     ElMessage.success('原片已写入 R2，Stream 转码任务已提交');
     await Promise.all([loadEpisodes(), loadSeries()]);
   } catch (reason) {
     const message = reason instanceof Error ? reason.message : '上传中断';
-    ElMessage.error(message.includes('原片已保留') ? message : `${message}，重新点击可从已完成分片继续`);
+    if (message.includes('原片已保存到 R2')) ElMessage.warning(`${message}，可重新点击上传或在分集列表重试。`);
+    else ElMessage.error(`${message}，重新点击可从已完成分片继续`);
     await loadEpisodes(false);
   } finally { uploading.value = false; }
 };
@@ -424,12 +448,12 @@ const exportSeries = () => {
       <div v-if="selectedSeries" class="episode-manager">
         <el-alert v-if="episodeError" :title="episodeError" type="error" :closable="false" show-icon><el-button link type="primary" @click="loadEpisodes()">重试</el-button></el-alert>
         <section class="episode-upload-section">
-          <el-alert v-if="!mediaAvailabilityLoading && !mediaAvailable" title="R2/Stream 媒体链路尚未配置，当前不能上传或转码；完成系统配置后刷新本页即可启用。" type="warning" :closable="false" show-icon />
+          <el-alert v-if="!mediaAvailabilityLoading && !mediaAvailable" title="R2/Stream 上传链路不可用，请在站点与支付中检查 D1、Media Worker 和 Stream API。" type="warning" :closable="false" show-icon />
           <div class="episode-section-heading"><div><strong>上传原片</strong><span>文件按选择顺序对应连续集号</span></div><el-input-number v-model="episodeStart" aria-label="起始集数" :min="1" :max="10000" :disabled="uploading || !mediaAvailable" controls-position="right" /></div>
           <div class="episode-upload-box">
             <Upload :size="26" />
             <div><strong>{{ selectedFiles.length ? `已选择 ${selectedFiles.length} 个文件` : '选择 MP4/MOV 原片' }}</strong><span>单文件最大 20 GB，支持中断后继续上传</span></div>
-            <el-upload :auto-upload="false" :show-file-list="true" :multiple="true" :limit="50" accept="video/mp4,video/quicktime,.mp4,.mov" :disabled="uploading || !mediaAvailable" :on-change="onFileSelected" :on-remove="onFileSelected"><el-button :disabled="uploading || !mediaAvailable"><FileVideo :size="15" />选择视频</el-button></el-upload>
+            <el-upload ref="uploadControl" :auto-upload="false" :show-file-list="true" :multiple="true" :limit="50" accept="video/mp4,video/quicktime,.mp4,.mov" :disabled="uploading || !mediaAvailable" :on-change="onFileSelected" :on-remove="onFileSelected"><el-button :disabled="uploading || !mediaAvailable"><FileVideo :size="15" />选择视频</el-button></el-upload>
             <el-button type="primary" :loading="uploading" :disabled="!mediaAvailable || !selectedFiles.length" @click="startTranscode">{{ uploading ? '正在上传' : '上传并转码' }}</el-button>
           </div>
           <div v-if="uploading || uploadProgress" class="episode-upload-progress"><div><span>{{ uploadLabel || '上传完成' }}</span><strong>{{ uploadProgress }}%</strong></div><el-progress :percentage="uploadProgress" :show-text="false" :status="uploadProgress === 100 ? 'success' : undefined" /></div>
@@ -441,10 +465,10 @@ const exportSeries = () => {
           <div v-else-if="!episodes.length" class="episode-list-state"><Film :size="26" /><span>还没有分集，从上方上传第一集</span></div>
           <div v-for="episode in episodes" v-else :key="episode.id" class="episode-row">
             <span class="episode-index">{{ String(episode.episodeNo).padStart(2, '0') }}</span>
-            <div><strong>{{ episode.title }}</strong><span>{{ episode.sourceFileName || '尚无媒体文件' }} · {{ formatBytes(episode.sourceSizeBytes) }}<template v-if="episode.durationSeconds"> · {{ formatDuration(episode.durationSeconds) }}</template></span><small v-if="episode.errorMessage">{{ episode.errorMessage }}</small></div>
+            <div><strong>{{ episode.title }}</strong><span>{{ episode.sourceFileName || '尚无媒体文件' }} · {{ formatBytes(episode.sourceSizeBytes) }}<template v-if="episode.durationSeconds"> · {{ formatDuration(episode.durationSeconds) }}</template></span><small v-if="episode.errorMessage" role="alert">{{ mediaErrorMessage(episode.errorMessage) }}</small></div>
             <el-tag :type="mediaStatus(episode)[1] as any" effect="light">{{ mediaStatus(episode)[0] }}</el-tag>
             <el-tooltip v-if="episode.previewUrl" content="发布前预览" placement="top"><el-button circle text aria-label="发布前预览" @click="openPreview(episode)"><Eye :size="16" /></el-button></el-tooltip>
-            <el-tooltip v-if="episode.videoStatus === 'failed'" content="重试转码" placement="top"><el-button circle text aria-label="重试转码" @click="retryTranscode(episode)"><RefreshCw :size="16" /></el-button></el-tooltip>
+            <el-tooltip v-if="episode.videoStatus === 'failed' || (episode.videoStatus === 'validating' && episode.errorMessage)" content="重试转码" placement="top"><el-button circle text aria-label="重试转码" @click="retryTranscode(episode)"><RefreshCw :size="16" /></el-button></el-tooltip>
           </div>
         </section>
       </div>

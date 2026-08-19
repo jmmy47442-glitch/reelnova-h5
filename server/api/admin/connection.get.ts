@@ -22,6 +22,9 @@ export default defineEventHandler(async (event) => {
     playback: [
       !config.cloudflareMediaSigningSecret ? 'CLOUDFLARE_MEDIA_SIGNING_SECRET' : '',
     ].filter(Boolean),
+    streamWebhook: [
+      !config.cloudflareStreamWebhookSecret ? 'CLOUDFLARE_STREAM_WEBHOOK_SECRET' : '',
+    ].filter(Boolean),
   };
   let database = false;
   let databaseError: string | null = null;
@@ -77,8 +80,9 @@ export default defineEventHandler(async (event) => {
       streamApiError,
       streamCustomerCodeConfigured: Boolean(config.cloudflareStreamCustomerCode),
       streamWebhookConfigured: Boolean(config.cloudflareStreamWebhookSecret),
+      uploadConfigured: Boolean(database && config.cloudflareMediaWorkerUrl && config.cloudflareMediaWorkerSecret && streamApi),
       mediaConfigured: Boolean(config.cloudflareMediaWorkerUrl && config.cloudflareMediaWorkerSecret
-        && streamApi && config.cloudflareMediaSigningSecret),
+        && streamApi && config.cloudflareMediaSigningSecret && config.cloudflareStreamWebhookSecret),
       mediaWorkerConfigured: Boolean(config.cloudflareMediaWorkerUrl && config.cloudflareMediaWorkerSecret),
       streamConfigured: streamApi,
       mediaSigningConfigured: Boolean(config.cloudflareMediaSigningSecret),

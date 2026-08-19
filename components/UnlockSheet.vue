@@ -14,27 +14,45 @@ const status = ref<OrderStatus>('pending');
 const error = ref('');
 const paypalContainer = ref<HTMLElement | null>(null);
 const paypalRendered = ref(false);
+const paypalRendering = ref(false);
+const paypalReady = ref(false);
 const sdkFailed = ref(false);
 const checkoutKey = ref('');
 const paypalAvailable = computed(() => Boolean(paymentConfig.value?.available && paymentConfig.value.clientId));
+const purchasable = computed(() => props.series.price > 0);
 
 const paypalWindow = () => (window as any);
+
+const waitForPayPalScript = (script: HTMLScriptElement) => new Promise<void>((resolve, reject) => {
+  let settled = false;
+  const finish = (reason?: Error) => {
+    if (settled) return;
+    settled = true;
+    window.clearTimeout(timeout);
+    script.removeEventListener('load', loaded);
+    script.removeEventListener('error', failed);
+    reason ? reject(reason) : resolve();
+  };
+  const loaded = () => finish(paypalWindow().paypal ? undefined : new Error('PayPal SDK unavailable'));
+  const failed = () => finish(new Error('PayPal SDK failed'));
+  const timeout = window.setTimeout(() => finish(new Error('PayPal SDK timed out')), 8_000);
+  script.addEventListener('load', loaded, { once: true });
+  script.addEventListener('error', failed, { once: true });
+});
 
 const loadPayPalSdk = async () => {
   if (paypalWindow().paypal) return paypalWindow().paypal;
   const clientId = String(paymentConfig.value?.clientId || '');
   if (!clientId) return undefined;
-  await new Promise<void>((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>('script[data-reelnova-paypal]');
-    if (existing) { existing.addEventListener('load', () => resolve(), { once: true }); existing.addEventListener('error', () => reject(new Error('PayPal SDK failed')), { once: true }); return; }
-    const script = document.createElement('script');
-    script.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(clientId)}&currency=USD&intent=capture&components=buttons`;
+  let script = document.querySelector<HTMLScriptElement>('script[data-reelnova-paypal]');
+  if (!script) {
+    script = document.createElement('script');
+    script.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(clientId)}&currency=USD&intent=capture&components=buttons&locale=en_US`;
     script.async = true;
     script.dataset.reelnovaPaypal = 'true';
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error('PayPal SDK failed'));
     document.head.appendChild(script);
-  });
+  }
+  await waitForPayPalScript(script);
   return paypalWindow().paypal;
 };
 
@@ -46,13 +64,15 @@ const completePayment = async (paypalOrderId: string) => {
 };
 
 const renderPayPal = async () => {
-  if (!props.open || !isAuthenticated.value || !paypalAvailable.value || paypalRendered.value || !paypalContainer.value) return;
+  if (!props.open || !isAuthenticated.value || !purchasable.value || !paypalAvailable.value || paypalRendered.value || paypalRendering.value || !paypalContainer.value) return;
+  paypalRendering.value = true;
   try {
     const paypal = await loadPayPalSdk();
     if (!paypal || !paypalContainer.value) return;
     paypalRendered.value = true;
     await paypal.Buttons({
-      style: { layout: 'vertical', color: 'gold', shape: 'rect', label: 'paypal', height: 48 },
+      fundingSource: paypal.FUNDING.PAYPAL,
+      style: { layout: 'vertical', color: 'gold', shape: 'rect', label: 'paypal', tagline: false, height: 48 },
       createOrder: async () => {
         checkoutKey.value ||= crypto.randomUUID();
         const order = await api.createOrder(props.series.id, checkoutKey.value);
@@ -64,10 +84,14 @@ const renderPayPal = async () => {
       onCancel: () => { status.value = 'cancelled'; error.value = 'Payment was cancelled. Your order is saved and can be resumed.'; },
       onError: () => { status.value = 'failed'; error.value = 'PayPal could not complete checkout. Try again or contact support.'; },
     }).render(paypalContainer.value);
+    paypalReady.value = true;
   } catch {
     paypalRendered.value = false;
+    paypalReady.value = false;
     sdkFailed.value = true;
     error.value = 'PayPal buttons could not be loaded. Continue with secure PayPal checkout below.';
+  } finally {
+    paypalRendering.value = false;
   }
 };
 
@@ -77,6 +101,8 @@ watch(() => props.open, (isOpen) => {
     error.value = '';
     checkoutKey.value = '';
     paypalRendered.value = false;
+    paypalRendering.value = false;
+    paypalReady.value = false;
     sdkFailed.value = false;
     void nextTick(renderPayPal);
   }
@@ -86,6 +112,11 @@ const checkout = async () => {
   if (!isAuthenticated.value) {
     emit('close');
     await navigateTo({ path: '/login', query: { redirect: route.fullPath } });
+    return;
+  }
+  if (!purchasable.value) {
+    status.value = 'failed';
+    error.value = 'This series is not available for purchase because a checkout price has not been set.';
     return;
   }
   if (!paypalAvailable.value) {
@@ -104,11 +135,16 @@ const checkout = async () => {
     window.location.assign(order.approvalUrl);
   } catch (reason: unknown) {
     status.value = 'failed';
-    const statusCode = (reason as { statusCode?: number; response?: { status?: number } }).statusCode
-      || (reason as { response?: { status?: number } }).response?.status;
-    error.value = statusCode === 503
-      ? 'Checkout is not available yet.'
-      : 'Checkout could not be loaded. Check your connection and try again.';
+    const failure = reason as { statusCode?: number; response?: { status?: number }; data?: { code?: string; data?: { code?: string } } };
+    const statusCode = failure.statusCode || failure.response?.status;
+    const errorCode = failure.data?.data?.code || failure.data?.code;
+    error.value = errorCode === 'PAYPAL_CONNECTION_FAILED'
+      ? 'The server cannot reach PayPal. Check the server proxy or network, then try again.'
+      : errorCode === 'PAYPAL_CREDENTIALS_REJECTED'
+        ? 'PayPal rejected the checkout credentials. Ask the site administrator to verify the active environment.'
+        : statusCode === 503
+          ? 'Checkout is not available yet.'
+          : 'Checkout could not be loaded. Check your connection and try again.';
   }
 };
 
@@ -150,20 +186,24 @@ watch(paypalContainer, () => { void renderPayPal(); });
             <div class="price-row">
               <div>
                 <span v-if="series.originalPrice" class="old-price">{{ formatPrice(series.originalPrice) }}</span>
-                <strong>{{ formatPrice(series.price) }}</strong>
-                <span> USD · one-time</span>
+                <strong v-if="purchasable">{{ formatPrice(series.price) }}</strong>
+                <strong v-else>Not for sale</strong>
+                <span v-if="purchasable"> USD · one-time</span>
               </div>
-              <span class="save-pill" v-if="series.originalPrice">Save {{ Math.round((1 - series.price / series.originalPrice) * 100) }}%</span>
+              <span class="save-pill" v-if="purchasable && series.originalPrice">Save {{ Math.round((1 - series.price / series.originalPrice) * 100) }}%</span>
             </div>
             <ul class="unlock-list">
               <li><Check :size="17" /> Episodes {{ series.freeEpisodeCount + 1 }}–{{ series.episodeCount }}</li>
               <li><Check :size="17" /> Keep access on restored devices</li>
-              <li><Check :size="17" /> Secure checkout through PayPal</li>
+              <li v-if="purchasable"><Check :size="17" /> Secure checkout through PayPal</li>
             </ul>
             <div v-if="error" class="inline-error"><CircleAlert :size="18" />{{ error }}</div>
             <div class="paypal-slot">
-              <div v-if="paypalAvailable && !sdkFailed" ref="paypalContainer" aria-label="PayPal checkout" />
-              <button v-else-if="paypalAvailable" class="button button--primary button--wide" type="button" @click="checkout">Continue to PayPal</button>
+              <template v-if="purchasable && paypalAvailable">
+                <div v-if="!sdkFailed" ref="paypalContainer" class="paypal-buttons" aria-label="PayPal checkout" />
+                <button v-if="!paypalReady" class="button button--primary button--wide" type="button" @click="checkout">Continue to PayPal</button>
+              </template>
+              <div v-else-if="!purchasable" class="payment-unavailable" role="status"><CircleAlert :size="19" /><div><strong>Purchase unavailable</strong><span>A checkout price has not been set for this series.</span></div></div>
               <div v-else class="payment-unavailable" role="status"><Clock3 :size="19" /><div><strong>Checkout coming soon</strong><span>PayPal payments are not available yet.</span></div></div>
             </div>
             <p class="legal-copy">By continuing, you agree to our Terms and Refund Policy. Final access is granted after server confirmation.</p>

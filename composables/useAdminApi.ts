@@ -28,9 +28,9 @@ export const useAdminApi = () => {
         database: boolean; databaseError: string | null; mode: string; accountConfigured: boolean; databaseConfigured: boolean; apiTokenConfigured: boolean;
         databaseSchema: { healthy: boolean; latestRequiredMigration: number; latestAppliedMigration: number; migrationHistoryValid: boolean; migrationError: string | null; missing: { tables: string[]; columns: string[]; indexes: string[]; triggers: string[] } } | null;
         streamApiConfigured: boolean; streamApiError: string | null; streamCustomerCodeConfigured: boolean; streamWebhookConfigured: boolean;
-        mediaConfigured: boolean; mediaWorkerConfigured: boolean; streamConfigured: boolean; mediaSigningConfigured: boolean; customHostnamesConfigured: boolean;
+        uploadConfigured: boolean; mediaConfigured: boolean; mediaWorkerConfigured: boolean; streamConfigured: boolean; mediaSigningConfigured: boolean; customHostnamesConfigured: boolean;
         customHostnamesMissingFields: Array<'zoneId' | 'apiToken' | 'cnameTarget'>;
-        missingFields: { streamApi: string[]; mediaWorker: string[]; playback: string[] };
+        missingFields: { streamApi: string[]; mediaWorker: string[]; playback: string[]; streamWebhook: string[] };
       };
       paypal: { connected: boolean; ready: boolean; error: string | null; environment: 'sandbox' | 'production'; environmentValid: boolean; credentialsConfigured: boolean; browserClientConfigured: boolean; clientIdsMatch: boolean; webhookConfigured: boolean; environments: Record<'sandbox' | 'production', { credentialsConfigured: boolean; browserClientConfigured: boolean; clientIdsMatch: boolean; webhookConfigured: boolean }>; lastWebhookAt: string | null; failedWebhooks: Array<{ eventId: string; eventType: string; errorMessage: string | null; receivedAt: string; retryCount: number; replayable: boolean }> };
     }>('/admin/connection'),

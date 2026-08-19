@@ -6,7 +6,11 @@ import { getManagedSeries, updateManagedSeriesRecord, toAdminSeries } from '~/se
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id') || '';
   const input = parseSeriesInput(await readBody(event));
-  const previousTitle = (await getManagedSeries(event)).find((entry) => entry.id === id)?.title || id;
+  const current = (await getManagedSeries(event)).find((entry) => entry.id === id);
+  if (current && current.episodeCount > input.freeEpisodeCount && input.price <= 0) {
+    throw createError({ statusCode: 400, statusMessage: 'Locked episodes require a checkout price greater than zero' });
+  }
+  const previousTitle = current?.title || id;
   const item = await updateManagedSeriesRecord(event, id, input);
   await recordAdminAudit(event, { module: '短剧管理', action: '编辑短剧', target: item.title, detail: `${previousTitle} · 内容资料已更新` });
   return ok(toAdminSeries(item));

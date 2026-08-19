@@ -68,6 +68,8 @@ const safeJsonArray = (value: string) => {
 };
 
 const formatDuration = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+const defaultCoverUrl = '/posters/vows-vengeance.jpg';
+const defaultBackdropUrl = '/posters/vows-vengeance-wide.jpg';
 
 export const listNormalizedSeries = async (event: H3Event): Promise<ManagedSeries[]> => {
   const [rows, episodeRows, categoryRows, tagRows] = await Promise.all([
@@ -91,6 +93,7 @@ export const listNormalizedSeries = async (event: H3Event): Promise<ManagedSerie
 
   return rows.map((row) => {
     const episodes = episodesBySeries.get(row.id) || [];
+    const hasReadyEpisode = episodes.some((episode) => episode.video_status === 'ready');
     const progress = episodes.length
       ? Math.round(episodes.reduce((sum, episode) => sum + (episode.video_status === 'ready' ? 100 : Number(episode.progress || 0)), 0) / episodes.length)
       : 0;
@@ -100,8 +103,12 @@ export const listNormalizedSeries = async (event: H3Event): Promise<ManagedSerie
       title: row.title,
       tagline: row.tagline || row.title,
       description: row.description,
-      coverUrl: row.cover_url,
-      backdropUrl: row.backdrop_url,
+      coverUrl: hasReadyEpisode && (!row.cover_url || row.cover_url === defaultCoverUrl)
+        ? `/api/media/poster/${encodeURIComponent(row.id)}?variant=cover`
+        : row.cover_url,
+      backdropUrl: hasReadyEpisode && (!row.backdrop_url || row.backdrop_url === defaultBackdropUrl)
+        ? `/api/media/poster/${encodeURIComponent(row.id)}?variant=backdrop`
+        : row.backdrop_url,
       badge: (tagsBySeries.get(row.id)?.[0] || row.badge || 'New') as ManagedSeries['badge'],
       genres: categoriesBySeries.get(row.id) || [],
       views: 0,
@@ -191,8 +198,8 @@ export const createNormalizedSeries = async (event: H3Event, input: SeriesMutati
     (id, slug, title, tagline, description, cover_url, backdrop_url, target_region,
      free_episode_count, price_cents, currency, status, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', 'draft', ?, ?)`, [
-    id, slug, input.title, input.title, input.description, '/posters/vows-vengeance.jpg',
-    '/posters/vows-vengeance-wide.jpg', input.targetRegion, input.freeEpisodeCount, Math.round(input.price * 100), now, now,
+    id, slug, input.title, input.title, input.description, defaultCoverUrl,
+    defaultBackdropUrl, input.targetRegion, input.freeEpisodeCount, Math.round(input.price * 100), now, now,
   ]);
   await replaceCategories(event, id, input.genres);
   await snapshotVersion(event, id, 'draft');

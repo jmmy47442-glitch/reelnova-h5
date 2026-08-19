@@ -10,6 +10,9 @@ export default defineEventHandler(async (event) => {
   const items = await getManagedSeries(event);
   const item = items.find((entry) => entry.id === id);
   if (!item) throw createError({ statusCode: 404, statusMessage: 'Series not found' });
+  if (body.publishStatus === '已上架' && item.episodeCount > item.freeEpisodeCount && item.price <= 0) {
+    throw createError({ statusCode: 400, statusMessage: 'Locked episodes require a checkout price greater than zero' });
+  }
   const before = item.publishStatus;
   const updated = await updateManagedSeriesStatusRecord(event, id, body.publishStatus);
   await recordAdminAudit(event, {

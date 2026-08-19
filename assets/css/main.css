@@ -345,6 +345,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .unlock-list li { display: flex; color: #cbc7ce; align-items: center; gap: 8px; font-size: 10px; }
 .unlock-list svg { color: var(--mint); }
 .paypal-slot { min-height: 50px; }
+.paypal-buttons { min-height: 48px; overflow: hidden; border-radius: 6px; background: transparent; line-height: 0; }
 .payment-unavailable { display: flex; min-height: 50px; padding: 10px 12px; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; background: rgba(255,255,255,.05); color: #d9dae0; align-items: center; gap: 10px; }
 .payment-unavailable > svg { flex: 0 0 auto; color: #ffb75f; }.payment-unavailable > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }.payment-unavailable strong { font-size: 11px; }.payment-unavailable span { color: #9ea0aa; font-size: 9px; }
 .legal-copy { margin-top: 10px; color: #696671; text-align: center; font-size: 8px; line-height: 1.5; }

@@ -26,10 +26,22 @@ const createBucket = () => {
   const objects = new Map();
   const uploads = new Map();
   let creates = 0;
-  const bodyObject = (value) => ({
+  const withMetadata = (value) => ({
     ...value,
-    async json() { return JSON.parse(value.body); },
+    writeHttpMetadata(headers) {
+      if (value.httpMetadata?.contentType) headers.set('content-type', value.httpMetadata.contentType);
+    },
   });
+  const bodyObject = (value, options) => {
+    const bytes = typeof value.body === 'string' ? new TextEncoder().encode(value.body) : value.body;
+    const range = options?.range;
+    const body = range ? bytes.slice(range.offset, range.offset + range.length) : bytes;
+    return withMetadata({
+      ...value,
+      body,
+      async json() { return JSON.parse(new TextDecoder().decode(bytes)); },
+    });
+  };
   return {
     get createCount() { return creates; },
     async createMultipartUpload(key, options) {
@@ -50,7 +62,7 @@ const createBucket = () => {
         async complete() {
           const object = {
             key, httpEtag: 'completed-etag', customMetadata: state.options.customMetadata,
-            uploaded: new Date(), body: '',
+            httpMetadata: state.options.httpMetadata, uploaded: new Date(), body: new Uint8Array(), size: 0,
           };
           objects.set(key, object);
           uploads.delete(uploadId);
@@ -60,10 +72,12 @@ const createBucket = () => {
       };
     },
     async put(key, body, options) {
-      objects.set(key, { key, body, httpEtag: `etag:${key}`, customMetadata: options?.customMetadata || {}, uploaded: new Date() });
+      const bytes = typeof body === 'string' ? new TextEncoder().encode(body) : body;
+      objects.set(key, { key, body: bytes, size: bytes.byteLength, httpEtag: `etag:${key}`, httpMetadata: options?.httpMetadata,
+        customMetadata: options?.customMetadata || {}, uploaded: new Date() });
     },
-    async get(key) { return objects.has(key) ? bodyObject(objects.get(key)) : null; },
-    async head(key) { return objects.get(key) || null; },
+    async get(key, options) { return objects.has(key) ? bodyObject(objects.get(key), options) : null; },
+    async head(key) { return objects.has(key) ? withMetadata(objects.get(key)) : null; },
     async delete(key) { objects.delete(key); },
     async list() { return { objects: [], truncated: false }; },
   };
@@ -127,4 +141,47 @@ test('repeated upload creation and completion reuse R2 and Stream resources', as
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('private ingest supports metadata probes and byte ranges', async () => {
+  const bucket = createBucket();
+  const env = {
+    MEDIA_BUCKET: bucket,
+    MEDIA_WORKER_SECRET: secret,
+    CLOUDFLARE_ACCOUNT_ID: 'account-id',
+    CLOUDFLARE_API_TOKEN: 'api-token',
+    PUBLIC_BASE_URL: 'https://media.example.test',
+    APP_ORIGINS: '',
+  };
+  const creation = {
+    idempotencyKey: 'upload:22222222-2222-4222-8222-222222222222',
+    sessionId: 'upload_session_ingest',
+    completionKey: 'r2:upload_session_ingest',
+    streamIdempotencyKey: 'reelnova:upload:upload_session_ingest',
+    objectKey: 'originals/series/episode/asset/ingest.mp4',
+    contentType: 'video/mp4',
+    fileSizeBytes: 10,
+    metadata: { assetId: 'asset_ingest' },
+  };
+  const upload = await (await worker.fetch(await signedRequest('/uploads', creation), env)).json();
+  await bucket.put(creation.objectKey, Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), {
+    httpMetadata: { contentType: 'video/mp4' },
+  });
+  const url = `https://media.example.test/ingest/${encodeURIComponent(upload.uploadToken)}`;
+
+  const head = await worker.fetch(new Request(url, { method: 'HEAD' }), env);
+  assert.equal(head.status, 200);
+  assert.equal(head.headers.get('content-type'), 'video/mp4');
+  assert.equal(head.headers.get('content-length'), '10');
+  assert.equal(head.headers.get('accept-ranges'), 'bytes');
+
+  const partial = await worker.fetch(new Request(url, { headers: { range: 'bytes=2-5' } }), env);
+  assert.equal(partial.status, 206);
+  assert.equal(partial.headers.get('content-range'), 'bytes 2-5/10');
+  assert.equal(partial.headers.get('content-length'), '4');
+  assert.deepEqual([...new Uint8Array(await partial.arrayBuffer())], [2, 3, 4, 5]);
+
+  const invalid = await worker.fetch(new Request(url, { headers: { range: 'bytes=20-30' } }), env);
+  assert.equal(invalid.status, 416);
+  assert.equal(invalid.headers.get('content-range'), 'bytes */10');
 });

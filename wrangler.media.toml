@@ -8,7 +8,7 @@ binding = "MEDIA_BUCKET"
 bucket_name = "reelnova-media-private"
 
 [vars]
-APP_ORIGINS = "http://localhost:3000,https://www.reelnova.com"
+APP_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000,https://www.reelnova.com"
 APP_BASE_URL = "https://www.reelnova.com"
 PUBLIC_BASE_URL = "https://reelnova-media.tkdjshop001.workers.dev"
 
