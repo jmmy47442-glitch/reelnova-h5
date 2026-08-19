@@ -56,6 +56,7 @@ export default defineNuxtConfig({
     superAdminPassword: process.env.SUPER_ADMIN_PASSWORD || 'ReelNova@2026',
     superAdminName: process.env.SUPER_ADMIN_NAME || 'ReelNova 超级管理员',
     adminSessionSecret: process.env.ADMIN_SESSION_SECRET || process.env.SUPER_ADMIN_PASSWORD || 'reelnova-development-session-secret',
+    adminCredentialSecret: process.env.ADMIN_CREDENTIAL_SECRET || process.env.ADMIN_SESSION_SECRET || process.env.SUPER_ADMIN_PASSWORD || 'reelnova-development-credential-secret',
     userSessionSecret: process.env.USER_SESSION_SECRET || process.env.ADMIN_SESSION_SECRET || 'reelnova-development-user-session-secret',
     cloudflareAccessRequired: process.env.CLOUDFLARE_ACCESS_REQUIRED || (process.env.NODE_ENV === 'production' ? 'true' : 'false'),
     public: {

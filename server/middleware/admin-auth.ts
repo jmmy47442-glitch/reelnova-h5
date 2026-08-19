@@ -3,6 +3,7 @@ import { getAdminApiPermission } from '../../shared/admin-rbac';
 import { requireAdminPermission } from '../utils/admin-rbac';
 
 const publicAuthRoutes = new Set([
+  '/api/admin/auth/challenge',
   '/api/admin/auth/login',
   '/api/admin/auth/logout',
   '/api/admin/auth/session',

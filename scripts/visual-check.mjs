@@ -9,9 +9,25 @@ await mkdir(outputDir, { recursive: true });
 
 const browser = await chromium.launch({ executablePath, headless: true });
 
+const bytesToBase64Url = (bytes) => Buffer.from(bytes).toString('base64url');
+const base64UrlToBytes = (value) => Buffer.from(value, 'base64url');
+
+const createAdminProof = async (password, { challenge, salt, iterations }) => {
+  const passwordKey = await crypto.subtle.importKey('raw', Buffer.from(password), 'PBKDF2', false, ['deriveBits']);
+  const passwordHash = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: base64UrlToBytes(salt), iterations }, passwordKey, 256);
+  const proofKey = await crypto.subtle.importKey('raw', passwordHash, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return bytesToBase64Url(await crypto.subtle.sign('HMAC', proofKey, Buffer.from(challenge)));
+};
+
 const addAdminSession = async (page) => {
+  const challengeResponse = await page.request.post(`${baseURL}/api/admin/auth/challenge`, {
+    data: { email: 'admin@reelnova.com' },
+  });
+  if (!challengeResponse.ok()) throw new Error(`Admin challenge failed: ${challengeResponse.status()} ${await challengeResponse.text()}`);
+  const challenge = (await challengeResponse.json()).data;
+  const proof = await createAdminProof('ReelNova@2026', challenge);
   const response = await page.request.post(`${baseURL}/api/admin/auth/login`, {
-    data: { email: 'admin@reelnova.com', password: 'ReelNova@2026', remember: true },
+    data: { email: 'admin@reelnova.com', challenge: challenge.challenge, proof, remember: true },
   });
   if (!response.ok()) throw new Error(`Admin login failed: ${response.status()} ${await response.text()}`);
 };

@@ -2,6 +2,7 @@ import type { AdminSession } from '~/types/admin';
 import type { ApiEnvelope } from '~/types/content';
 import type { AdminPermission } from '~/shared/admin-rbac';
 import { adminRoleLabels, getAdminLandingPath, hasAdminPermission } from '~/shared/admin-rbac';
+import { deriveAdminPasswordProof } from '~/shared/admin-password-proof';
 
 export const useAdminAuth = () => {
   const baseURL = useRuntimeConfig().public.apiBase;
@@ -36,11 +37,18 @@ export const useAdminAuth = () => {
   };
 
   const login = async (details: { email: string; password: string; remember: boolean }) => {
+    const challengeResponse = await $fetch<ApiEnvelope<{ challenge: string; salt: string; iterations: number }>>('/admin/auth/challenge', {
+      baseURL,
+      method: 'POST',
+      body: { email: details.email },
+    });
+    const { challenge, salt, iterations } = challengeResponse.data;
+    const proof = await deriveAdminPasswordProof(details.password, salt, challenge, iterations);
     const response = await $fetch<ApiEnvelope<AdminSession>>('/admin/auth/login', {
       baseURL,
       credentials: 'include',
       method: 'POST',
-      body: details,
+      body: { email: details.email, challenge, proof, remember: details.remember },
     });
     session.value = response.data;
     sessionChecked.value = true;

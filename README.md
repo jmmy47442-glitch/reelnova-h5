@@ -29,7 +29,7 @@ npm run dev
 - 用户端：登录 `/login`，注册 `/register`，首页 `/`，探索 `/explore`，片库 `/library`，个人中心 `/profile`。用户必须注册或登录后才能进入用户端界面。
 - 核心流程：详情 `/series/vows-and-vengeance`，锁片播放 `/watch/vows-and-vengeance/4`。
 - 管理后台：概览 `/admin`，短剧 `/admin/series`，订单 `/admin/orders`，首页配置 `/admin/operations`，支付配置 `/admin/system`。
-- 管理后台仅提供登录，不开放注册。所有管理员账号（包括开发环境预设超级管理员）均保存在 Cloudflare D1 `admin_accounts` 表，未连接数据库时不使用内存数据兜底。为兼容现有 D1 数据，开发环境仍使用历史预设账号 `admin@reelnova.com` / `ReelNova@2026`；新生产部署应通过 `SUPER_ADMIN_EMAIL=admin@iseedrama.com`、`SUPER_ADMIN_PASSWORD` 和 `ADMIN_SESSION_SECRET` 覆盖默认值。已有生产账号需由超级管理员确认后迁移，不能仅靠修改默认值替换。
+- 管理后台仅提供登录，不开放注册。所有管理员账号（包括开发环境预设超级管理员）均保存在 Cloudflare D1 `admin_accounts` 表，未连接数据库时不使用内存数据兜底。为兼容现有 D1 数据，开发环境仍使用历史预设账号 `admin@reelnova.com` / `ReelNova@2026`；新生产部署应通过 `SUPER_ADMIN_EMAIL=admin@iseedrama.com`、`SUPER_ADMIN_PASSWORD`、`ADMIN_SESSION_SECRET` 和 `ADMIN_CREDENTIAL_SECRET` 覆盖默认值。已有生产账号需由超级管理员确认后迁移，不能仅靠修改默认值替换。
 - 超级管理员可在 `/admin/administrators` 直接创建管理员，系统生成的登录密码仅在创建成功时返回一次。
 - D1 尚无已上架短剧时，用户端会自动展示原型测试内容，后台仍使用真实 D1 接口。D1 出现真实已上架内容后会自动切换，也可用 `REELNOVA_PUBLIC_MOCK_FALLBACK=false` 关闭测试内容。
 - PayPal 与 R2/Stream 可以后开通：配置留空时 H5 会关闭结账入口、后台会禁用媒体上传，服务端不会写入失败订单或上传任务；开通后补齐 `.env.example` 对应变量并重启即可启用。

@@ -114,12 +114,13 @@ SUPER_ADMIN_EMAIL
 SUPER_ADMIN_PASSWORD
 SUPER_ADMIN_NAME
 ADMIN_SESSION_SECRET
+ADMIN_CREDENTIAL_SECRET
 ```
 
 `CLOUDFLARE_MEDIA_BASE_URL` is retained for legacy R2 HLS playback. New media uses Stream tokens; `CLOUDFLARE_MEDIA_SIGNING_SECRET` still signs playback tracking authorization.
 `NUXT_PUBLIC_PAYPAL_CLIENT_ID` is intentionally public and must equal `PAYPAL_CLIENT_ID`. Keep both empty until PayPal is available; setting only one leaves checkout disabled or marks the connection incomplete.
 The legacy `PAYPAL_*` values remain a fallback for the initial `PAYPAL_ENVIRONMENT`. Configure both named Sandbox and Production sets to enable environment switching from `/admin/system`. The selected environment is the only payment configuration stored in D1; Client Secrets remain encrypted deployment secrets. Each order also stores its immutable PayPal environment so later Capture, verification, refunds and Webhooks keep using the correct API after a switch. The first switch attributes pre-0016 orders to the currently active environment. A switch first verifies the target OAuth credentials and is blocked while pending payments, refunds, or risk-review orders exist.
-`SUPER_ADMIN_PASSWORD` initializes the preset super administrator on first use. `ADMIN_SESSION_SECRET` signs the HttpOnly admin session cookie and must be a separate high-entropy production secret.
+`SUPER_ADMIN_PASSWORD` initializes the preset super administrator on first use. `ADMIN_SESSION_SECRET` signs the HttpOnly admin session cookie. `ADMIN_CREDENTIAL_SECRET` encrypts the password verifier used by the low-CPU challenge login flow. Both secrets must be separate, stable, high-entropy production secrets; changing `ADMIN_CREDENTIAL_SECRET` requires resetting administrator credentials.
 
 ## 4. Deploy the private media Worker
 

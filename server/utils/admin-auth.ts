@@ -1,6 +1,7 @@
 import type { H3Event } from 'h3';
 import type { AdminRole, AssignableAdminRole } from '../../shared/admin-rbac';
 import { isAdminRole } from '../../shared/admin-rbac';
+import { adminPasswordIterations, base64UrlToBytes, bytesToBase64Url } from '../../shared/admin-password-proof';
 import { d1All, d1First, d1Run } from './cloudflare-d1';
 
 type AdminAccountTier = 'super_admin' | 'admin';
@@ -44,15 +45,8 @@ export interface AdminAccount {
 }
 
 const sessionCookie = 'reelnova-admin-session';
+const protectedVerifierPrefix = 'v1';
 const encoder = new TextEncoder();
-
-const bytesToBase64Url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes))
-  .replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, '');
-
-const base64UrlToBytes = (value: string) => {
-  const padded = value.replaceAll('-', '+').replaceAll('_', '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
-  return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
-};
 
 const encodeJson = (value: unknown) => bytesToBase64Url(encoder.encode(JSON.stringify(value)));
 const decodeJson = <T>(value: string) => JSON.parse(new TextDecoder().decode(base64UrlToBytes(value))) as T;
@@ -62,9 +56,37 @@ const randomToken = (size = 18) => {
   return bytesToBase64Url(bytes);
 };
 
+const credentialEncryptionKey = async (event: H3Event) => {
+  const secret = String(useRuntimeConfig(event).adminCredentialSecret);
+  const material = await crypto.subtle.digest('SHA-256', encoder.encode(`reelnova-admin-verifier:${secret}`));
+  return crypto.subtle.importKey('raw', material, 'AES-GCM', false, ['encrypt', 'decrypt']);
+};
+
+const protectPasswordVerifier = async (event: H3Event, verifier: string) => {
+  if (process.env.NODE_ENV !== 'production') return verifier;
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await credentialEncryptionKey(event), encoder.encode(verifier));
+  return `${protectedVerifierPrefix}.${bytesToBase64Url(iv)}.${bytesToBase64Url(new Uint8Array(encrypted))}`;
+};
+
+const readPasswordVerifier = async (event: H3Event, stored: string) => {
+  const [version, iv, encrypted, extra] = stored.split('.');
+  if (version !== protectedVerifierPrefix || !iv || !encrypted || extra) return stored;
+  try {
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: base64UrlToBytes(iv) },
+      await credentialEncryptionKey(event),
+      base64UrlToBytes(encrypted),
+    );
+    return new TextDecoder().decode(decrypted);
+  } catch {
+    throw createError({ statusCode: 500, statusMessage: 'Administrator credential encryption key is invalid' });
+  }
+};
+
 const derivePasswordHash = async (password: string, salt: string) => {
   const key = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: base64UrlToBytes(salt), iterations: 210_000 }, key, 256);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: base64UrlToBytes(salt), iterations: adminPasswordIterations }, key, 256);
   return bytesToBase64Url(new Uint8Array(bits));
 };
 
@@ -132,7 +154,7 @@ export const ensureSuperAdmin = async (event: H3Event) => {
     permission_role: 'content_operator',
     status: 'active',
     password_salt: salt,
-    password_hash: await derivePasswordHash(String(config.superAdminPassword), salt),
+    password_hash: await protectPasswordVerifier(event, await derivePasswordHash(String(config.superAdminPassword), salt)),
     invited_by: null,
     invited_at: null,
     last_login_at: null,
@@ -149,20 +171,66 @@ export const ensureSuperAdmin = async (event: H3Event) => {
   }
 };
 
-export const authenticateAdmin = async (event: H3Event, email: string, password: string) => {
+interface AdminLoginChallengePayload {
+  email: string;
+  nonce: string;
+  expiresAt: number;
+}
+
+const signWithKey = async (value: string, keyBytes: BufferSource) => {
+  const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return bytesToBase64Url(new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(value))));
+};
+
+const sign = (payload: string, secret: string) => signWithKey(payload, encoder.encode(secret));
+
+export const createAdminLoginChallenge = async (event: H3Event, email: string) => {
   await ensureSuperAdmin(event);
-  const account = await findByEmail(event, email.trim().toLowerCase());
+  const normalizedEmail = email.trim().toLowerCase();
+  const account = await findByEmail(event, normalizedEmail);
+  if (process.env.NODE_ENV === 'production' && account && !account.password_hash.startsWith(`${protectedVerifierPrefix}.`)) {
+    const protectedVerifier = await protectPasswordVerifier(event, account.password_hash);
+    await d1Run(event, 'UPDATE admin_accounts SET password_hash = ?, updated_at = ? WHERE id = ? AND password_hash = ?', [
+      protectedVerifier, new Date().toISOString(), account.id, account.password_hash,
+    ]);
+  }
+  const payload = encodeJson({
+    email: normalizedEmail,
+    nonce: randomToken(),
+    expiresAt: Date.now() + 60_000,
+  } satisfies AdminLoginChallengePayload);
+  const signature = await sign(payload, String(useRuntimeConfig(event).adminSessionSecret));
+  return {
+    challenge: `${payload}.${signature}`,
+    salt: account?.password_salt || randomToken(),
+    iterations: adminPasswordIterations,
+  };
+};
+
+const verifyAdminLoginChallenge = async (event: H3Event, challenge: string, email: string) => {
+  const [payload, signature, extra] = challenge.split('.');
+  if (!payload || !signature || extra) return false;
+  const expected = await sign(payload, String(useRuntimeConfig(event).adminSessionSecret));
+  if (!constantTimeEqual(signature, expected)) return false;
+  try {
+    const value = decodeJson<AdminLoginChallengePayload>(payload);
+    return value.email === email && Boolean(value.nonce) && value.expiresAt > Date.now();
+  } catch {
+    return false;
+  }
+};
+
+export const authenticateAdminProof = async (event: H3Event, email: string, challenge: string, proof: string) => {
+  await ensureSuperAdmin(event);
+  const normalizedEmail = email.trim().toLowerCase();
+  const account = await findByEmail(event, normalizedEmail);
   if (!account || account.status === 'disabled') return null;
-  const candidate = await derivePasswordHash(password, account.password_salt);
-  if (!constantTimeEqual(candidate, account.password_hash)) return null;
+  if (!await verifyAdminLoginChallenge(event, challenge, normalizedEmail)) return null;
+  const expectedProof = await signWithKey(challenge, base64UrlToBytes(await readPasswordVerifier(event, account.password_hash)));
+  if (!constantTimeEqual(proof, expectedProof)) return null;
   const loggedInAt = new Date().toISOString();
   await updateLogin(event, account.id, loggedInAt);
   return { ...toAccount(account), status: 'active' as const, lastLoginAt: loggedInAt };
-};
-
-const sign = async (payload: string, secret: string) => {
-  const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  return bytesToBase64Url(new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(payload))));
 };
 
 export const setAdminSession = async (event: H3Event, account: AdminAccount, remember: boolean) => {
@@ -235,7 +303,7 @@ export const createAdminAccount = async (event: H3Event, input: { email: string;
     permission_role: input.role,
     status: 'invited',
     password_salt: salt,
-    password_hash: await derivePasswordHash(password, salt),
+    password_hash: await protectPasswordVerifier(event, await derivePasswordHash(password, salt)),
     invited_by: input.createdBy,
     invited_at: now,
     last_login_at: null,
