@@ -176,11 +176,10 @@ export const getPublicSeries = async (event: H3Event) => {
   const country = getRequestCountry(event)?.toUpperCase() || '';
   const managed = await getManagedSeries(event);
   const published = managed.filter((item) => item.publishStatus === '已上架');
+  const available = published.filter((item) => !country || item.targetRegion === 'Global' || regionCountry[item.targetRegion] === country);
   const mockFallback = String(useRuntimeConfig(event).publicMockContentFallback).toLowerCase() === 'true';
-  const useMockFallback = !published.length && mockFallback;
-  const source = useMockFallback ? initialSeries() : published;
+  const source = !available.length && mockFallback ? initialSeries() : available;
   return source
-  .filter((item) => useMockFallback || !country || item.targetRegion === 'Global' || regionCountry[item.targetRegion] === country)
   .map(({ publishStatus: _publishStatus, publishAt: _publishAt, transcodeProgress: _transcodeProgress, targetRegion: _targetRegion, ...series }) => series);
 };
 
