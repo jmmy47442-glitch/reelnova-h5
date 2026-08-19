@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "REELNOVA_NUXT_BUILD_DIR=node_modules/.cache/reelnova-nuxt/build nuxt build",
-    "build:cloudflare": "REELNOVA_NUXT_BUILD_DIR=node_modules/.cache/reelnova-nuxt/cloudflare NITRO_PRESET=cloudflare-pages nuxt build",
+    "build:cloudflare": "NITRO_PRESET=cloudflare-pages nuxt build",
     "dev": "node scripts/check-dev-port.mjs && REELNOVA_NUXT_BUILD_DIR=node_modules/.cache/reelnova-nuxt/dev nuxt dev --host ${NUXT_HOST:-${NITRO_HOST:-${HOST:-0.0.0.0}}} --port ${NUXT_PORT:-${NITRO_PORT:-${PORT:-3000}}}",
     "generate": "REELNOVA_NUXT_BUILD_DIR=node_modules/.cache/reelnova-nuxt/generate nuxt generate",
     "preview": "nuxt preview",
