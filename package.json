@@ -11,7 +11,10 @@
     "typecheck": "REELNOVA_NUXT_BUILD_DIR=node_modules/.cache/reelnova-nuxt/typecheck nuxt typecheck",
     "visual-check": "node scripts/visual-check.mjs",
     "check:cloudflare": "node scripts/check-cloudflare-config.mjs",
+    "db:migrate": "node scripts/migrate-d1.mjs",
+    "db:migrate:check": "node scripts/migrate-d1.mjs",
     "check:media-worker": "node --check workers/media-worker.mjs",
+    "test:media-worker": "node --test tests/media-worker-idempotency.test.mjs",
     "deploy:media-worker": "wrangler deploy --config wrangler.media.toml"
   },
   "dependencies": {

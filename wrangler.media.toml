@@ -9,7 +9,11 @@ bucket_name = "reelnova-media-private"
 
 [vars]
 APP_ORIGINS = "http://localhost:3000,https://www.reelnova.com"
+APP_BASE_URL = "https://www.reelnova.com"
 PUBLIC_BASE_URL = "https://reelnova-media.tkdjshop001.workers.dev"
+
+[triggers]
+crons = ["17 * * * *"]
 
 # Configure as encrypted Worker secrets:
 # MEDIA_WORKER_SECRET

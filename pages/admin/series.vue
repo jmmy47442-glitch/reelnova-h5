@@ -263,11 +263,15 @@ const uploadPart = (url: string, token: string, blob: Blob, onProgress: (loaded:
 const uploadOne = async (file: File, episodeNo: number, completedBefore: number, totalBytes: number) => {
   if (!selectedSeries.value) return;
   const key = resumeKey(selectedSeries.value.id, episodeNo, file);
+  const idempotencyStorageKey = `${key}:idempotency`;
   let resume = readResume(key);
   if (!resume) {
     uploadLabel.value = `正在校验 Episode ${episodeNo} · ${file.name}`;
     const probe = await inspectMedia(file);
+    const idempotencyKey = localStorage.getItem(idempotencyStorageKey) || `upload:${crypto.randomUUID()}`;
+    localStorage.setItem(idempotencyStorageKey, idempotencyKey);
     const session = await api.createEpisodeUpload(selectedSeries.value.id, {
+      idempotencyKey,
       episodeNo, title: `Episode ${episodeNo}`, fileName: file.name,
       contentType: file.type || (file.name.toLowerCase().endsWith('.mov') ? 'video/quicktime' : 'video/mp4'), fileSizeBytes: file.size,
       ...probe,
@@ -300,8 +304,9 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
     void api.reportUploadProgress(session.id, completedBytes).catch(() => undefined);
   }
   const completion = await api.completeEpisodeUpload(session.id, [...parts.values()]);
+  if (completion.status === 'completing') throw new Error(completion.errorMessage || '原片已保留，正在恢复 Stream 转码任务');
   localStorage.removeItem(key);
-  if (completion.status === 'failed') throw new Error(completion.errorMessage || '原片已保留，但 Stream 转码提交失败，请在分集列表重试');
+  localStorage.removeItem(idempotencyStorageKey);
 };
 
 const startTranscode = async () => {

@@ -59,26 +59,22 @@ Never use the Global API Key and never expose the token through `NUXT_PUBLIC_*`.
 
 ## 2. Create D1
 
-Create a database named `reelnova-production` in Cloudflare Dashboard under Storage and databases / D1. Record its database ID, then initialize it:
+Create a database named `reelnova-production` in Cloudflare Dashboard under Storage and databases / D1. Record its database ID in `CLOUDFLARE_D1_DATABASE_ID`, then initialize or upgrade it with the ordered migration runner:
 
 ```bash
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0001_reelnova_core.sql
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0002_users.sql
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0003_admin_accounts.sql
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0004_admin_audit_logs.sql
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0005_home_config.sql
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0006_user_accounts.sql
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0007_merge_user_accounts.sql
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0008_order_idempotency.sql
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0009_refunds.sql
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0010_normalized_content_media.sql
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0011_refund_lifecycle.sql
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0012_checkout_deduplication.sql
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0013_watch_history.sql
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0014_account_privacy.sql
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0015_admin_rbac.sql
-npx wrangler d1 execute reelnova-production --remote --file=./migrations/0016_paypal_environment.sql
+npm run db:migrate -- --apply
+npm run db:migrate:check
 ```
+
+The runner creates `schema_migrations`, applies only the next numeric migration, and records each migration's SHA-256 checksum. A gap, renamed migration, or changed historical file stops deployment. Do not execute individual migration files in production.
+
+For a legacy database that predates `schema_migrations`, first repair every schema gap and then adopt it once:
+
+```bash
+npm run db:migrate -- --apply --adopt-existing
+```
+
+Adoption succeeds only when every required table, column, index and trigger in `database/schema-contract.json` already exists. It does not apply or conceal missing schema changes.
 
 已有数据库按尚未执行的编号顺序补齐迁移。`0010` 会把旧 `home_config` 中的 `managed-series` 和 `taxonomy` JSON 拆到规范化表；旧分集没有真实媒体资源，因此迁移后必须上传原片并完成 Stream 转码才可重新上架。`0012` 会保留每个用户同剧中最适合续付的一笔订单，将其余历史待支付订单标记为已取消，然后增加并发唯一约束和价格/活动快照字段。
 
@@ -137,7 +133,7 @@ npx wrangler secret put CLOUDFLARE_API_TOKEN --config wrangler.media.toml
 npm run deploy:media-worker
 ```
 
-Set `PUBLIC_BASE_URL` and `APP_ORIGINS` in `wrangler.media.toml` to the deployed Worker URL and allowed admin origins. Use the same random `MEDIA_WORKER_SECRET` as the Nuxt `CLOUDFLARE_MEDIA_WORKER_SECRET`; never expose it through `NUXT_PUBLIC_*`.
+Set `PUBLIC_BASE_URL`, `APP_BASE_URL` and `APP_ORIGINS` in `wrangler.media.toml` to the deployed Worker URL, application URL and allowed admin origins. The Worker Cron trigger runs the signed reconciliation endpoint every hour. Use the same random `MEDIA_WORKER_SECRET` as the Nuxt `CLOUDFLARE_MEDIA_WORKER_SECRET`; never expose it through `NUXT_PUBLIC_*`.
 
 In Cloudflare Stream, set the notification URL to:
 
@@ -148,6 +144,8 @@ https://YOUR_DOMAIN/api/media/stream-webhook
 Store the returned webhook signing secret in `CLOUDFLARE_STREAM_WEBHOOK_SECRET`. Copy the Stream customer code to `CLOUDFLARE_STREAM_CUSTOMER_CODE` when available; for new uploads the application can also use the HLS URL returned by Stream after the video becomes ready, so the customer code is a fallback rather than a hard requirement. The Worker keeps original objects private, exposes only a one-hour signed ingest URL to Stream, and creates every Stream video with `requireSignedURLs=true`.
 
 The same `CLOUDFLARE_API_TOKEN` used by the media Worker must include `Account / Stream / Edit`; otherwise R2 uploads can start, but Stream copy, status sync and signed playback token creation fail with a Cloudflare `403 Authentication error`.
+
+Upload sessions use a client-persisted idempotency key. D1 records the R2 completion key, Stream creator key, completion parts and every external resource ID. `GET /api/admin/media/uploads/:uploadId` exposes a `completing` session for recovery; repeating the completion request is safe even when the previous response was lost. The Worker stores an ownership marker on multipart-created objects, looks up Stream videos by the stable creator key before copying, and its hourly reconciliation job aborts expired multipart uploads and removes only stale, owned R2/Stream resources that are no longer referenced by D1.
 
 ## 5. PayPal webhook
 

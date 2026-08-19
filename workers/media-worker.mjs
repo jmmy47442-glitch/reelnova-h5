@@ -68,19 +68,198 @@ const readToken = async (token, secret) => {
   }
 };
 
-const startStreamCopy = async (env, objectKey, metadata) => {
-  const ingestToken = await createToken({ key: objectKey, expires: Math.floor(Date.now() / 1000) + 3600 }, env.MEDIA_WORKER_SECRET);
-  const sourceUrl = `${env.PUBLIC_BASE_URL.replace(/\/$/, '')}/ingest/${encodeURIComponent(ingestToken)}`;
-  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/stream/copy`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ url: sourceUrl, meta: metadata, requireSignedURLs: true }),
+const streamApi = async (env, path, options = {}) => {
+  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/stream${path}`, {
+    ...options,
+    headers: { authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`, 'content-type': 'application/json', ...(options.headers || {}) },
   });
   const payload = await response.json();
-  if (!response.ok || !payload.success || !payload.result?.uid) {
-    throw new Error(payload.errors?.[0]?.message || 'Cloudflare Stream copy failed');
-  }
+  if (!response.ok || !payload.success) throw new Error(payload.errors?.[0]?.message || 'Cloudflare Stream request failed');
   return payload.result;
+};
+
+const findStreamCopy = async (env, idempotencyKey) => {
+  const videos = await streamApi(env, `?creator=${encodeURIComponent(idempotencyKey)}&limit=10&asc=true`);
+  return Array.isArray(videos) ? videos.find((video) => video.creator === idempotencyKey) || null : null;
+};
+
+const startStreamCopy = async (env, objectKey, metadata, idempotencyKey) => {
+  const existing = await findStreamCopy(env, idempotencyKey);
+  if (existing?.uid) return existing;
+  const ingestToken = await createToken({ key: objectKey, expires: Math.floor(Date.now() / 1000) + 3600 }, env.MEDIA_WORKER_SECRET);
+  const sourceUrl = `${env.PUBLIC_BASE_URL.replace(/\/$/, '')}/ingest/${encodeURIComponent(ingestToken)}`;
+  return streamApi(env, '/copy', {
+    method: 'POST',
+    headers: { 'Upload-Creator': idempotencyKey },
+    body: JSON.stringify({ url: sourceUrl, creator: idempotencyKey, meta: { ...metadata, idempotencyKey }, requireSignedURLs: true }),
+  });
+};
+
+const uploadMarkerKey = (idempotencyKey) => `_reelnova/upload-sessions/${idempotencyKey}.json`;
+
+const readUploadMarker = async (env, idempotencyKey) => {
+  const object = await env.MEDIA_BUCKET.get(uploadMarkerKey(idempotencyKey));
+  if (!object) return null;
+  try { return await object.json(); } catch { return null; }
+};
+
+const createOrResumeUpload = async (env, origin, body) => {
+  if (!/^upload:[0-9a-f-]{36}$/i.test(body.idempotencyKey || '') || !body.sessionId || !body.completionKey
+    || !body.streamIdempotencyKey || !body.objectKey
+    || !body.contentType || !Number.isFinite(body.fileSizeBytes)) throw new Error('Invalid upload request');
+  const existing = await readUploadMarker(env, body.idempotencyKey);
+  let uploadId = existing?.uploadId;
+  if (existing && (existing.sessionId !== body.sessionId || existing.objectKey !== body.objectKey)) {
+    throw new Error('Upload idempotency key conflict');
+  }
+  const expires = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
+  if (!uploadId) {
+    const upload = await env.MEDIA_BUCKET.createMultipartUpload(body.objectKey, {
+      httpMetadata: { contentType: body.contentType },
+      customMetadata: {
+        managedBy: 'reelnova', uploadSessionId: body.sessionId, uploadIdempotencyKey: body.idempotencyKey,
+        r2CompletionKey: body.completionKey, assetId: String(body.metadata?.assetId || ''),
+      },
+    });
+    uploadId = upload.uploadId;
+    try {
+      await env.MEDIA_BUCKET.put(uploadMarkerKey(body.idempotencyKey), JSON.stringify({
+        uploadId, sessionId: body.sessionId, completionKey: body.completionKey,
+        streamIdempotencyKey: body.streamIdempotencyKey, objectKey: body.objectKey, contentType: body.contentType,
+        fileSizeBytes: body.fileSizeBytes, expiresAt: new Date(expires * 1000).toISOString(), createdAt: new Date().toISOString(),
+      }), { httpMetadata: { contentType: 'application/json' }, customMetadata: { managedBy: 'reelnova', kind: 'upload-session', sessionId: body.sessionId } });
+    } catch (error) {
+      await upload.abort().catch(() => undefined);
+      throw error;
+    }
+  }
+  const uploadToken = await createToken({ key: body.objectKey, uploadId, expires }, env.MEDIA_WORKER_SECRET);
+  return {
+    uploadId,
+    objectKey: body.objectKey,
+    uploadUrl: `${origin}/uploads/${encodeURIComponent(uploadId)}`,
+    uploadToken,
+    partSizeBytes: 10 * 1024 * 1024,
+    expiresAt: new Date(expires * 1000).toISOString(),
+  };
+};
+
+const completeUpload = async (env, body, uploadId) => {
+  if (body.uploadId !== uploadId || !body.sessionId || !body.completionKey || !body.streamIdempotencyKey
+    || !body.objectKey || !Array.isArray(body.parts) || !body.parts.length) throw new Error('Invalid completion request');
+  let object = await env.MEDIA_BUCKET.head(body.objectKey);
+  if (!object) {
+    const upload = env.MEDIA_BUCKET.resumeMultipartUpload(body.objectKey, uploadId);
+    object = await upload.complete(body.parts);
+  } else if (object.customMetadata?.uploadSessionId && object.customMetadata.uploadSessionId !== body.sessionId) {
+    throw new Error('R2 completion idempotency key conflict');
+  } else if (object.customMetadata?.r2CompletionKey && object.customMetadata.r2CompletionKey !== body.completionKey) {
+    throw new Error('R2 completion idempotency key conflict');
+  }
+  try {
+    const stream = await startStreamCopy(env, body.objectKey, body.metadata || {}, body.streamIdempotencyKey);
+    if (!stream?.uid) throw new Error('Cloudflare Stream copy returned no UID');
+    return { etag: object.httpEtag, streamUid: stream.uid };
+  } catch (error) {
+    return { etag: object.httpEtag, streamUid: null, streamError: error instanceof Error ? error.message : 'Stream copy failed' };
+  }
+};
+
+const reconcileResources = async (env, body) => {
+  const keepObjectKeys = new Set(Array.isArray(body.keepObjectKeys) ? body.keepObjectKeys : []);
+  const keepStreamUids = new Set(Array.isArray(body.keepStreamUids) ? body.keepStreamUids : []);
+  const keepSessionIds = new Set(Array.isArray(body.keepSessionIds) ? body.keepSessionIds : []);
+  const cutoff = Date.now() - Math.max(24, Number(body.graceHours) || 24) * 60 * 60 * 1000;
+  const result = { abortedSessionIds: [], deletedObjectKeys: [], deletedStreamUids: [], deletedMarkerKeys: [], errors: [] };
+
+  for (const candidate of Array.isArray(body.abortUploads) ? body.abortUploads.slice(0, 100) : []) {
+    try {
+      if (candidate.uploadId && candidate.objectKey && !String(candidate.uploadId).startsWith('pending:')) {
+        await env.MEDIA_BUCKET.resumeMultipartUpload(candidate.objectKey, candidate.uploadId).abort();
+      }
+      if (candidate.idempotencyKey) await env.MEDIA_BUCKET.delete(uploadMarkerKey(candidate.idempotencyKey));
+      result.abortedSessionIds.push(candidate.sessionId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Multipart abort failed';
+      // A completed or already-aborted multipart is also reconciled; object cleanup is handled below.
+      if (/not found|no such upload|does not exist/i.test(message)) result.abortedSessionIds.push(candidate.sessionId);
+      else result.errors.push({ resource: `multipart:${candidate.sessionId}`, message });
+    }
+  }
+
+  let cursor;
+  do {
+    const listed = await env.MEDIA_BUCKET.list({ prefix: 'originals/', limit: 1000, cursor, include: ['customMetadata'] });
+    for (const object of listed.objects) {
+      if (object.customMetadata?.managedBy !== 'reelnova' || keepObjectKeys.has(object.key) || object.uploaded.getTime() >= cutoff) continue;
+      try {
+        await env.MEDIA_BUCKET.delete(object.key);
+        result.deletedObjectKeys.push(object.key);
+      } catch (error) {
+        result.errors.push({ resource: `r2:${object.key}`, message: error instanceof Error ? error.message : 'R2 delete failed' });
+      }
+    }
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+
+  cursor = undefined;
+  do {
+    const listed = await env.MEDIA_BUCKET.list({ prefix: '_reelnova/upload-sessions/', limit: 1000, cursor, include: ['customMetadata'] });
+    for (const object of listed.objects) {
+      const sessionId = object.customMetadata?.sessionId;
+      if (!sessionId || keepSessionIds.has(sessionId) || object.uploaded.getTime() >= cutoff) continue;
+      try {
+        const markerObject = await env.MEDIA_BUCKET.get(object.key);
+        const marker = markerObject ? await markerObject.json() : null;
+        if (marker?.uploadId && marker?.objectKey) {
+          await env.MEDIA_BUCKET.resumeMultipartUpload(marker.objectKey, marker.uploadId).abort().catch((error) => {
+            if (!/not found|no such upload|does not exist/i.test(error instanceof Error ? error.message : '')) throw error;
+          });
+        }
+        await env.MEDIA_BUCKET.delete(object.key);
+        result.deletedMarkerKeys.push(object.key);
+      } catch (error) {
+        result.errors.push({ resource: `marker:${object.key}`, message: error instanceof Error ? error.message : 'Upload marker cleanup failed' });
+      }
+    }
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+
+  try {
+    let start;
+    for (let page = 0; page < 100; page += 1) {
+      const videos = await streamApi(env, `?limit=1000&asc=true${start ? `&start=${encodeURIComponent(start)}` : ''}`);
+      const pageVideos = Array.isArray(videos) ? videos : [];
+      for (const video of pageVideos) {
+        if (!String(video.creator || '').startsWith('reelnova:') || keepStreamUids.has(video.uid)
+          || !video.created || Date.parse(video.created) >= cutoff) continue;
+        try {
+          await streamApi(env, `/${encodeURIComponent(video.uid)}`, { method: 'DELETE' });
+          result.deletedStreamUids.push(video.uid);
+        } catch (error) {
+          result.errors.push({ resource: `stream:${video.uid}`, message: error instanceof Error ? error.message : 'Stream delete failed' });
+        }
+      }
+      if (pageVideos.length < 1000 || !pageVideos.at(-1)?.created) break;
+      start = new Date(Date.parse(pageVideos.at(-1).created) + 1).toISOString();
+    }
+  } catch (error) {
+    result.errors.push({ resource: 'stream:list', message: error instanceof Error ? error.message : 'Stream list failed' });
+  }
+  return result;
+};
+
+const triggerApplicationReconciliation = async (env) => {
+  if (!env.APP_BASE_URL) throw new Error('APP_BASE_URL is not configured');
+  const rawBody = JSON.stringify({ triggeredAt: new Date().toISOString() });
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const signature = bytesToHex(await hmac(`${timestamp}.${rawBody}`, env.MEDIA_WORKER_SECRET));
+  const response = await fetch(`${String(env.APP_BASE_URL).replace(/\/$/, '')}/api/internal/media/reconcile`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-reelnova-timestamp': timestamp, 'x-reelnova-signature': signature },
+    body: rawBody,
+  });
+  if (!response.ok) throw new Error(`Application reconciliation failed (${response.status}): ${await response.text()}`);
 };
 
 export default {
@@ -94,18 +273,7 @@ export default {
         const rawBody = await request.text();
         if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
         const body = JSON.parse(rawBody);
-        if (!body.objectKey || !body.contentType || !Number.isFinite(body.fileSizeBytes)) return json({ error: 'Invalid upload request' }, 400);
-        const upload = await env.MEDIA_BUCKET.createMultipartUpload(body.objectKey, { httpMetadata: { contentType: body.contentType } });
-        const expires = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
-        const uploadToken = await createToken({ key: body.objectKey, uploadId: upload.uploadId, expires }, env.MEDIA_WORKER_SECRET);
-        return json({
-          uploadId: upload.uploadId,
-          objectKey: body.objectKey,
-          uploadUrl: `${url.origin}/uploads/${encodeURIComponent(upload.uploadId)}`,
-          uploadToken,
-          partSizeBytes: 10 * 1024 * 1024,
-          expiresAt: new Date(expires * 1000).toISOString(),
-        });
+        return json(await createOrResumeUpload(env, url.origin, body));
       }
 
       const partMatch = url.pathname.match(/^\/uploads\/([^/]+)\/parts\/(\d+)$/);
@@ -126,27 +294,22 @@ export default {
         if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
         const body = JSON.parse(rawBody);
         const uploadId = decodeURIComponent(completeMatch[1]);
-        if (body.uploadId !== uploadId || !body.objectKey || !Array.isArray(body.parts) || !body.parts.length) return json({ error: 'Invalid completion request' }, 400);
-        let object = await env.MEDIA_BUCKET.head(body.objectKey);
-        if (!object) {
-          const upload = env.MEDIA_BUCKET.resumeMultipartUpload(body.objectKey, uploadId);
-          object = await upload.complete(body.parts);
-        }
-        try {
-          const stream = await startStreamCopy(env, body.objectKey, body.metadata || {});
-          return json({ etag: object.httpEtag, streamUid: stream.uid });
-        } catch (error) {
-          return json({ etag: object.httpEtag, streamUid: null, streamError: error instanceof Error ? error.message : 'Stream copy failed' });
-        }
+        return json(await completeUpload(env, body, uploadId));
       }
 
       if (url.pathname === '/transcodes' && request.method === 'POST') {
         const rawBody = await request.text();
         if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
         const body = JSON.parse(rawBody);
-        if (!body.objectKey) return json({ error: 'Object key is required' }, 400);
-        const stream = await startStreamCopy(env, body.objectKey, body.metadata || {});
+        if (!body.objectKey || !body.streamIdempotencyKey) return json({ error: 'Object key and idempotency key are required' }, 400);
+        const stream = await startStreamCopy(env, body.objectKey, body.metadata || {}, body.streamIdempotencyKey);
         return json({ streamUid: stream.uid });
+      }
+
+      if (url.pathname === '/reconcile' && request.method === 'POST') {
+        const rawBody = await request.text();
+        if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
+        return json(await reconcileResources(env, JSON.parse(rawBody)));
       }
 
       const ingestMatch = url.pathname.match(/^\/ingest\/(.+)$/);
@@ -166,5 +329,8 @@ export default {
     } catch (error) {
       return json({ error: error instanceof Error ? error.message : 'Media worker error' }, 500, requestCors);
     }
+  },
+  async scheduled(_controller, env, ctx) {
+    ctx.waitUntil(triggerApplicationReconciliation(env));
   },
 };

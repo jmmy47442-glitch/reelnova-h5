@@ -26,6 +26,7 @@ export const useAdminApi = () => {
       checkedAt: string;
       cloudflare: {
         database: boolean; databaseError: string | null; mode: string; accountConfigured: boolean; databaseConfigured: boolean; apiTokenConfigured: boolean;
+        databaseSchema: { healthy: boolean; latestRequiredMigration: number; latestAppliedMigration: number; migrationHistoryValid: boolean; migrationError: string | null; missing: { tables: string[]; columns: string[]; indexes: string[]; triggers: string[] } } | null;
         streamApiConfigured: boolean; streamApiError: string | null; streamCustomerCodeConfigured: boolean; streamWebhookConfigured: boolean;
         mediaConfigured: boolean; mediaWorkerConfigured: boolean; streamConfigured: boolean; mediaSigningConfigured: boolean; customHostnamesConfigured: boolean;
         customHostnamesMissingFields: Array<'zoneId' | 'apiToken' | 'cnameTarget'>;
@@ -43,10 +44,11 @@ export const useAdminApi = () => {
     duplicateSeries: (id: string) => request<AdminSeries>(`/admin/series/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }),
     deleteSeries: (id: string) => request<{ id: string; title: string; retainedOrderCount: number }>(`/admin/series/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     getEpisodes: (seriesId: string) => request<{ items: AdminEpisode[]; generatedAt: string }>(`/admin/series/${encodeURIComponent(seriesId)}/episodes`),
-    createEpisodeUpload: (seriesId: string, input: { episodeNo: number; title: string; fileName: string; contentType: string; fileSizeBytes: number; durationSeconds: number; width: number; height: number; hasVideo: true; hasAudio: true }) =>
+    createEpisodeUpload: (seriesId: string, input: { idempotencyKey: string; episodeNo: number; title: string; fileName: string; contentType: string; fileSizeBytes: number; durationSeconds: number; width: number; height: number; hasVideo: true; hasAudio: true }) =>
       request<MediaUploadSession>(`/admin/series/${encodeURIComponent(seriesId)}/episodes/uploads`, { method: 'POST', body: input }),
     reportUploadProgress: (uploadId: string, uploadedBytes: number) => request<{ uploadedBytes: number; fileSizeBytes: number }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}/progress`, { method: 'PATCH', body: { uploadedBytes } }),
-    completeEpisodeUpload: (uploadId: string, parts: MediaUploadPart[]) => request<{ uploadId: string; mediaAssetId: string; streamUid: string | null; status: 'processing' | 'failed'; errorMessage?: string }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}/complete`, { method: 'POST', body: { parts } }),
+    getEpisodeUpload: (uploadId: string) => request<{ uploadId: string; mediaAssetId: string; status: string; uploadedBytes: number; fileSizeBytes: number; r2Completed: boolean; streamUid: string | null; recoverable: boolean; errorMessage: string | null; updatedAt: string | null }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}`),
+    completeEpisodeUpload: (uploadId: string, parts: MediaUploadPart[]) => request<{ uploadId: string; mediaAssetId: string; streamUid: string | null; status: 'processing' | 'completing'; errorMessage?: string }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}/complete`, { method: 'POST', body: { parts } }),
     retryTranscode: (assetId: string) => request<{ assetId: string; streamUid: string; attempt: number; status: 'processing' }>(`/admin/media/${encodeURIComponent(assetId)}/retry`, { method: 'POST' }),
     getTaxonomy: () => request<{ items: TaxonomyItem[] }>('/admin/taxonomy'),
     saveTaxonomy: (items: TaxonomyItem[]) => request<{ items: TaxonomyItem[] }>('/admin/taxonomy', { method: 'PUT', body: { items } }),

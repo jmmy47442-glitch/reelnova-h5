@@ -13,8 +13,10 @@ export default defineEventHandler(async (event) => {
   const previous = await d1First<{ attempt: number }>(event, 'SELECT MAX(attempt) AS attempt FROM transcode_jobs WHERE media_asset_id = ?', [assetId]);
   const attempt = Number(previous?.attempt || 0) + 1;
   if (attempt > 5) throw createError({ statusCode: 409, statusMessage: 'Maximum retry attempts reached' });
+  const streamIdempotencyKey = `reelnova:retry:${assetId}:${attempt}`;
   const result = await mediaWorkerRequest<{ streamUid: string }>(event, '/transcodes', {
-    objectKey: asset.source_object_key, metadata: { assetId, episodeId: asset.episode_id, seriesId: asset.series_id },
+    objectKey: asset.source_object_key, streamIdempotencyKey,
+    metadata: { assetId, episodeId: asset.episode_id, seriesId: asset.series_id, attempt: String(attempt) },
   });
   const now = new Date().toISOString();
   await d1Run(event, `UPDATE media_assets SET stream_uid = ?, status = 'processing', validation_status = 'pending', validation_error = NULL, updated_at = ? WHERE id = ?`, [result.streamUid, now, assetId]);
