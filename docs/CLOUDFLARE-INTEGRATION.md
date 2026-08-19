@@ -196,7 +196,7 @@ Only an active hostname with healthy CNAME and HTTPS can become primary or enabl
 
 ## 7. Verify
 
-Protect `admin.iseedrama.com/*` and `/api/admin/*` with a Cloudflare Access application. In production the server requires the `Cf-Access-Jwt-Assertion` header that Access adds after validating the user. Set `CLOUDFLARE_ACCESS_REQUIRED=false` only for local development.
+The administrator session protects `/api/admin/*` by default. To add Cloudflare Access, first create an Access application covering `admin.iseedrama.com/*`, verify that authenticated requests receive `Cf-Access-Jwt-Assertion`, and then set `CLOUDFLARE_ACCESS_REQUIRED=true`. Do not enable the application-level requirement before the Access application is active, or every protected administrator API will return 401 after login.
 
 Build the Cloudflare target and open the connection diagnostics page:
 
