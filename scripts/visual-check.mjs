@@ -71,6 +71,31 @@ const results = [];
 results.push(await inspectPage('h5-login-1280', '/login', { width: 1280, height: 800 }));
 results.push(await inspectPage('h5-login-390', '/login', { width: 390, height: 844 }));
 results.push(await inspectPage('h5-register-390', '/register', { width: 390, height: 844 }));
+
+const resetPage = await browser.newPage({ viewport: { width: 1470, height: 837 }, deviceScaleFactor: 2 });
+await resetPage.route('**/api/auth/password-reset', route => route.fulfill({
+  status: 503,
+  contentType: 'application/json',
+  body: JSON.stringify({ statusCode: 503, message: 'Account service unavailable' }),
+}));
+await resetPage.goto(`${baseURL}/login`, { waitUntil: 'networkidle' });
+await resetPage.getByRole('button', { name: 'Forgot password?' }).click();
+await resetPage.getByLabel('Email', { exact: true }).fill('jimmy47442@gmail.com');
+await resetPage.getByLabel('New password', { exact: true }).fill('hu20040303');
+await resetPage.getByLabel('Confirm new password', { exact: true }).fill('hu20040303');
+await resetPage.getByRole('button', { name: 'Reset password' }).click();
+const resetError = resetPage.getByRole('alert');
+await resetError.waitFor();
+await resetPage.screenshot({ path: `${outputDir}/h5-reset-1470@2x.png`, fullPage: false });
+results.push({
+  name: 'h5-reset-1470@2x',
+  resetErrorVisible: await resetError.isVisible(),
+  resetErrorText: await resetError.textContent(),
+  backToSignInVisible: await resetPage.getByRole('button', { name: 'Back to sign in' }).isVisible(),
+  documentWidth: await resetPage.evaluate(() => document.documentElement.scrollWidth),
+});
+await resetPage.close();
+
 results.push(await inspectPage('h5-home-390', '/', { width: 390, height: 844 }));
 results.push(await inspectPage('h5-detail-390', '/series/vows-and-vengeance', { width: 390, height: 844 }));
 results.push(await inspectPage('h5-watch-lock-390', '/watch/vows-and-vengeance/4', { width: 390, height: 844 }));
