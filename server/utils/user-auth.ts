@@ -1,5 +1,10 @@
 import type { H3Event } from 'h3';
 import type { UserSession } from '~/types/user';
+import {
+  userBase64UrlToBytes,
+  userBytesToBase64Url,
+  userPasswordIterations,
+} from '../../shared/user-password-proof';
 import { d1First, d1Run, getRequestCountry } from './cloudflare-d1';
 import { summarizeDevice } from './user-profile';
 
@@ -26,29 +31,18 @@ export interface UserAccount {
 const sessionCookie = 'reelnova-user-session';
 const encoder = new TextEncoder();
 
-const bytesToBase64Url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes))
-  .replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, '');
+const encodeJson = (value: unknown) => userBytesToBase64Url(encoder.encode(JSON.stringify(value)));
+const decodeJson = <T>(value: string) => JSON.parse(new TextDecoder().decode(userBase64UrlToBytes(value))) as T;
 
-const base64UrlToBytes = (value: string) => {
-  const padded = value.replaceAll('-', '+').replaceAll('_', '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
-  return Uint8Array.from(atob(padded), character => character.charCodeAt(0));
+const randomToken = (size = 18) => userBytesToBase64Url(crypto.getRandomValues(new Uint8Array(size)));
+
+const signWithKey = async (value: string, keyBytes: BufferSource) => {
+  const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const signed = await crypto.subtle.sign('HMAC', key, encoder.encode(value));
+  return userBytesToBase64Url(new Uint8Array(signed));
 };
 
-const encodeJson = (value: unknown) => bytesToBase64Url(encoder.encode(JSON.stringify(value)));
-const decodeJson = <T>(value: string) => JSON.parse(new TextDecoder().decode(base64UrlToBytes(value))) as T;
-
-const randomToken = (size = 18) => bytesToBase64Url(crypto.getRandomValues(new Uint8Array(size)));
-
-const derivePasswordHash = async (password: string, salt: string) => {
-  const key = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({
-    name: 'PBKDF2',
-    hash: 'SHA-256',
-    salt: base64UrlToBytes(salt),
-    iterations: 210_000,
-  }, key, 256);
-  return bytesToBase64Url(new Uint8Array(bits));
-};
+const sign = (payload: string, secret: string) => signWithKey(payload, encoder.encode(secret));
 
 const constantTimeEqual = (left: string, right: string) => {
   const leftBytes = encoder.encode(left);
@@ -87,7 +81,12 @@ const findById = (event: H3Event, userId: string) => d1First<UserAccountRow>(
   [userId],
 );
 
-export const createUserAccount = async (event: H3Event, input: { name: string; email: string; password: string }) => {
+export const createUserAccount = async (event: H3Event, input: {
+  name: string;
+  email: string;
+  passwordSalt: string;
+  passwordHash: string;
+}) => {
   const email = input.email.trim().toLowerCase();
   if (await findByEmail(event, email)) {
     throw createError({ statusCode: 409, statusMessage: 'An account with this email already exists' });
@@ -97,13 +96,12 @@ export const createUserAccount = async (event: H3Event, input: { name: string; e
     throw createError({ statusCode: 409, statusMessage: 'You are already signed in' });
   }
   const now = new Date().toISOString();
-  const salt = randomToken();
   const row: UserAccountRow = {
     user_id: `usr_${crypto.randomUUID()}`,
     email,
     display_name: input.name.trim(),
-    password_salt: salt,
-    password_hash: await derivePasswordHash(input.password, salt),
+    password_salt: input.passwordSalt,
+    password_hash: input.passwordHash,
     status: 'active',
     last_login_at: now,
     created_at: now,
@@ -119,38 +117,72 @@ export const createUserAccount = async (event: H3Event, input: { name: string; e
   return toAccount(row);
 };
 
-export const authenticateUser = async (event: H3Event, email: string, password: string) => {
-  const account = await findByEmail(event, email.trim().toLowerCase());
+interface UserLoginChallengePayload {
+  email: string;
+  nonce: string;
+  expiresAt: number;
+}
+
+export const createUserLoginChallenge = async (event: H3Event, email: string) => {
+  const normalizedEmail = email.trim().toLowerCase();
+  const account = await findByEmail(event, normalizedEmail);
+  const payload = encodeJson({
+    email: normalizedEmail,
+    nonce: randomToken(),
+    expiresAt: Date.now() + 60_000,
+  } satisfies UserLoginChallengePayload);
+  const signature = await sign(payload, String(useRuntimeConfig(event).userSessionSecret));
+  return {
+    challenge: `${payload}.${signature}`,
+    salt: account?.password_salt || randomToken(),
+    iterations: userPasswordIterations,
+  };
+};
+
+const verifyUserLoginChallenge = async (event: H3Event, challenge: string, email: string) => {
+  const [payload, signature, extra] = challenge.split('.');
+  if (!payload || !signature || extra) return false;
+  const expected = await sign(payload, String(useRuntimeConfig(event).userSessionSecret));
+  if (!constantTimeEqual(signature, expected)) return false;
+  try {
+    const value = decodeJson<UserLoginChallengePayload>(payload);
+    return value.email === email && Boolean(value.nonce) && value.expiresAt > Date.now();
+  } catch {
+    return false;
+  }
+};
+
+export const authenticateUserProof = async (event: H3Event, email: string, challenge: string, proof: string) => {
+  const normalizedEmail = email.trim().toLowerCase();
+  const account = await findByEmail(event, normalizedEmail);
   if (!account || account.status !== 'active') return null;
-  const candidate = await derivePasswordHash(password, account.password_salt);
-  if (!constantTimeEqual(candidate, account.password_hash)) return null;
+  if (!await verifyUserLoginChallenge(event, challenge, normalizedEmail)) return null;
+  const expectedProof = await signWithKey(challenge, userBase64UrlToBytes(account.password_hash));
+  if (!constantTimeEqual(proof, expectedProof)) return null;
   const loggedInAt = new Date().toISOString();
   await d1Run(event, 'UPDATE users SET last_login_at = ?, updated_at = ? WHERE user_id = ?', [loggedInAt, loggedInAt, account.user_id]);
   return { ...toAccount(account), lastLoginAt: loggedInAt };
 };
 
-export const resetUserPassword = async (event: H3Event, email: string, password: string) => {
+export const resetUserPassword = async (
+  event: H3Event,
+  email: string,
+  passwordSalt: string,
+  passwordHash: string,
+) => {
   const account = await findByEmail(event, email.trim().toLowerCase());
   if (!account) return null;
   if (account.status !== 'active') {
     throw createError({ statusCode: 403, statusMessage: 'This account cannot reset its password' });
   }
-  const salt = randomToken();
   const updatedAt = new Date().toISOString();
-  const passwordHash = await derivePasswordHash(password, salt);
   await d1Run(event, 'UPDATE users SET password_salt = ?, password_hash = ?, updated_at = ? WHERE user_id = ?', [
-    salt,
+    passwordSalt,
     passwordHash,
     updatedAt,
     account.user_id,
   ]);
-  return toAccount({ ...account, password_salt: salt, password_hash: passwordHash });
-};
-
-const sign = async (payload: string, secret: string) => {
-  const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const signed = await crypto.subtle.sign('HMAC', key, encoder.encode(payload));
-  return bytesToBase64Url(new Uint8Array(signed));
+  return toAccount({ ...account, password_salt: passwordSalt, password_hash: passwordHash });
 };
 
 export const setUserSession = async (event: H3Event, account: UserAccount, remember: boolean) => {

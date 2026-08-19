@@ -1,6 +1,11 @@
 import type { ApiEnvelope } from '~/types/content';
 import type { UserLoginInput, UserPasswordResetInput, UserRegisterInput, UserSession } from '~/types/user';
 import { useAccountSettings } from '~/composables/useAccountSettings';
+import {
+  createUserPasswordSalt,
+  deriveUserPasswordHash,
+  deriveUserPasswordProof,
+} from '~/shared/user-password-proof';
 
 export const useUserAuth = () => {
   const baseURL = useRuntimeConfig().public.apiBase;
@@ -27,21 +32,47 @@ export const useUserAuth = () => {
   };
 
   const login = async (input: UserLoginInput) => {
-    const response = await $fetch<ApiEnvelope<UserSession>>('/auth/login', { baseURL, credentials: 'include', method: 'POST', body: input });
+    const challengeResponse = await $fetch<ApiEnvelope<{ challenge: string; salt: string; iterations: number }>>('/auth/challenge', {
+      baseURL,
+      method: 'POST',
+      body: { email: input.email },
+    });
+    const { challenge, salt, iterations } = challengeResponse.data;
+    const proof = await deriveUserPasswordProof(input.password, salt, challenge, iterations);
+    const response = await $fetch<ApiEnvelope<UserSession>>('/auth/login', {
+      baseURL,
+      credentials: 'include',
+      method: 'POST',
+      body: { email: input.email, challenge, proof, remember: input.remember },
+    });
     session.value = response.data;
     sessionChecked.value = true;
     return response.data;
   };
 
   const register = async (input: UserRegisterInput) => {
-    const response = await $fetch<ApiEnvelope<UserSession>>('/auth/register', { baseURL, credentials: 'include', method: 'POST', body: input });
+    const passwordSalt = createUserPasswordSalt();
+    const passwordHash = await deriveUserPasswordHash(input.password, passwordSalt);
+    const response = await $fetch<ApiEnvelope<UserSession>>('/auth/register', {
+      baseURL,
+      credentials: 'include',
+      method: 'POST',
+      body: { ...input, passwordSalt, passwordHash },
+    });
     session.value = response.data;
     sessionChecked.value = true;
     return response.data;
   };
 
   const resetPassword = async (input: UserPasswordResetInput) => {
-    const response = await $fetch<ApiEnvelope<{ email: string }>>('/auth/password-reset', { baseURL, credentials: 'include', method: 'POST', body: input });
+    const passwordSalt = createUserPasswordSalt();
+    const passwordHash = await deriveUserPasswordHash(input.password, passwordSalt);
+    const response = await $fetch<ApiEnvelope<{ email: string }>>('/auth/password-reset', {
+      baseURL,
+      credentials: 'include',
+      method: 'POST',
+      body: { ...input, passwordSalt, passwordHash },
+    });
     return response.data;
   };
 
