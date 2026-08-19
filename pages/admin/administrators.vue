@@ -141,7 +141,7 @@ const deleteAdministrator = async (account: AdminAccount) => {
       <template v-if="!createdCredentials">
         <el-form label-position="top" @submit.prevent="createAdministrator">
           <el-form-item label="管理员姓名" required><el-input v-model="form.name" maxlength="80" placeholder="例如：Olivia Chen" /></el-form-item>
-          <el-form-item label="登录邮箱" required><el-input v-model="form.email" type="email" placeholder="olivia@reelnova.com" /></el-form-item>
+          <el-form-item label="登录邮箱" required><el-input v-model="form.email" type="email" placeholder="olivia@iseedrama.com" /></el-form-item>
           <el-form-item label="岗位权限" required><el-select v-model="form.role" style="width: 100%"><el-option v-for="option in roleOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
         </el-form>
         <el-alert title="系统将自动生成初始密码，创建后由你手动转交给管理员。" type="info" :closable="false" show-icon />

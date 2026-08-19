@@ -121,7 +121,7 @@ const createInitialState = (): AdminState => ({
     { id: 'audit-004', actor: 'Admin', module: '域名管理', action: '添加备用域名', target: 'reelnova.tv', detail: '等待 DNS 验证', risk: '高风险', ip: '172.16.24.18', createdAt: `${today} 09:41:03` },
   ],
   siteConfig: {
-    environment: 'sandbox', clientId: 'AQz8F3••••••••••••••••••E29', secret: '••••••••••••••••', siteName: 'ReelNova', supportEmail: 'support@reelnova.com', locale: 'en-US', includeFuture: true, revokeAfterRefund: true, freeEpisodes: 3, signatureMinutes: 10,
+    environment: 'sandbox', clientId: 'AQz8F3••••••••••••••••••E29', secret: '••••••••••••••••', siteName: 'ReelNova', supportEmail: 'support@iseedrama.com', locale: 'en-US', includeFuture: true, revokeAfterRefund: true, freeEpisodes: 3, signatureMinutes: 10,
   },
 });
 

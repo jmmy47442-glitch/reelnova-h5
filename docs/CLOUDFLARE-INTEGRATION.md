@@ -45,7 +45,7 @@ npm run check:cloudflare
 
 An API token is needed for local Node development, D1 initialization and automated deployment. It is not needed by the deployed application when a D1 binding named `DB` is available.
 
-Use a custom token scoped to the ReelNova account and domain. Do not select every permission.
+Use a custom token scoped to the ReelNova account and the `iseedrama.com` zone. Do not select every permission.
 
 - Account / D1 / Edit
 - Account / Workers Scripts / Edit
@@ -135,10 +135,12 @@ npm run deploy:media-worker
 
 Set `PUBLIC_BASE_URL`, `APP_BASE_URL` and `APP_ORIGINS` in `wrangler.media.toml` to the deployed Worker URL, application URL and allowed admin origins. The Worker Cron trigger runs the signed reconciliation endpoint every hour. Use the same random `MEDIA_WORKER_SECRET` as the Nuxt `CLOUDFLARE_MEDIA_WORKER_SECRET`; never expose it through `NUXT_PUBLIC_*`.
 
+This project declares `media.iseedrama.com` as the Worker's Cloudflare custom domain. `PUBLIC_BASE_URL` and the Nuxt application's `CLOUDFLARE_MEDIA_WORKER_URL` must both use `https://media.iseedrama.com`. The allowed origins include `https://admin.iseedrama.com` so browser multipart uploads from the admin subdomain pass CORS validation.
+
 In Cloudflare Stream, set the notification URL to:
 
 ```text
-https://YOUR_DOMAIN/api/media/stream-webhook
+https://iseedrama.com/api/media/stream-webhook
 ```
 
 Store the returned webhook signing secret in `CLOUDFLARE_STREAM_WEBHOOK_SECRET`. Copy the Stream customer code to `CLOUDFLARE_STREAM_CUSTOMER_CODE` when available; for new uploads the application can also use the HLS URL returned by Stream after the video becomes ready, so the customer code is a fallback rather than a hard requirement. The Worker keeps original objects private, exposes only a one-hour signed ingest URL to Stream, and creates every Stream video with `requireSignedURLs=true`.
@@ -152,7 +154,7 @@ Upload sessions use a client-persisted idempotency key. D1 records the R2 comple
 Register this production endpoint in PayPal Developer Dashboard:
 
 ```text
-https://YOUR_DOMAIN/api/paypal/webhook
+https://iseedrama.com/api/paypal/webhook
 ```
 
 Subscribe at minimum to:
@@ -170,9 +172,22 @@ Copy PayPal's Webhook ID to `PAYPAL_WEBHOOK_ID`. The server verifies every webho
 Enable Cloudflare for SaaS on the zone that fronts the application and configure its fallback origin. Add these encrypted/runtime values:
 
 ```dotenv
-CLOUDFLARE_ZONE_ID=
-CLOUDFLARE_DOMAIN_CNAME_TARGET=customers.example.com
+CLOUDFLARE_ZONE_ID=195dc8829b5b019c7d2ea29d8fe14101
+CLOUDFLARE_DOMAIN_CNAME_TARGET=
 ```
+
+The public hostname is `iseedrama.com`. The CNAME target is the Cloudflare for SaaS fallback target assigned to this deployment; do not set it to `iseedrama.com` unless Cloudflare explicitly provides that value. Add `www.iseedrama.com` as a backup hostname and enable a path-preserving `301` redirect to the apex domain after both certificates are active.
+
+Configure the required hostnames as follows:
+
+| Hostname | Purpose | Target/behavior |
+| --- | --- | --- |
+| `iseedrama.com` | User H5 and same-origin API/Webhooks | Cloudflare Pages/Workers production application |
+| `www.iseedrama.com` | Compatibility entry | Permanent redirect to `https://iseedrama.com` |
+| `admin.iseedrama.com` | Operations console | Same application origin; `/` redirects to `/admin` |
+| `media.iseedrama.com` | R2/Stream media Worker | Wrangler custom domain declared in `wrangler.media.toml` |
+
+Do not add a separate `api.iseedrama.com` for the MVP. The application uses same-origin `/api`, which keeps user/admin cookies, PayPal return handling, and CORS behavior consistent.
 
 The API token also needs `Zone / Zone / Read` and `Zone / SSL and Certificates / Edit` for Custom Hostnames. `CLOUDFLARE_API_TOKEN` must remain a deployment secret. Super administrators can maintain the non-secret Zone ID and CNAME target from **域名管理 → 接入设置**; saved values take precedence over the environment-variable fallbacks above. `/admin/domains` creates the Custom Hostname before saving the local record, which starts DV certificate issuance. Point the requested hostname to the configured CNAME target, add any TXT validation records shown by Cloudflare, then use **同步状态** until the route and certificate are active.
 
@@ -180,7 +195,7 @@ Only an active hostname with healthy CNAME and HTTPS can become primary or enabl
 
 ## 7. Verify
 
-Protect `/api/admin/*` with a Cloudflare Access application. In production the server requires the `Cf-Access-Jwt-Assertion` header that Access adds after validating the user. Set `CLOUDFLARE_ACCESS_REQUIRED=false` only for local development.
+Protect `admin.iseedrama.com/*` and `/api/admin/*` with a Cloudflare Access application. In production the server requires the `Cf-Access-Jwt-Assertion` header that Access adds after validating the user. Set `CLOUDFLARE_ACCESS_REQUIRED=false` only for local development.
 
 Build the Cloudflare target and open the connection diagnostics page:
 

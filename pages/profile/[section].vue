@@ -182,7 +182,7 @@ const confirmDelete = async () => {
     await logout();
     await navigateTo({ path: '/login', query: { accountDeleted: '1' } });
   } catch (error: any) {
-    deleteError.value = error?.data?.statusMessage || 'The account could not be deleted. Retry or contact privacy@reelnova.com.';
+    deleteError.value = error?.data?.statusMessage || 'The account could not be deleted. Retry or contact privacy@iseedrama.com.';
   } finally { deleting.value = false; }
 };
 
@@ -294,7 +294,7 @@ onBeforeUnmount(() => { if (noticeTimer.value) clearTimeout(noticeTimer.value); 
             <p v-if="openTerm === index">{{ item.body }}</p>
           </article>
         </div>
-        <section class="refund-callout"><div><strong>Need a refund review?</strong><p>Include your RN order number so support can locate the payment.</p></div><a class="button button--secondary" href="mailto:support@reelnova.com?subject=Refund%20request">Contact support</a></section>
+        <section class="refund-callout"><div><strong>Need a refund review?</strong><p>Include your RN order number so support can locate the payment.</p></div><a class="button button--secondary" href="mailto:support@iseedrama.com?subject=Refund%20request">Contact support</a></section>
       </template>
 
       <template v-else-if="section === 'help'">
@@ -307,7 +307,7 @@ onBeforeUnmount(() => { if (noticeTimer.value) clearTimeout(noticeTimer.value); 
           </article>
         </div>
         <div v-else class="account-empty account-empty--compact"><span><Search :size="24" /></span><h2>No matching answers</h2><p>Try a broader search or contact the support team.</p></div>
-        <section class="support-band"><span><MessageCircle :size="21" /></span><div><strong>Still need help?</strong><p>Support usually replies within one business day.</p></div><a href="mailto:support@reelnova.com">Email support <ExternalLink :size="14" /></a></section>
+        <section class="support-band"><span><MessageCircle :size="21" /></span><div><strong>Still need help?</strong><p>Support usually replies within one business day.</p></div><a href="mailto:support@iseedrama.com">Email support <ExternalLink :size="14" /></a></section>
       </template>
     </main>
 

@@ -70,7 +70,7 @@ const submit = async () => {
         <div class="admin-auth__access-note"><UserCog :size="17" /><span>管理员账号由超级管理员统一创建</span></div>
 
         <form class="admin-auth__form" novalidate @submit.prevent="submit">
-          <label class="admin-auth__field"><span>邮箱地址</span><div :class="{ 'has-error': errors.email }"><Mail :size="17" /><input v-model="form.email" type="email" autocomplete="email" placeholder="admin@reelnova.com" @input="errors.email = ''; errors.submit = ''"></div><small v-if="errors.email">{{ errors.email }}</small></label>
+          <label class="admin-auth__field"><span>邮箱地址</span><div :class="{ 'has-error': errors.email }"><Mail :size="17" /><input v-model="form.email" type="email" autocomplete="email" placeholder="admin@iseedrama.com" @input="errors.email = ''; errors.submit = ''"></div><small v-if="errors.email">{{ errors.email }}</small></label>
           <label class="admin-auth__field"><span>密码</span><div :class="{ 'has-error': errors.password }"><LockKeyhole :size="17" /><input v-model="form.password" :type="showPassword ? 'text' : 'password'" autocomplete="current-password" placeholder="输入管理员密码" @input="errors.password = ''; errors.submit = ''"><button type="button" :aria-label="showPassword ? '隐藏密码' : '显示密码'" @click="showPassword = !showPassword"><EyeOff v-if="showPassword" :size="17" /><Eye v-else :size="17" /></button></div><small v-if="errors.password">{{ errors.password }}</small></label>
 
           <div class="admin-auth__options"><label class="admin-auth__checkbox"><input v-model="form.remember" type="checkbox"><span><Check :size="12" /></span>7 天内保持登录</label><button type="button" @click="ElMessage.info('请联系超级管理员重置密码')">忘记密码？</button></div>
