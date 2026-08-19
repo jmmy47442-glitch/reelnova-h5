@@ -177,9 +177,10 @@ export const getPublicSeries = async (event: H3Event) => {
   const managed = await getManagedSeries(event);
   const published = managed.filter((item) => item.publishStatus === '已上架');
   const mockFallback = String(useRuntimeConfig(event).publicMockContentFallback).toLowerCase() === 'true';
-  const source = published.length || !mockFallback ? published : initialSeries();
+  const useMockFallback = !published.length && mockFallback;
+  const source = useMockFallback ? initialSeries() : published;
   return source
-  .filter((item) => !country || item.targetRegion === 'Global' || regionCountry[item.targetRegion] === country)
+  .filter((item) => useMockFallback || !country || item.targetRegion === 'Global' || regionCountry[item.targetRegion] === country)
   .map(({ publishStatus: _publishStatus, publishAt: _publishAt, transcodeProgress: _transcodeProgress, targetRegion: _targetRegion, ...series }) => series);
 };
 
