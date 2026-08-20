@@ -15,5 +15,8 @@ export default defineEventHandler(async (event) => {
     },
     missingFields: automation.missingFields,
     automationConfigured: automation.automationConfigured,
+    mode: automation.mode,
+    saasEnabled: automation.saasEnabled,
+    saasStatus: automation.saasStatus,
   });
 });

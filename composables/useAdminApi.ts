@@ -30,6 +30,7 @@ export const useAdminApi = () => {
         streamApiConfigured: boolean; streamApiError: string | null; streamCustomerCodeConfigured: boolean; streamWebhookConfigured: boolean; streamWebhookUrl: string; streamWebhookRemoteUrl: string | null; streamWebhookRemoteConfigured: boolean; streamWebhookError: string | null;
         uploadConfigured: boolean; mediaConfigured: boolean; mediaWorkerConfigured: boolean; streamConfigured: boolean; mediaSigningConfigured: boolean; customHostnamesConfigured: boolean;
         customHostnamesMissingFields: Array<'zoneId' | 'apiToken' | 'cnameTarget'>;
+        domainMode: 'custom-domains-mvp' | 'cloudflare-saas'; cloudflareForSaasEnabled: boolean; cloudflareForSaasStatus: '已开通' | '待 Cloudflare for SaaS 开通';
         missingFields: { streamApi: string[]; mediaWorker: string[]; playback: string[]; streamWebhook: string[] };
       };
       paypal: { connected: boolean; ready: boolean; error: string | null; environment: 'sandbox' | 'production'; environmentValid: boolean; credentialsConfigured: boolean; browserClientConfigured: boolean; clientIdsMatch: boolean; webhookConfigured: boolean; environments: Record<'sandbox' | 'production', { credentialsConfigured: boolean; browserClientConfigured: boolean; clientIdsMatch: boolean; webhookConfigured: boolean }>; lastWebhookAt: string | null; failedWebhooks: Array<{ eventId: string; eventType: string; errorMessage: string | null; receivedAt: string; retryCount: number; replayable: boolean }> };
@@ -57,6 +58,9 @@ export const useAdminApi = () => {
       settings: { zoneId: string; cnameTarget: string; apiTokenConfigured: boolean };
       missingFields: Array<'zoneId' | 'apiToken' | 'cnameTarget'>;
       automationConfigured: boolean;
+      mode: 'custom-domains-mvp' | 'cloudflare-saas';
+      saasEnabled: boolean;
+      saasStatus: '已开通' | '待 Cloudflare for SaaS 开通';
     }>('/admin/domains'),
     saveDomainSettings: (input: { zoneId: string; cnameTarget: string }) => request<{
       settings: { zoneId: string; cnameTarget: string; apiTokenConfigured: boolean };

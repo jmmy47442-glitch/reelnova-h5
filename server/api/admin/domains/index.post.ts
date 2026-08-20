@@ -2,11 +2,12 @@ import { ok } from '~/server/utils/response';
 import { recordAdminAudit } from '~/server/utils/admin-audit';
 import { getDomainConfig, saveDomainConfig } from '~/server/utils/managed-content';
 import { requireSuperAdmin } from '~/server/utils/admin-auth';
-import { applyCloudflareHostnameState, deleteCloudflareCustomHostname, ensureCloudflareCustomHostname } from '~/server/utils/cloudflare-domains';
+import { applyCloudflareHostnameState, deleteCloudflareCustomHostname, ensureCloudflareCustomHostname, requireCloudflareForSaas } from '~/server/utils/cloudflare-domains';
 import type { DomainConfig } from '~/types/admin';
 
 export default defineEventHandler(async (event) => {
   requireSuperAdmin(event);
+  await requireCloudflareForSaas(event);
   const body = await readBody<{ host?: string }>(event);
   const host = String(body?.host || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
   if (!/^(?:[a-z0-9-]+\.)+[a-z]{2,}$/.test(host)) throw createError({ statusCode: 400, statusMessage: 'Invalid domain name' });

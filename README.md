@@ -33,7 +33,8 @@ npm run dev
 - 超级管理员可在 `/admin/administrators` 直接创建管理员，系统生成的登录密码仅在创建成功时返回一次。
 - D1 尚无已上架短剧时，用户端会自动展示原型测试内容，后台仍使用真实 D1 接口。D1 出现真实已上架内容后会自动切换，也可用 `REELNOVA_PUBLIC_MOCK_FALLBACK=false` 关闭测试内容。
 - PayPal 与 R2/Stream 可以后开通：配置留空时 H5 会关闭结账入口、后台会禁用媒体上传，服务端不会写入失败订单或上传任务；开通后补齐 `.env.example` 对应变量并重启即可启用。
-- 验收命令：`npm run typecheck`、`npm run build`、`npm run visual-check`。
+- MVP 域名使用普通 Cloudflare Custom Domains：Nuxt 绑定根域名和 `admin`，媒体 Worker 绑定 `media`，`www` 通过 Cloudflare Redirect Rule 301 到根域名。后台动态添加任意第三方备用域名需在 Cloudflare for SaaS 开通后再启用。
+- 验收命令：`npm run typecheck`、`npm run build`、`npm run visual-check`；正式域名绑定后运行 `npm run check:domains` 验证 DNS、TLS 与 `www` 301。
 - 接口约定见 [`docs/API-INTEGRATION.md`](./docs/API-INTEGRATION.md)，后台 UI 基线见 [`docs/ART-DESIGN-PRO.md`](./docs/ART-DESIGN-PRO.md)。`NUXT_PUBLIC_API_BASE` 应指向包含 `/auth`、`/admin` 和业务路由的 API 根路（本地默认为 `/api`）。
 - Cloudflare D1、规范化内容模型、R2/Stream 媒体链路、播放统计与 PayPal 真实订单配置见 [`docs/CLOUDFLARE-INTEGRATION.md`](./docs/CLOUDFLARE-INTEGRATION.md)。
 

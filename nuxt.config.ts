@@ -40,6 +40,7 @@ export default defineNuxtConfig({
     cloudflareStreamWebhookSecret: process.env.CLOUDFLARE_STREAM_WEBHOOK_SECRET || '',
     cloudflareStreamWebhookUrl: process.env.CLOUDFLARE_STREAM_WEBHOOK_URL || 'https://iseedrama.com/api/media/stream-webhook',
     publicMockContentFallback: process.env.REELNOVA_PUBLIC_MOCK_FALLBACK || 'true',
+    cloudflareForSaasEnabled: process.env.CLOUDFLARE_FOR_SAAS_ENABLED || 'false',
     domainCnameTarget: process.env.CLOUDFLARE_DOMAIN_CNAME_TARGET || '',
     paypalClientId: process.env.PAYPAL_CLIENT_ID || '',
     paypalSecret: process.env.PAYPAL_SECRET || '',

@@ -2,13 +2,14 @@ import { ok } from '~/server/utils/response';
 import { recordAdminAudit } from '~/server/utils/admin-audit';
 import { getDomainConfig, saveDomainConfig } from '~/server/utils/managed-content';
 import { requireSuperAdmin } from '~/server/utils/admin-auth';
-import { applyCloudflareHostnameState, ensureCloudflareCustomHostname, getCloudflareDomainAutomationStatus } from '~/server/utils/cloudflare-domains';
+import { applyCloudflareHostnameState, ensureCloudflareCustomHostname, getCloudflareDomainAutomationStatus, requireCloudflareForSaas } from '~/server/utils/cloudflare-domains';
 
 interface DnsAnswer { type: number; data: string }
 interface DnsResponse { Status: number; Answer?: DnsAnswer[] }
 
 export default defineEventHandler(async (event) => {
   requireSuperAdmin(event);
+  await requireCloudflareForSaas(event);
   const id = getRouterParam(event, 'id') || '';
   const items = await getDomainConfig(event);
   const domain = items.find((item) => item.id === id);

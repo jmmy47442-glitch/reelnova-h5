@@ -147,7 +147,7 @@ https://iseedrama.com/api/media/stream-webhook
 
 Store the returned webhook signing secret in `CLOUDFLARE_STREAM_WEBHOOK_SECRET`. Copy the Stream customer code to `CLOUDFLARE_STREAM_CUSTOMER_CODE` when available; for new uploads the application can also use the HLS URL returned by Stream after the video becomes ready, so the customer code is a fallback rather than a hard requirement. The Worker keeps original objects private, exposes only a one-hour signed ingest URL to Stream, and creates every Stream video with `requireSignedURLs=true`.
 
-The production connection check also reads `CLOUDFLARE_STREAM_WEBHOOK_URL` (defaulting to the URL above) and compares it with Cloudflare's active Stream Webhook. A configured Secret alone is not considered ready when the remote callback points at another hostname. Run `npm run check:production` before a release; it fails until the PayPal Production credentials and Cloudflare for SaaS CNAME target are present too.
+The production connection check also reads `CLOUDFLARE_STREAM_WEBHOOK_URL` (defaulting to the URL above) and compares it with Cloudflare's active Stream Webhook. A configured Secret alone is not considered ready when the remote callback points at another hostname. Run `npm run check:production` before a release. In MVP mode, Cloudflare for SaaS is optional and does not block this check.
 
 The same `CLOUDFLARE_API_TOKEN` used by the media Worker must include `Account / Stream / Edit`; otherwise R2 uploads can start, but Stream copy, status sync and signed playback token creation fail with a Cloudflare `403 Authentication error`.
 
@@ -173,29 +173,75 @@ Copy PayPal's Webhook ID to `PAYPAL_WEBHOOK_ID`. The server verifies every webho
 
 ## 6. Custom domains and HTTPS
 
-Enable Cloudflare for SaaS on the zone that fronts the application and configure its fallback origin. Add these encrypted/runtime values:
+### 6.1 MVP: ordinary Custom Domains
+
+The MVP uses only hostnames owned in the `iseedrama.com` zone and does not require Cloudflare for SaaS. Keep the SaaS feature switch disabled:
 
 ```dotenv
 CLOUDFLARE_ZONE_ID=195dc8829b5b019c7d2ea29d8fe14101
+CLOUDFLARE_FOR_SAAS_ENABLED=false
 CLOUDFLARE_DOMAIN_CNAME_TARGET=
 ```
 
-The public hostname is `iseedrama.com`. The CNAME target is the Cloudflare for SaaS fallback target assigned to this deployment; do not set it to `iseedrama.com` unless Cloudflare explicitly provides that value. Add `www.iseedrama.com` as a backup hostname and enable a path-preserving `301` redirect to the apex domain after both certificates are active.
+In **Workers & Pages → the Nuxt deployment → Custom domains**, bind `iseedrama.com` and `admin.iseedrama.com`. Cloudflare provisions their certificates. `admin.iseedrama.com` serves the same Nuxt deployment; the application redirects its root path to `/admin`.
+
+Deploy the media Worker with `npm run deploy:media-worker`. `wrangler.media.toml` declares `media.iseedrama.com` as its Custom Domain.
+
+Create a proxied `www` DNS record, then add a **Rules → Redirect Rules → Single Redirect** rule with these values:
+
+| Setting | Value |
+| --- | --- |
+| Rule name | `www-to-apex` |
+| Match expression | `(http.host eq "www.iseedrama.com")` |
+| Target type | Dynamic |
+| Target expression | `concat("https://iseedrama.com", http.request.uri.path)` |
+| Status code | `301` |
+| Preserve query string | Enabled |
+
+The same rule can be created or updated idempotently with the configured Zone ID and API Token:
+
+```bash
+npm run deploy:domain-redirect
+```
+
+The token needs permission to edit zone rulesets. A token with only Zone Read and Stream access returns Cloudflare error `10000` and leaves the rule unchanged. The script only creates or updates the rule whose reference is `www-to-apex`; it preserves other rules in the phase.
+
+The Nuxt server also has the same path-and-query-preserving `301` as a fallback. The Cloudflare Redirect Rule remains the production traffic entry and should be verified from the public edge.
+
+After Cloudflare shows all three Custom Domains as active, run:
+
+```bash
+npm run check:domains
+```
+
+This command validates public DNS and TLS for all four hostnames, then confirms that the edge returns an exact path-and-query-preserving `301` from `www` to the apex domain.
 
 Configure the required hostnames as follows:
 
 | Hostname | Purpose | Target/behavior |
 | --- | --- | --- |
 | `iseedrama.com` | User H5 and same-origin API/Webhooks | Cloudflare Pages/Workers production application |
-| `www.iseedrama.com` | Compatibility entry | Permanent redirect to `https://iseedrama.com` |
+| `www.iseedrama.com` | Compatibility entry | Cloudflare Redirect Rule permanently redirects to `https://iseedrama.com` |
 | `admin.iseedrama.com` | Operations console | Same application origin; `/` redirects to `/admin` |
 | `media.iseedrama.com` | R2/Stream media Worker | Wrangler custom domain declared in `wrangler.media.toml` |
 
 Do not add a separate `api.iseedrama.com` for the MVP. The application uses same-origin `/api`, which keeps user/admin cookies, PayPal return handling, and CORS behavior consistent.
 
-The API token also needs `Zone / Zone / Read` and `Zone / SSL and Certificates / Edit` for Custom Hostnames. `CLOUDFLARE_API_TOKEN` must remain a deployment secret. Super administrators can maintain the non-secret Zone ID and CNAME target from **域名管理 → 接入设置**; saved values take precedence over the environment-variable fallbacks above. `/admin/domains` creates the Custom Hostname before saving the local record, which starts DV certificate issuance. Point the requested hostname to the configured CNAME target, add any TXT validation records shown by Cloudflare, then use **同步状态** until the route and certificate are active.
+### 6.2 Deferred: Cloudflare for SaaS
 
-Only an active hostname with healthy CNAME and HTTPS can become primary or enable redirect. Requests arriving on an enabled old hostname receive an application-level `301` to the current primary hostname while preserving path and query. Removing a backup domain also removes its Cloudflare Custom Hostname and certificate.
+The admin page marks dynamic third-party backup-domain onboarding as **待 Cloudflare for SaaS 开通**. While `CLOUDFLARE_FOR_SAAS_ENABLED` is not `true`, the add, verify, primary-switch, redirect-toggle, settings, and delete APIs reject SaaS domain mutations with HTTP `503`.
+
+To enable this later:
+
+1. Contact Cloudflare Sales and obtain SSL for SaaS / Custom Hostnames quota.
+2. Configure a fallback origin pointing to the current Nuxt deployment.
+3. Obtain or create the shared CNAME hostname used by SaaS customer domains.
+4. Set `CLOUDFLARE_DOMAIN_CNAME_TARGET` to that hostname and set `CLOUDFLARE_FOR_SAAS_ENABLED=true`.
+5. Give `CLOUDFLARE_API_TOKEN` `Zone / Zone / Read` and the Custom Hostnames/SSL edit permissions required by the account plan.
+6. Add the backup domain in the admin page, publish the displayed CNAME/TXT records, and wait until both Custom Hostname and SSL are `active`.
+7. Only then switch the primary domain or enable the old-domain `301`.
+
+The SaaS CNAME target is assigned for the fallback origin. It is not the public apex hostname and must not be guessed or set to `iseedrama.com` unless Cloudflare explicitly supplies that value.
 
 ## 7. Verify
 
@@ -205,6 +251,7 @@ Build the Cloudflare target and open the connection diagnostics page:
 
 ```bash
 npm run build:cloudflare
+npm run check:domains
 ```
 
 Visit `/admin/system`. D1, PayPal and media delivery are checked independently. Then perform one sandbox purchase and confirm:

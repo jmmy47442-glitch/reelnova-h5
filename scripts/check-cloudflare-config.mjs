@@ -22,6 +22,7 @@ const required = [
 
 const optional = [
   'CLOUDFLARE_ZONE_ID',
+  'CLOUDFLARE_FOR_SAAS_ENABLED',
   'CLOUDFLARE_DOMAIN_CNAME_TARGET',
   'CLOUDFLARE_STREAM_CUSTOMER_CODE',
   'CLOUDFLARE_STREAM_WEBHOOK_SECRET',
@@ -43,7 +44,7 @@ const requestCloudflare = async (label, url) => {
 
 console.log('Cloudflare environment');
 for (const key of required) console.log(`- ${key}: ${status(key)}`);
-for (const key of optional) console.log(`- ${key}: ${status(key)}${key === 'CLOUDFLARE_STREAM_CUSTOMER_CODE' ? ' (optional)' : ''}`);
+for (const key of optional) console.log(`- ${key}: ${status(key)}${['CLOUDFLARE_FOR_SAAS_ENABLED', 'CLOUDFLARE_DOMAIN_CNAME_TARGET', 'CLOUDFLARE_STREAM_CUSTOMER_CODE'].includes(key) ? ' (optional for MVP)' : ''}`);
 
 const missingRequired = required.filter((key) => !env[key]);
 if (missingRequired.length) {

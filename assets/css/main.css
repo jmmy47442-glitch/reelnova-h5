@@ -539,6 +539,26 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .taxonomy-color-preview { padding-top: 12px; border-top: 1px solid var(--admin-border); }.taxonomy-color-preview .taxonomy-label { min-width: auto; }.taxonomy-category-preview { display: inline-flex; color: var(--admin-text); align-items: center; gap: 7px; font-size: 11px; font-weight: 700; }.taxonomy-category-preview i { width: 10px; height: 10px; border-radius: 3px; }
 .dialog-form { margin-top: 18px; }
 .admin-alert { margin-bottom: 14px; }
+.domain-plan { overflow: hidden; margin-bottom: 14px; }
+.domain-plan > .admin-panel__header, .saas-gate > .admin-panel__header { border-bottom: 1px solid var(--admin-border); }
+.domain-plan__list { padding: 0 18px; }
+.domain-plan__row { display: grid; min-height: 78px; border-bottom: 1px solid var(--admin-border); grid-template-columns: 42px minmax(170px, 1.15fr) minmax(140px, .9fr) minmax(220px, 1.5fr) auto; align-items: center; gap: 14px; }
+.domain-plan__row:last-child { border-bottom: 0; }
+.domain-plan__icon { display: grid; width: 36px; height: 36px; border-radius: 6px; background: #eef0ff; color: var(--admin-primary); place-items: center; }
+.domain-plan__identity, .domain-plan__target, .domain-plan__behavior { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.domain-plan__row strong { overflow-wrap: anywhere; color: var(--admin-text); font-size: 11px; line-height: 1.45; }
+.domain-plan__identity strong { font-size: 12px; }
+.domain-plan__row span:not(.domain-plan__icon) { color: var(--admin-muted); font-size: 9px; line-height: 1.45; }
+.domain-plan__footer { display: flex; min-height: 58px; padding: 10px 18px; border-top: 1px solid var(--admin-border); background: #fafbfc; align-items: center; justify-content: space-between; gap: 14px; }
+.domain-plan__footer > span { color: var(--admin-muted); font-size: 10px; }
+.domain-plan__footer .el-button { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; }
+.saas-gate { overflow: hidden; }
+.saas-gate__content { display: flex; min-height: 104px; padding: 20px 22px; color: #a36c1f; align-items: center; gap: 16px; }
+.saas-gate__content > svg { flex: 0 0 auto; }
+.saas-gate__content > div { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+.saas-gate__content strong { color: var(--admin-text); font-size: 12px; }
+.saas-gate__content span { color: var(--admin-muted); font-size: 10px; line-height: 1.65; overflow-wrap: anywhere; }
+.saas-gate__content code { color: var(--admin-text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; }
 .reconciliation-grid { display: grid; margin-bottom: 14px; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; }
 .reconciliation-chart { overflow: hidden; }.revenue-bars { display: flex; height: 270px; padding: 24px 24px 16px; border-top: 1px solid var(--admin-border); align-items: flex-end; gap: 14px; }.revenue-bar { display: flex; height: 100%; min-width: 0; color: var(--admin-muted); flex: 1; flex-direction: column; align-items: center; justify-content: flex-end; gap: 7px; }.revenue-bar > span { width: min(42px, 82%); min-height: 12px; border-radius: 4px 4px 1px 1px; background: #5d6bff; }.revenue-bar strong { font-size: 9px; }.revenue-bar small { font-size: 9px; }
 .exception-panel { padding-bottom: 16px; }.exception-panel .admin-panel__header > svg { color: #d8902d; }.exception-count { display: flex; padding: 14px 18px; border-top: 1px solid var(--admin-border); align-items: baseline; gap: 8px; }.exception-count strong { color: #d5525f; font-size: 28px; }.exception-count span { color: var(--admin-muted); font-size: 11px; }.exception-panel ul { margin: 0; padding: 0 18px; list-style: none; }.exception-panel li { display: flex; min-height: 42px; border-top: 1px solid var(--admin-border); color: var(--admin-muted); align-items: center; justify-content: space-between; font-size: 10px; }.exception-panel li strong { color: var(--admin-text); }.exception-panel > .el-button { margin: 14px 18px 0; }
@@ -669,6 +689,8 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
   .h5-preview-panel, .settings-side { display: none; }
   .reconciliation-grid { grid-template-columns: 1fr; }
   .connection-grid { grid-template-columns: 1fr; }
+  .domain-plan__row { grid-template-columns: 42px minmax(0, 1fr) auto; padding: 13px 0; align-items: start; }
+  .domain-plan__target, .domain-plan__behavior { grid-column: 2 / -1; }
 }
 
 @media (max-width: 720px) {
@@ -683,6 +705,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
   .admin-search { width: min(45vw, 240px); }.admin-search kbd, .admin-user__copy, .admin-divider { display: none; }
   .admin-header { padding: 0 12px; }.admin-content { padding: 14px; }.admin-page-header { flex-direction: column; }.admin-page-header__actions { width: 100%; }.admin-metric-grid { grid-template-columns: 1fr 1fr; }.order-summary-row { grid-template-columns: 1fr 1fr; row-gap: 14px; }.order-summary-row article:nth-child(2) { border-right: 0; }.admin-filter-row { align-items: stretch; }.admin-filter-search { width: 100%; }.admin-filter-row .el-date-editor { width: 100%; }.form-grid { grid-template-columns: 1fr; }
   .domain-grid { grid-template-columns: 1fr; }.episode-upload-box { grid-template-columns: auto 1fr; }.episode-upload-box .el-upload, .episode-upload-box > .el-button { grid-column: 2; }.config-row { flex-wrap: wrap; }.config-row__body { min-width: 180px; }.row-order-actions { margin-left: 66px; }
+  .domain-plan__list { padding: 0 14px; }.domain-plan__row { grid-template-columns: 38px minmax(0, 1fr); gap: 10px; }.domain-plan__row > .el-tag { grid-column: 2; justify-self: start; }.domain-plan__target, .domain-plan__behavior { grid-column: 2; }.domain-plan__footer { align-items: stretch; flex-direction: column; }.domain-plan__footer .el-button { justify-content: center; }.saas-gate__content { padding: 18px; align-items: flex-start; }
   .environment-switcher { grid-template-columns: 1fr; }.environment-switcher .el-radio-group, .environment-switcher .el-button { width: 100%; }.environment-switcher .el-radio-button { flex: 1; }.environment-switcher .el-radio-button__inner { width: 100%; }
   .live-source-line { padding-block: 8px; align-items: flex-start; flex-direction: column; }.admin-data-state { min-height: 300px; padding: 28px 18px; }
 }

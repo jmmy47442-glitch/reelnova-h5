@@ -118,6 +118,9 @@ export default defineEventHandler(async (event) => {
       mediaSigningConfigured: Boolean(config.cloudflareMediaSigningSecret),
       customHostnamesConfigured: domainAutomation.automationConfigured,
       customHostnamesMissingFields: domainAutomation.missingFields,
+      domainMode: domainAutomation.mode,
+      cloudflareForSaasEnabled: domainAutomation.saasEnabled,
+      cloudflareForSaasStatus: domainAutomation.saasStatus,
       missingFields: missingCloudflareFields,
     },
     paypal: {

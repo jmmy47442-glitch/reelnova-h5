@@ -1,11 +1,12 @@
 import { ok } from '~/server/utils/response';
 import { recordAdminAudit } from '~/server/utils/admin-audit';
-import { deleteCloudflareCustomHostname } from '~/server/utils/cloudflare-domains';
+import { deleteCloudflareCustomHostname, requireCloudflareForSaas } from '~/server/utils/cloudflare-domains';
 import { getDomainConfig, saveDomainConfig } from '~/server/utils/managed-content';
 import { requireSuperAdmin } from '~/server/utils/admin-auth';
 
 export default defineEventHandler(async (event) => {
   requireSuperAdmin(event);
+  await requireCloudflareForSaas(event);
   const id = getRouterParam(event, 'id') || '';
   const items = await getDomainConfig(event);
   const index = items.findIndex((item) => item.id === id);

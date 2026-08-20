@@ -55,8 +55,8 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | Reconciliation | `GET /api/admin/reconciliation` |
 | Taxonomy | `GET/PUT /api/admin/taxonomy` |
 | PayPal | `GET /api/admin/connection`, `PATCH /api/admin/paypal/environment`, `POST /api/admin/paypal/webhooks/{eventId}/retry` (mutations require super administrator; credentials remain Cloudflare Secrets and are never returned) |
-| Domains | `GET /api/admin/domains`, `PUT /api/admin/domains/settings`, `POST /api/admin/domains`, `POST /api/admin/domains/{id}/verify`, `PATCH /api/admin/domains/{id}`, `DELETE /api/admin/domains/{id}` (Zone ID and CNAME target are editable; API Token remains a deployment secret) |
-| Site/domain | `GET/POST /api/admin/domains`, `PATCH/DELETE /api/admin/domains/{id}`, `POST /api/admin/domains/{id}/verify` (Cloudflare Custom Hostnames and SSL state) |
+| Domains | `GET /api/admin/domains` always reports the current domain mode. SaaS mutation endpoints (`PUT /settings`, `POST`, `POST /{id}/verify`, `PATCH /{id}`, `DELETE /{id}`) return `503` until `CLOUDFLARE_FOR_SAAS_ENABLED=true`; API Token remains a deployment secret. |
+| Site/domain | MVP hostnames use ordinary Cloudflare Custom Domains and a Redirect Rule. After Cloudflare for SaaS is enabled, the same admin endpoints manage Custom Hostnames and SSL state for third-party backup domains. |
 | Audit | `GET /api/admin/audit` |
 | Connection health | `GET /api/admin/connection` |
 

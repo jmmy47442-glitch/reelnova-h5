@@ -3,6 +3,7 @@ import { recordAdminAudit } from '~/server/utils/admin-audit';
 import { requireSuperAdmin } from '~/server/utils/admin-auth';
 import {
   getCloudflareDomainAutomationStatus,
+  requireCloudflareForSaas,
   saveCloudflareDomainAutomationSettings,
   testCloudflareZoneAccess,
 } from '~/server/utils/cloudflare-domains';
@@ -11,6 +12,7 @@ const hostnamePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a
 
 export default defineEventHandler(async (event) => {
   requireSuperAdmin(event);
+  await requireCloudflareForSaas(event);
   const body = await readBody<{ zoneId?: string; cnameTarget?: string }>(event);
   const zoneId = String(body?.zoneId || '').trim().toLowerCase();
   const cnameTarget = String(body?.cnameTarget || '').trim().toLowerCase().replace(/\.$/, '');

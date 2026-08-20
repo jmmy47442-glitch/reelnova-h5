@@ -25,6 +25,9 @@ export interface DomainAutomationSettings {
 }
 
 export interface DomainAutomationStatus extends DomainAutomationSettings {
+  mode: 'custom-domains-mvp' | 'cloudflare-saas';
+  saasEnabled: boolean;
+  saasStatus: '已开通' | '待 Cloudflare for SaaS 开通';
   apiTokenConfigured: boolean;
   automationConfigured: boolean;
   missingFields: DomainAutomationMissingField[];
@@ -33,9 +36,12 @@ export interface DomainAutomationStatus extends DomainAutomationSettings {
 const settingsId = 'domain-automation';
 
 const normalizeHostname = (value: unknown) => String(value || '').trim().toLowerCase().replace(/\.$/, '');
+const isCloudflareForSaasEnabled = (event: H3Event) =>
+  String(useRuntimeConfig(event).cloudflareForSaasEnabled || '').trim().toLowerCase() === 'true';
 
 export const getCloudflareDomainAutomationStatus = async (event: H3Event): Promise<DomainAutomationStatus> => {
   const runtime = useRuntimeConfig(event);
+  const saasEnabled = isCloudflareForSaasEnabled(event);
   const saved = await getSystemConfig<DomainAutomationSettings>(event, settingsId, { zoneId: '', cnameTarget: '' });
   const zoneId = String(saved.zoneId || runtime.cloudflareZoneId || '').trim();
   const cnameTarget = normalizeHostname(saved.cnameTarget || runtime.domainCnameTarget);
@@ -44,7 +50,26 @@ export const getCloudflareDomainAutomationStatus = async (event: H3Event): Promi
   if (!zoneId) missingFields.push('zoneId');
   if (!apiTokenConfigured) missingFields.push('apiToken');
   if (!cnameTarget) missingFields.push('cnameTarget');
-  return { zoneId, cnameTarget, apiTokenConfigured, missingFields, automationConfigured: missingFields.length === 0 };
+  return {
+    mode: saasEnabled ? 'cloudflare-saas' : 'custom-domains-mvp',
+    saasEnabled,
+    saasStatus: saasEnabled ? '已开通' : '待 Cloudflare for SaaS 开通',
+    zoneId,
+    cnameTarget,
+    apiTokenConfigured,
+    missingFields,
+    automationConfigured: saasEnabled && missingFields.length === 0,
+  };
+};
+
+export const requireCloudflareForSaas = async (event: H3Event) => {
+  if (!isCloudflareForSaasEnabled(event)) {
+    throw createError({
+      statusCode: 503,
+      statusMessage: '动态备用域名待 Cloudflare for SaaS 开通',
+    });
+  }
+  return getCloudflareDomainAutomationStatus(event);
 };
 
 export const saveCloudflareDomainAutomationSettings = async (event: H3Event, settings: DomainAutomationSettings) => {

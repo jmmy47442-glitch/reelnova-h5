@@ -67,9 +67,14 @@ if (!missingCloudflare.length) {
   }
 }
 
-const cnameReady = Boolean(String(env.CLOUDFLARE_DOMAIN_CNAME_TARGET || '').trim());
-report('Cloudflare for SaaS CNAME target', cnameReady,
-  env.CLOUDFLARE_DOMAIN_CNAME_TARGET ? 'configured' : 'CLOUDFLARE_DOMAIN_CNAME_TARGET is empty');
-blocked ||= !cnameReady;
+const cloudflareForSaasEnabled = String(env.CLOUDFLARE_FOR_SAAS_ENABLED || '').trim().toLowerCase() === 'true';
+if (cloudflareForSaasEnabled) {
+  const cnameReady = Boolean(String(env.CLOUDFLARE_DOMAIN_CNAME_TARGET || '').trim());
+  report('Cloudflare for SaaS CNAME target', cnameReady,
+    cnameReady ? 'configured' : 'CLOUDFLARE_DOMAIN_CNAME_TARGET is empty');
+  blocked ||= !cnameReady;
+} else {
+  report('MVP domain mode', true, 'ordinary Cloudflare Custom Domains; SaaS automation deferred');
+}
 
 if (blocked) process.exitCode = 1;

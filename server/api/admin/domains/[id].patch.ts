@@ -2,9 +2,11 @@ import { ok } from '~/server/utils/response';
 import { recordAdminAudit } from '~/server/utils/admin-audit';
 import { getDomainConfig, saveDomainConfig } from '~/server/utils/managed-content';
 import { requireSuperAdmin } from '~/server/utils/admin-auth';
+import { requireCloudflareForSaas } from '~/server/utils/cloudflare-domains';
 
 export default defineEventHandler(async (event) => {
   requireSuperAdmin(event);
+  await requireCloudflareForSaas(event);
   const id = getRouterParam(event, 'id') || '';
   const body = await readBody<{ action?: string; redirect?: boolean }>(event);
   const items = await getDomainConfig(event);
