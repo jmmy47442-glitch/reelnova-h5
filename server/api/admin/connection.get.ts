@@ -10,6 +10,7 @@ import { getCloudflareDomainAutomationStatus } from '~/server/utils/cloudflare-d
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig(event);
+  const streamWebhookUrl = String(config.cloudflareStreamWebhookUrl || '').trim().replace(/\/$/, '');
   const missingCloudflareFields = {
     streamApi: [
       !config.cloudflareAccountId ? 'CLOUDFLARE_ACCOUNT_ID' : '',
@@ -24,6 +25,7 @@ export default defineEventHandler(async (event) => {
     ].filter(Boolean),
     streamWebhook: [
       !config.cloudflareStreamWebhookSecret ? 'CLOUDFLARE_STREAM_WEBHOOK_SECRET' : '',
+      !streamWebhookUrl ? 'CLOUDFLARE_STREAM_WEBHOOK_URL' : '',
     ].filter(Boolean),
   };
   let database = false;
@@ -33,6 +35,9 @@ export default defineEventHandler(async (event) => {
   let paypalError: string | null = null;
   let streamApi = false;
   let streamApiError: string | null = null;
+  let streamWebhookRemoteUrl: string | null = null;
+  let streamWebhookError: string | null = null;
+  let streamWebhookRemoteConfigured = false;
   let lastWebhookAt: string | null = null;
   let failedWebhooks: Array<{ eventId: string; eventType: string; errorMessage: string | null; receivedAt: string; retryCount: number; replayable: boolean }> = [];
   const paypalConfiguration = await getPayPalConfigurationStatus(event);
@@ -70,6 +75,27 @@ export default defineEventHandler(async (event) => {
   } else if (missingCloudflareFields.streamApi.length) {
     streamApiError = `缺少 ${missingCloudflareFields.streamApi.join(' / ')}`;
   }
+  if (config.cloudflareAccountId && config.cloudflareApiToken) {
+    try {
+      const response = await $fetch<{ success?: boolean; result?: { notification_url?: string; notificationUrl?: string }; errors?: Array<{ message?: string }> }>(
+        `https://api.cloudflare.com/client/v4/accounts/${config.cloudflareAccountId}/stream/webhook`,
+        { headers: { Authorization: `Bearer ${config.cloudflareApiToken}` }, timeout: 8_000 },
+      );
+      streamWebhookRemoteUrl = String(response.result?.notification_url || response.result?.notificationUrl || '').trim().replace(/\/$/, '') || null;
+      streamWebhookRemoteConfigured = Boolean(streamWebhookRemoteUrl && streamWebhookUrl && streamWebhookRemoteUrl === streamWebhookUrl);
+      if (!streamWebhookRemoteConfigured) streamWebhookError = streamWebhookRemoteUrl
+        ? `Cloudflare Webhook URL 不匹配：${streamWebhookRemoteUrl}`
+        : 'Cloudflare Stream 尚未配置 Webhook';
+      if (!response.success && !streamWebhookError) streamWebhookError = response.errors?.map((item) => item.message).filter(Boolean).join('; ') || 'Cloudflare Stream Webhook 查询失败';
+    } catch (error) {
+      const value = error as { data?: { errors?: Array<{ message?: string }> }; statusMessage?: string };
+      streamWebhookError = value.data?.errors?.map((item) => item.message).filter(Boolean).join('; ')
+        || value.statusMessage || (error instanceof Error ? error.message : 'Cloudflare Stream Webhook 查询失败');
+    }
+  } else if (missingCloudflareFields.streamApi.length) {
+    streamWebhookError = `缺少 ${missingCloudflareFields.streamApi.join(' / ')}`;
+  }
+  const streamWebhookConfigured = Boolean(config.cloudflareStreamWebhookSecret && streamWebhookUrl && streamWebhookRemoteConfigured);
   return ok({
     checkedAt: new Date().toISOString(),
     cloudflare: {
@@ -79,10 +105,14 @@ export default defineEventHandler(async (event) => {
       streamApiConfigured: streamApi,
       streamApiError,
       streamCustomerCodeConfigured: Boolean(config.cloudflareStreamCustomerCode),
-      streamWebhookConfigured: Boolean(config.cloudflareStreamWebhookSecret),
+      streamWebhookConfigured,
+      streamWebhookUrl,
+      streamWebhookRemoteUrl,
+      streamWebhookRemoteConfigured,
+      streamWebhookError,
       uploadConfigured: Boolean(database && config.cloudflareMediaWorkerUrl && config.cloudflareMediaWorkerSecret && streamApi),
       mediaConfigured: Boolean(config.cloudflareMediaWorkerUrl && config.cloudflareMediaWorkerSecret
-        && streamApi && config.cloudflareMediaSigningSecret && config.cloudflareStreamWebhookSecret),
+        && streamApi && config.cloudflareMediaSigningSecret && streamWebhookConfigured),
       mediaWorkerConfigured: Boolean(config.cloudflareMediaWorkerUrl && config.cloudflareMediaWorkerSecret),
       streamConfigured: streamApi,
       mediaSigningConfigured: Boolean(config.cloudflareMediaSigningSecret),

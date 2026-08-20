@@ -6,11 +6,45 @@ const { formatViews } = useFormatters();
 const activeTab = ref('Popular');
 const { data, status, error, refresh } = await useAsyncData('home', () => api.getHome());
 
+let scrollFrame: number | null = null;
+
+const scrollToSection = (target: HTMLElement) => {
+  if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
+
+  const startY = window.scrollY;
+  const targetY = target.getBoundingClientRect().top + startY - 56;
+  const distance = targetY - startY;
+
+  if (Math.abs(distance) < 2 || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    window.scrollTo(0, targetY);
+    scrollFrame = null;
+    return;
+  }
+
+  const startedAt = performance.now();
+  const duration = 180;
+  const tick = (now: number) => {
+    const progress = Math.min((now - startedAt) / duration, 1);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    window.scrollTo(0, startY + distance * eased);
+
+    if (progress < 1) scrollFrame = requestAnimationFrame(tick);
+    else scrollFrame = null;
+  };
+
+  scrollFrame = requestAnimationFrame(tick);
+};
+
 const selectTab = (tab: string) => {
   activeTab.value = tab;
   const map: Record<string, string> = { Popular: 'popular', New: 'new', Rankings: 'popular', Categories: 'romance' };
-  document.getElementById(map[tab])?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const target = document.getElementById(map[tab]);
+  if (target) scrollToSection(target);
 };
+
+onBeforeUnmount(() => {
+  if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
+});
 </script>
 
 <template>

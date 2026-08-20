@@ -110,6 +110,7 @@ CLOUDFLARE_MEDIA_WORKER_URL
 CLOUDFLARE_MEDIA_WORKER_SECRET
 CLOUDFLARE_STREAM_CUSTOMER_CODE
 CLOUDFLARE_STREAM_WEBHOOK_SECRET
+CLOUDFLARE_STREAM_WEBHOOK_URL=https://iseedrama.com/api/media/stream-webhook
 SUPER_ADMIN_EMAIL
 SUPER_ADMIN_PASSWORD
 SUPER_ADMIN_NAME
@@ -145,6 +146,8 @@ https://iseedrama.com/api/media/stream-webhook
 ```
 
 Store the returned webhook signing secret in `CLOUDFLARE_STREAM_WEBHOOK_SECRET`. Copy the Stream customer code to `CLOUDFLARE_STREAM_CUSTOMER_CODE` when available; for new uploads the application can also use the HLS URL returned by Stream after the video becomes ready, so the customer code is a fallback rather than a hard requirement. The Worker keeps original objects private, exposes only a one-hour signed ingest URL to Stream, and creates every Stream video with `requireSignedURLs=true`.
+
+The production connection check also reads `CLOUDFLARE_STREAM_WEBHOOK_URL` (defaulting to the URL above) and compares it with Cloudflare's active Stream Webhook. A configured Secret alone is not considered ready when the remote callback points at another hostname. Run `npm run check:production` before a release; it fails until the PayPal Production credentials and Cloudflare for SaaS CNAME target are present too.
 
 The same `CLOUDFLARE_API_TOKEN` used by the media Worker must include `Account / Stream / Edit`; otherwise R2 uploads can start, but Stream copy, status sync and signed playback token creation fail with a Cloudflare `403 Authentication error`.
 

@@ -19,7 +19,7 @@
 }
 
 * { box-sizing: border-box; }
-html { background: var(--ink); scroll-behavior: smooth; }
+html { background: var(--ink); }
 body { margin: 0; background: var(--ink); color: var(--text); font-family: var(--font-body); font-size: 14px; letter-spacing: 0; }
 button, input, textarea, select { font: inherit; letter-spacing: 0; }
 button, a { -webkit-tap-highlight-color: transparent; }

@@ -27,7 +27,7 @@ export const useAdminApi = () => {
       cloudflare: {
         database: boolean; databaseError: string | null; mode: string; accountConfigured: boolean; databaseConfigured: boolean; apiTokenConfigured: boolean;
         databaseSchema: { healthy: boolean; latestRequiredMigration: number; latestAppliedMigration: number; migrationHistoryValid: boolean; migrationError: string | null; missing: { tables: string[]; columns: string[]; indexes: string[]; triggers: string[] } } | null;
-        streamApiConfigured: boolean; streamApiError: string | null; streamCustomerCodeConfigured: boolean; streamWebhookConfigured: boolean;
+        streamApiConfigured: boolean; streamApiError: string | null; streamCustomerCodeConfigured: boolean; streamWebhookConfigured: boolean; streamWebhookUrl: string; streamWebhookRemoteUrl: string | null; streamWebhookRemoteConfigured: boolean; streamWebhookError: string | null;
         uploadConfigured: boolean; mediaConfigured: boolean; mediaWorkerConfigured: boolean; streamConfigured: boolean; mediaSigningConfigured: boolean; customHostnamesConfigured: boolean;
         customHostnamesMissingFields: Array<'zoneId' | 'apiToken' | 'cnameTarget'>;
         missingFields: { streamApi: string[]; mediaWorker: string[]; playback: string[]; streamWebhook: string[] };
