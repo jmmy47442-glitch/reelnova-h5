@@ -19,6 +19,7 @@ const trackingToken = ref('');
 const sessionId = ref('');
 const expiresAt = ref(0);
 const progress = ref(0);
+const bufferedSegments = ref<Array<{ left: number; width: number }>>([]);
 const currentTime = ref(0);
 const durationSeconds = ref(0);
 const playbackError = ref('');
@@ -51,6 +52,23 @@ const snapshotPlayback = () => {
   durationSeconds.value = Number.isFinite(video.value.duration) ? Math.max(0, video.value.duration) : durationSeconds.value;
   progress.value = durationSeconds.value ? Math.min(100, currentTime.value / durationSeconds.value * 100) : 0;
 };
+const updateBuffered = () => {
+  const media = video.value;
+  const mediaDuration = media && Number.isFinite(media.duration) && media.duration > 0
+    ? media.duration
+    : durationSeconds.value;
+  if (!media || !mediaDuration) {
+    bufferedSegments.value = [];
+    return;
+  }
+  const segments: Array<{ left: number; width: number }> = [];
+  for (let index = 0; index < media.buffered.length; index += 1) {
+    const start = Math.max(0, Math.min(mediaDuration, media.buffered.start(index)));
+    const end = Math.max(start, Math.min(mediaDuration, media.buffered.end(index)));
+    if (end > start) segments.push({ left: start / mediaDuration * 100, width: (end - start) / mediaDuration * 100 });
+  }
+  bufferedSegments.value = segments;
+};
 const record = (eventType: 'start' | 'heartbeat' | 'complete', keepalive = false) => {
   if (!series.value || !currentEpisode.value || !trackingToken.value) return;
   snapshotPlayback();
@@ -71,6 +89,7 @@ const scheduleRenewal = () => {
 };
 const loadSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
   if (!video.value) return;
+  bufferedSegments.value = [];
   hls?.destroy();
   hls = undefined;
   const restore = () => {
@@ -146,9 +165,12 @@ const onTimeUpdate = () => {
   currentTime.value = video.value.currentTime;
   durationSeconds.value = Number.isFinite(video.value.duration) ? video.value.duration : durationSeconds.value;
   progress.value = durationSeconds.value ? Math.min(100, currentTime.value / durationSeconds.value * 100) : 0;
+  updateBuffered();
   if (isPlaying.value && Date.now() - lastHeartbeat.value > 15_000) { lastHeartbeat.value = Date.now(); void record('heartbeat'); }
 };
-const onLoadedMetadata = () => { snapshotPlayback(); };
+const onLoadedMetadata = () => { snapshotPlayback(); updateBuffered(); };
+const onProgress = () => { updateBuffered(); };
+const onEmptied = () => { bufferedSegments.value = []; };
 const onEnded = async () => { isPlaying.value = false; snapshotPlayback(); progress.value = 100; await record('complete'); };
 const seek = (event: Event) => {
   const value = Number((event.target as HTMLInputElement).value);
@@ -190,13 +212,13 @@ onBeforeUnmount(() => {
 <template>
   <main v-if="series && currentEpisode" class="watch-page" @click="showControls = !showControls">
     <div class="watch-visual" :style="{ '--watch-image': `url(${series.backdropUrl})` }" />
-    <video v-if="canPlay" ref="video" class="watch-video" :poster="series.backdropUrl" playsinline preload="metadata" @click.stop @play="onPlay" @pause="onPause" @timeupdate="onTimeUpdate" @loadedmetadata="onLoadedMetadata" @ended="onEnded" @error="playbackError = 'The video stream is unavailable. Please retry.'; isPlaying = false" />
+    <video v-if="canPlay" ref="video" class="watch-video" :poster="series.backdropUrl" playsinline preload="metadata" @click.stop @play="onPlay" @pause="onPause" @timeupdate="onTimeUpdate" @loadedmetadata="onLoadedMetadata" @durationchange="onLoadedMetadata" @progress="onProgress" @emptied="onEmptied" @ended="onEnded" @error="playbackError = 'The video stream is unavailable. Please retry.'; isPlaying = false" />
     <div class="watch-vignette" />
     <Transition name="fade"><div v-if="showControls" class="watch-top" @click.stop><button type="button" aria-label="Go back" @click="goBack"><ArrowLeft :size="22" /></button><div><strong>{{ series.title }}</strong><span>Episode {{ episodeNo }} · {{ currentEpisode.title }}</span></div><button type="button" aria-label="Share" @click="share"><Share2 :size="20" /></button><button type="button" aria-label="More"><MoreHorizontal :size="21" /></button></div></Transition>
     <button v-if="canPlay && !playbackError" class="watch-center" type="button" :aria-label="isPlaying ? 'Pause' : 'Play'" @click.stop="togglePlayback"><Pause v-if="isPlaying" :size="32" fill="currentColor" /><Play v-else :size="34" fill="currentColor" /></button>
     <section v-if="!canPlay" class="watch-lock" @click.stop><span><LockKeyhole :size="28" /></span><p>Episode {{ episodeNo }} is locked</p><h1>Keep the story going</h1><button class="button button--primary button--wide" type="button" @click="showUnlock = true">Unlock full series</button><button class="watch-lock__secondary" type="button" @click="returnToSeries">Choose another episode</button></section>
     <section v-if="playbackError" class="watch-lock" @click.stop><span><RotateCcw :size="27" /></span><h1>Connection interrupted</h1><p>{{ playbackError }}</p><button class="button button--primary" type="button" @click="retry">Retry playback</button></section>
-    <Transition name="fade"><div v-if="showControls && canPlay" class="watch-bottom" @click.stop><input class="watch-progress-input" type="range" min="0" max="100" step="0.1" :value="progress" aria-label="Seek" @input="seek" @change="persistSeek" /><div class="watch-time"><span>{{ formatTime(currentTime) }}</span><span>{{ durationLabel }}</span></div><div class="watch-controls"><button type="button" :aria-label="muted ? 'Unmute' : 'Mute'" @click="toggleMute"><VolumeX v-if="muted" :size="21" /><Volume2 v-else :size="21" /></button><button type="button" aria-label="Captions"><Captions :size="22" /><span>CC</span></button><button type="button" aria-label="Playback speed" @click="cycleSpeed"><Gauge :size="22" /><span>{{ speed }}×</span></button><button type="button" aria-label="Fullscreen" @click="fullscreen"><Maximize2 :size="21" /></button><button type="button" aria-label="Next episode" @click="nextEpisode"><SkipForward :size="22" /><span>Next</span></button></div><button v-if="episodeNo < series.episodeCount" class="up-next" type="button" @click="nextEpisode"><span>UP NEXT</span><strong>Episode {{ episodeNo + 1 }}</strong><ChevronRight :size="20" /></button></div></Transition>
+    <Transition name="fade"><div v-if="showControls && canPlay" class="watch-bottom" @click.stop><div class="watch-progress" :style="{ '--played-progress': `${progress}%` }"><div class="watch-progress__track" aria-hidden="true"><span v-for="(segment, index) in bufferedSegments" :key="index" class="watch-progress__buffered" :style="{ left: `${segment.left}%`, width: `${segment.width}%` }" /><i class="watch-progress__played" /></div><input class="watch-progress-input" type="range" min="0" max="100" step="0.1" :value="progress" :aria-valuetext="`${formatTime(currentTime)} of ${durationLabel}`" aria-label="Seek" @input="seek" @change="persistSeek" /></div><div class="watch-time"><span>{{ formatTime(currentTime) }}</span><span>{{ durationLabel }}</span></div><div class="watch-controls"><button type="button" :aria-label="muted ? 'Unmute' : 'Mute'" @click="toggleMute"><VolumeX v-if="muted" :size="21" /><Volume2 v-else :size="21" /></button><button type="button" aria-label="Captions"><Captions :size="22" /><span>CC</span></button><button type="button" aria-label="Playback speed" @click="cycleSpeed"><Gauge :size="22" /><span>{{ speed }}×</span></button><button type="button" aria-label="Fullscreen" @click="fullscreen"><Maximize2 :size="21" /></button><button type="button" aria-label="Next episode" @click="nextEpisode"><SkipForward :size="22" /><span>Next</span></button></div><button v-if="episodeNo < series.episodeCount" class="up-next" type="button" @click="nextEpisode"><span>UP NEXT</span><strong>Episode {{ episodeNo + 1 }}</strong><ChevronRight :size="20" /></button></div></Transition>
     <UnlockSheet :series="series" :open="showUnlock" @close="showUnlock = false" @unlocked="locallyUnlocked = true; showUnlock = false" />
   </main>
   <main v-else class="watch-page watch-page--loading"><div class="skeleton skeleton--poster" /><span>{{ status === 'pending' ? 'Preparing episode…' : 'Episode unavailable' }}</span></main>

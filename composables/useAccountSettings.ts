@@ -7,17 +7,16 @@ const defaults = (): AccountSettings => ({
 
 export const useAccountSettings = () => {
   const baseURL = useRuntimeConfig().public.apiBase;
+  const requestFetch = useRequestFetch();
   const settings = useState<AccountSettings>('account-settings', defaults);
   const settingsChecked = useState('account-settings-checked', () => false);
   const request = <T>(path: string, options: Parameters<typeof $fetch>[1] = {}) =>
-    $fetch<ApiEnvelope<T>>(path, { baseURL, credentials: 'include', ...options }).then((response) => response.data);
+    requestFetch<ApiEnvelope<T>>(path, { baseURL, credentials: 'include', ...options }).then((response) => response.data);
 
   const fetchSettings = async (force = false) => {
     if (settingsChecked.value && !force) return settings.value;
     try {
-      settings.value = await request<AccountSettings>('/me/settings', {
-        headers: import.meta.server ? useRequestHeaders(['cookie']) : undefined,
-      });
+      settings.value = await request<AccountSettings>('/me/settings');
       if (import.meta.client) document.documentElement.lang = settings.value.language;
     } finally {
       settingsChecked.value = true;

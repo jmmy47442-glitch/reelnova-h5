@@ -9,6 +9,7 @@ import {
 
 export const useUserAuth = () => {
   const baseURL = useRuntimeConfig().public.apiBase;
+  const requestFetch = useRequestFetch();
   const accountSettings = useAccountSettings();
   const session = useState<UserSession | null>('user-session', () => null);
   const sessionChecked = useState('user-session-checked', () => false);
@@ -16,19 +17,26 @@ export const useUserAuth = () => {
 
   const fetchSession = async (force = false) => {
     if (sessionChecked.value && !force) return session.value;
-    try {
-      const response = await $fetch<ApiEnvelope<UserSession>>('/auth/session', {
-        baseURL,
-        credentials: 'include',
-        headers: import.meta.server ? useRequestHeaders(['cookie']) : undefined,
-      });
-      session.value = response.data;
-    } catch {
-      session.value = null;
-    } finally {
-      sessionChecked.value = true;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const response = await requestFetch<ApiEnvelope<UserSession>>('/auth/session', { baseURL, credentials: 'include' });
+        session.value = response.data;
+        sessionChecked.value = true;
+        return session.value;
+      } catch (error: unknown) {
+        const statusCode = (error as { statusCode?: number; response?: { status?: number } }).statusCode
+          || (error as { response?: { status?: number } }).response?.status;
+        if (statusCode === 401 || statusCode === 403) {
+          session.value = null;
+          sessionChecked.value = true;
+          return session.value;
+        }
+        if (attempt === 0) continue;
+        sessionChecked.value = false;
+        throw error;
+      }
     }
-    return session.value;
+    return null;
   };
 
   const login = async (input: UserLoginInput) => {

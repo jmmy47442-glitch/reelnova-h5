@@ -3,9 +3,10 @@ import type { ApiEnvelope, HomeResponse, LibraryResponse, Order, PlaybackEventIn
 export const useContentApi = () => {
   const config = useRuntimeConfig();
   const baseURL = config.public.apiBase;
+  const requestFetch = useRequestFetch();
 
   const request = <T>(path: string, options: Parameters<typeof $fetch>[1] = {}) =>
-    $fetch<ApiEnvelope<T>>(path, { baseURL, credentials: 'include', ...options }).then((response) => response.data);
+    requestFetch<ApiEnvelope<T>>(path, { baseURL, credentials: 'include', ...options }).then((response) => response.data);
 
   return {
     getHome: () => request<HomeResponse>('/home'),
