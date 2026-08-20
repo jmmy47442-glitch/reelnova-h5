@@ -185,3 +185,36 @@ test('private ingest supports metadata probes and byte ranges', async () => {
   assert.equal(invalid.status, 416);
   assert.equal(invalid.headers.get('content-range'), 'bytes */10');
 });
+
+test('signed server requests can mint short-lived Stream tokens', async () => {
+  const originalFetch = globalThis.fetch;
+  let tokenRequest;
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.hostname !== 'api.cloudflare.com') return originalFetch(input, options);
+    tokenRequest = { url, body: JSON.parse(String(options.body)) };
+    return Response.json({ success: true, result: { token: 'signed-stream-token' } });
+  };
+
+  try {
+    const env = {
+      MEDIA_BUCKET: createBucket(),
+      MEDIA_WORKER_SECRET: secret,
+      CLOUDFLARE_ACCOUNT_ID: 'account-id',
+      CLOUDFLARE_API_TOKEN: 'api-token',
+      PUBLIC_BASE_URL: 'https://media.example.test',
+      APP_ORIGINS: '',
+    };
+    const uid = '91b12e3e2084c38e41cce9f9a480e552';
+    const response = await worker.fetch(await signedRequest('/stream/token', { uid, exp: Math.floor(Date.now() / 1000) + 600 }), env);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { token: 'signed-stream-token' });
+    assert.equal(tokenRequest.url.pathname, `/client/v4/accounts/account-id/stream/${uid}/token`);
+    assert.ok(tokenRequest.body.exp > Math.floor(Date.now() / 1000));
+
+    const invalid = await worker.fetch(await signedRequest('/stream/token', { uid: '../other-video' }), env);
+    assert.equal(invalid.status, 400);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

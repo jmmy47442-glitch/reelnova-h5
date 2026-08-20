@@ -345,6 +345,18 @@ export default {
         return json(await createOrResumeUpload(env, url.origin, body));
       }
 
+      if (request.method === 'POST' && url.pathname === '/stream/token') {
+        const rawBody = await request.text();
+        if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
+        const body = JSON.parse(rawBody);
+        if (!/^[0-9a-f]{32}$/i.test(String(body.uid || ''))) return json({ error: 'Invalid Stream UID' }, 400);
+        const now = Math.floor(Date.now() / 1000);
+        const exp = Math.min(now + 15 * 60, Math.max(now + 60, Math.floor(Number(body.exp) || now + 10 * 60)));
+        return json(await streamApi(env, `/${encodeURIComponent(body.uid)}/token`, {
+          method: 'POST', body: JSON.stringify({ exp }),
+        }));
+      }
+
       const partMatch = url.pathname.match(/^\/uploads\/([^/]+)\/parts\/(\d+)$/);
       if (partMatch && request.method === 'PUT') {
         const token = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');

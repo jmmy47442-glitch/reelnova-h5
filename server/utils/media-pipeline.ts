@@ -184,9 +184,21 @@ export const listAdminEpisodes = async (event: H3Event, seriesId: string, sync =
 };
 
 export const createStreamPlaybackToken = async (event: H3Event, uid: string) => {
-  const token = await streamApiRequest<{ token: string }>(event, `/${encodeURIComponent(uid)}/token`, {
-    method: 'POST', body: JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 10 * 60 }),
-  });
+  const exp = Math.floor(Date.now() / 1000) + 10 * 60;
+  const config = useRuntimeConfig(event);
+  const hasDirectStreamAccess = Boolean(config.cloudflareAccountId && config.cloudflareApiToken);
+  if (hasDirectStreamAccess) {
+    try {
+      const token = await streamApiRequest<{ token: string }>(event, `/${encodeURIComponent(uid)}/token`, {
+        method: 'POST', body: JSON.stringify({ exp }),
+      });
+      return token.token;
+    } catch {
+      // Deployed applications can delegate token minting to the media Worker,
+      // which already owns the Stream API credential used for ingestion.
+    }
+  }
+  const token = await mediaWorkerRequest<{ token: string }>(event, '/stream/token', { uid, exp });
   return token.token;
 };
 

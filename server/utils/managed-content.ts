@@ -2,7 +2,7 @@ import type { H3Event } from 'h3';
 import { seriesList } from '~/data/mock';
 import type { AdminSeries, DomainConfig, PublishStatus, TaxonomyItem } from '~/types/admin';
 import type { Series } from '~/types/content';
-import { d1First, d1Run, getRequestCountry, hasD1Connection } from './cloudflare-d1';
+import { d1First, d1Run, hasD1Connection } from './cloudflare-d1';
 
 type ManagedSeries = Series & {
   publishStatus: PublishStatus;
@@ -170,15 +170,11 @@ export const softDeleteManagedSeriesRecord = async (event: H3Event, id: string) 
   return { id, title: removed!.title, retainedOrderCount: 0 };
 };
 
-const regionCountry: Record<string, string> = { 'United States': 'US', Canada: 'CA' };
-
 export const getPublicSeries = async (event: H3Event) => {
-  const country = getRequestCountry(event)?.toUpperCase() || '';
   const managed = await getManagedSeries(event);
   const published = managed.filter((item) => item.publishStatus === '已上架');
-  const available = published.filter((item) => !country || item.targetRegion === 'Global' || regionCountry[item.targetRegion] === country);
   const mockFallback = String(useRuntimeConfig(event).publicMockContentFallback).toLowerCase() === 'true';
-  const source = available.length ? available : mockFallback ? initialSeries() : published;
+  const source = published.length ? published : mockFallback ? initialSeries() : [];
   return source
   .map(({ publishStatus: _publishStatus, publishAt: _publishAt, transcodeProgress: _transcodeProgress, targetRegion: _targetRegion, ...series }) => series);
 };
