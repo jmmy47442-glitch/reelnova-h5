@@ -218,3 +218,55 @@ test('signed server requests can mint short-lived Stream tokens', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test('application-validated playback grants can mint Stream tokens without the upload secret', async () => {
+  const originalFetch = globalThis.fetch;
+  let validationRequests = 0;
+  let tokenRequests = 0;
+  const uid = '91b12e3e2084c38e41cce9f9a480e552';
+  const exp = Math.floor(Date.now() / 1000) + 600;
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input));
+    if (url.hostname === 'app.example.test' && url.pathname === '/api/internal/media/playback-grant') {
+      validationRequests += 1;
+      const body = JSON.parse(String(options.body));
+      if (body.grant !== 'valid-grant') return Response.json({ message: 'Unauthorized' }, { status: 401 });
+      return Response.json({ data: { authorized: true, uid: body.uid, expires: body.exp } });
+    }
+    if (url.hostname === 'api.cloudflare.com') {
+      tokenRequests += 1;
+      return Response.json({ success: true, result: { token: 'grant-stream-token' } });
+    }
+    return originalFetch(input, options);
+  };
+
+  try {
+    const env = {
+      MEDIA_BUCKET: createBucket(),
+      MEDIA_WORKER_SECRET: secret,
+      CLOUDFLARE_ACCOUNT_ID: 'account-id',
+      CLOUDFLARE_API_TOKEN: 'api-token',
+      APP_BASE_URL: 'https://app.example.test',
+      PUBLIC_BASE_URL: 'https://media.example.test',
+      APP_ORIGINS: '',
+    };
+    const valid = new Request('https://media.example.test/stream/token', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ uid, exp, grant: 'valid-grant' }),
+    });
+    const validResponse = await worker.fetch(valid, env);
+    assert.equal(validResponse.status, 200);
+    assert.deepEqual(await validResponse.json(), { token: 'grant-stream-token' });
+
+    const forged = new Request('https://media.example.test/stream/token', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ uid, exp, grant: 'forged-grant' }),
+    });
+    const forgedResponse = await worker.fetch(forged, env);
+    assert.equal(forgedResponse.status, 401);
+    assert.equal(validationRequests, 2);
+    assert.equal(tokenRequests, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

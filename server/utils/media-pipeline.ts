@@ -1,6 +1,7 @@
 import type { H3Event } from 'h3';
 import type { AdminEpisode } from '~/types/admin';
 import { d1All, d1First, d1Run, hasD1Connection } from './cloudflare-d1';
+import { createStreamTokenGrant } from './playback-authorization';
 
 interface EpisodeMediaRow {
   id: string;
@@ -198,7 +199,21 @@ export const createStreamPlaybackToken = async (event: H3Event, uid: string) => 
       // which already owns the Stream API credential used for ingestion.
     }
   }
-  const token = await mediaWorkerRequest<{ token: string }>(event, '/stream/token', { uid, exp });
+  if (config.cloudflareMediaWorkerUrl && config.cloudflareMediaWorkerSecret) {
+    const token = await mediaWorkerRequest<{ token: string }>(event, '/stream/token', { uid, exp });
+    return token.token;
+  }
+  const workerUrl = String(config.cloudflareMediaWorkerUrl || 'https://media.iseedrama.com').replace(/\/$/, '');
+  const grant = await createStreamTokenGrant(event, uid, exp);
+  const response = await fetch(`${workerUrl}/stream/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ uid, exp, grant }),
+  });
+  const token = await response.json().catch(() => ({})) as { token?: string; error?: string };
+  if (!response.ok || !token.token) {
+    throw createError({ statusCode: 502, statusMessage: token.error || `Stream token broker failed (${response.status})` });
+  }
   return token.token;
 };
 

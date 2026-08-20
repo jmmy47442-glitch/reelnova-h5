@@ -84,6 +84,20 @@ const streamApi = async (env, path, options = {}) => {
   return payload.result;
 };
 
+const verifyPlaybackGrant = async (env, body) => {
+  if (!env.APP_BASE_URL || !body.grant) return false;
+  const response = await fetch(`${String(env.APP_BASE_URL).replace(/\/$/, '')}/api/internal/media/playback-grant`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ uid: body.uid, exp: body.exp, grant: body.grant }),
+  });
+  if (!response.ok) return false;
+  const payload = await response.json().catch(() => ({}));
+  return payload?.data?.authorized === true
+    && payload.data.uid === body.uid
+    && payload.data.expires === Math.floor(Number(body.exp));
+};
+
 const parseByteRange = (value, size) => {
   if (!value) return null;
   const match = /^bytes=(\d*)-(\d*)$/.exec(value.trim());
@@ -347,9 +361,12 @@ export default {
 
       if (request.method === 'POST' && url.pathname === '/stream/token') {
         const rawBody = await request.text();
-        if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
         const body = JSON.parse(rawBody);
         if (!/^[0-9a-f]{32}$/i.test(String(body.uid || ''))) return json({ error: 'Invalid Stream UID' }, 400);
+        const serverAuthorized = await verifyServerRequest(request, env, rawBody);
+        if (!serverAuthorized && !await verifyPlaybackGrant(env, body)) {
+          return json({ error: 'Invalid Stream playback authorization' }, 401);
+        }
         const now = Math.floor(Date.now() / 1000);
         const exp = Math.min(now + 15 * 60, Math.max(now + 60, Math.floor(Number(body.exp) || now + 10 * 60)));
         return json(await streamApi(env, `/${encodeURIComponent(body.uid)}/token`, {
