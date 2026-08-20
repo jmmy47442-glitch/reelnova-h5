@@ -3,14 +3,9 @@ import type { PlaybackEventInput } from '~/types/content';
 import { d1Run, getRequestCountry } from './cloudflare-d1';
 import { getUserSession } from './user-auth';
 import { assertUserEnabled, upsertUserProfile } from './user-profile';
+import { getPlaybackAuthorizationSecret, signPlaybackAuthorization } from './playback-authorization';
 
 const eventTypes = ['start', 'heartbeat', 'complete'] as const;
-
-const sign = async (value: string, secret: string) => {
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const signed = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(value)));
-  return Array.from(signed, (byte) => byte.toString(16).padStart(2, '0')).join('');
-};
 
 const constantTimeEqual = (left: string, right: string) => (
   left.length === right.length && Array.from(left).every((character, index) => character === right[index])
@@ -39,12 +34,11 @@ export const persistAuthorizedPlaybackEvent = async (event: H3Event, body: Playb
     throw createError({ statusCode: 401, statusMessage: 'Playback authorization expired' });
   }
 
-  const secret = String(useRuntimeConfig(event).cloudflareMediaSigningSecret || '');
-  if (!secret) throw createError({ statusCode: 503, statusMessage: 'Playback signing is not configured' });
+  const secret = getPlaybackAuthorizationSecret(event);
   const session = await getUserSession(event);
   if (!session) throw createError({ statusCode: 401, statusMessage: 'Login required' });
 
-  const expectedSignature = await sign(`track:${session.userId}:${body.sessionId}:${body.seriesId}:${body.episodeNo}:${expires}`, secret);
+  const expectedSignature = await signPlaybackAuthorization(`track:${session.userId}:${body.sessionId}:${body.seriesId}:${body.episodeNo}:${expires}`, secret);
   if (!suppliedSignature || !constantTimeEqual(suppliedSignature, expectedSignature)) {
     throw createError({ statusCode: 401, statusMessage: 'Invalid playback authorization' });
   }

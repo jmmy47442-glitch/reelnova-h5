@@ -4,12 +4,7 @@ import { assertUserEnabled, upsertUserProfile } from '~/server/utils/user-profil
 import { getUserSession } from '~/server/utils/user-auth';
 import { getPublicSeries } from '~/server/utils/managed-content';
 import { createStreamManifestUrl, createStreamPlaybackToken } from '~/server/utils/media-pipeline';
-
-const sign = async (value: string, secret: string) => {
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const bytes = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(value)));
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-};
+import { getPlaybackAuthorizationSecret, signPlaybackAuthorization } from '~/server/utils/playback-authorization';
 
 export default defineEventHandler(async (event) => {
   const requestUrl = getRequestURL(event);
@@ -50,15 +45,20 @@ export default defineEventHandler(async (event) => {
   [series.id, episode.episodeNo]).catch(() => null);
   const customerCode = String(config.cloudflareStreamCustomerCode || '');
   const mediaBaseUrl = String(config.cloudflareMediaBaseUrl || '').replace(/\/$/, '');
-  const signingSecret = String(config.cloudflareMediaSigningSecret || '');
-  if (!signingSecret || ((!streamAsset?.stream_uid || (!streamAsset.hls_url && !customerCode)) && !mediaBaseUrl)) throw createError({ statusCode: 503, statusMessage: 'Cloudflare media delivery is not configured' });
+  const hasStreamSource = Boolean(streamAsset?.stream_uid && (streamAsset.hls_url || customerCode));
+  if (!hasStreamSource && (!mediaBaseUrl || !config.cloudflareMediaSigningSecret)) {
+    throw createError({ statusCode: 503, statusMessage: 'Cloudflare media delivery is not configured' });
+  }
+  const trackingSecret = getPlaybackAuthorizationSecret(event);
   const expires = Math.floor(Date.now() / 1000) + 10 * 60;
   const path = `/hls/${series.id}/${episode.episodeNo}/master.m3u8`;
-  const signature = await sign(`${path}:${userId}:${expires}`, signingSecret);
-  const trackingSignature = await sign(`track:${userId}:${sessionId}:${series.id}:${episode.episodeNo}:${expires}`, signingSecret);
-  const streamToken = streamAsset?.stream_uid ? await createStreamPlaybackToken(event, streamAsset.stream_uid) : '';
+  const trackingSignature = await signPlaybackAuthorization(`track:${userId}:${sessionId}:${series.id}:${episode.episodeNo}:${expires}`, trackingSecret);
+  const streamToken = hasStreamSource && streamAsset?.stream_uid ? await createStreamPlaybackToken(event, streamAsset.stream_uid) : '';
+  const legacySignature = !streamToken
+    ? await signPlaybackAuthorization(`${path}:${userId}:${expires}`, String(config.cloudflareMediaSigningSecret))
+    : '';
   const signedUrl = streamAsset?.stream_uid && streamToken
     ? createStreamManifestUrl(streamAsset.stream_uid, streamToken, streamAsset.hls_url, customerCode)
-    : `${mediaBaseUrl}${path}?user=${encodeURIComponent(userId)}&expires=${expires}&signature=${signature}`;
+    : `${mediaBaseUrl}${path}?user=${encodeURIComponent(userId)}&expires=${expires}&signature=${legacySignature}`;
   return ok({ authorized: true, signedUrl, expiresAt: new Date(expires * 1000).toISOString(), trackingToken: `${expires}.${trackingSignature}`, resumePositionSeconds: Math.max(0, Number(lastProgress?.position_seconds || 0)), resumeDurationSeconds: Math.max(0, Number(lastProgress?.duration_seconds || 0)) });
 });
