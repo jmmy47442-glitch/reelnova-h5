@@ -1,4 +1,4 @@
-import type { H3Event } from 'h3';
+import { getRequestURL, type H3Event } from 'h3';
 import type { AdminRole, AssignableAdminRole } from '../../shared/admin-rbac';
 import { isAdminRole } from '../../shared/admin-rbac';
 import { adminPasswordIterations, base64UrlToBytes, bytesToBase64Url } from '../../shared/admin-password-proof';
@@ -249,7 +249,9 @@ export const setAdminSession = async (event: H3Event, account: AdminAccount, rem
   setCookie(event, sessionCookie, `${encoded}.${signature}`, {
     httpOnly: true,
     sameSite: 'strict',
-    secure: process.env.NODE_ENV === 'production',
+    // Respect the actual request protocol so HTTP previews do not receive a
+    // Secure cookie that the browser will silently reject.
+    secure: getRequestURL(event).protocol === 'https:',
     maxAge,
     path: '/',
   });

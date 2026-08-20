@@ -1,4 +1,4 @@
-import type { H3Event } from 'h3';
+import { getRequestURL, type H3Event } from 'h3';
 import type { UserSession } from '~/types/user';
 import {
   userBase64UrlToBytes,
@@ -200,7 +200,9 @@ export const setUserSession = async (event: H3Event, account: UserAccount, remem
   const cookieOptions = {
     httpOnly: true,
     sameSite: 'strict' as const,
-    secure: process.env.NODE_ENV === 'production',
+    // Respect the actual request protocol so HTTP previews do not receive a
+    // Secure cookie that the browser will silently reject.
+    secure: getRequestURL(event).protocol === 'https:',
     maxAge,
     path: '/',
   };
