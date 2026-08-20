@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ArrowLeft, ChevronDown, Clock3, Eye, LockKeyhole, Play, Share2, Star } from 'lucide-vue-next';
+import { useSafeBack } from '~/composables/useSafeBack';
 
 definePageMeta({ hideBottomNav: true });
 const route = useRoute();
 const api = useContentApi();
+const goBack = useSafeBack(() => '/');
 const { formatPrice, formatViews } = useFormatters();
 const showFullDescription = ref(false);
 const showUnlock = ref(false);
@@ -45,7 +47,7 @@ const unlockComplete = () => {
     <EmptyState v-else-if="error || !series" title="Series not available" message="This title may have moved or is not available in your region." action="Go home" @action="navigateTo('/')" />
     <template v-else>
       <section class="detail-hero" :style="{ '--detail-backdrop': `url(${series.backdropUrl})` }">
-        <div class="detail-toolbar"><button class="icon-button icon-button--glass" type="button" aria-label="Go back" @click="$router.back()"><ArrowLeft :size="21" /></button><button class="icon-button icon-button--glass" type="button" aria-label="Share"><Share2 :size="20" /></button></div>
+        <div class="detail-toolbar"><button class="icon-button icon-button--glass" type="button" aria-label="Go back" @click="goBack"><ArrowLeft :size="21" /></button><button class="icon-button icon-button--glass" type="button" aria-label="Share"><Share2 :size="20" /></button></div>
         <div class="detail-hero__content content-width">
           <span class="content-badge" :class="`badge--${series.badge.toLowerCase()}`">{{ series.badge }}</span>
           <h1>{{ series.title }}</h1>
