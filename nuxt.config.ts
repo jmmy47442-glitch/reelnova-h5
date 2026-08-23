@@ -39,7 +39,9 @@ export default defineNuxtConfig({
     cloudflareStreamCustomerCode: process.env.CLOUDFLARE_STREAM_CUSTOMER_CODE || '',
     cloudflareStreamWebhookSecret: process.env.CLOUDFLARE_STREAM_WEBHOOK_SECRET || '',
     cloudflareStreamWebhookUrl: process.env.CLOUDFLARE_STREAM_WEBHOOK_URL || 'https://iseedrama.com/api/media/stream-webhook',
-    publicMockContentFallback: process.env.REELNOVA_PUBLIC_MOCK_FALLBACK || 'true',
+    // Prototype content is opt-in. Production is additionally forced off in
+    // getPublicSeries so a stale deployment variable cannot expose mock data.
+    publicMockContentFallback: process.env.REELNOVA_PUBLIC_MOCK_FALLBACK || 'false',
     cloudflareForSaasEnabled: process.env.CLOUDFLARE_FOR_SAAS_ENABLED || 'false',
     domainCnameTarget: process.env.CLOUDFLARE_DOMAIN_CNAME_TARGET || '',
     paypalClientId: process.env.PAYPAL_CLIENT_ID || '',

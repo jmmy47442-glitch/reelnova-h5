@@ -342,6 +342,16 @@ export const applyVerifiedCapture = async (event: H3Event, paypalOrderId: string
   const payerEmail = capture.payer?.email_address || capture.payment_source?.paypal?.email_address || null;
   const payerCountry = capture.payer?.address?.country_code || capture.payment_source?.paypal?.address?.country_code || null;
   if (['refunding', 'refunded'].includes(order.status)) return order;
+  const payment = capture.purchase_units?.[0]?.payments?.captures?.[0];
+  if (!payment || payment.status !== 'COMPLETED') throw createError({ statusCode: 409, statusMessage: 'PayPal capture is not completed' });
+  const paidCents = Math.round(Number(payment.amount.value) * 100);
+  if (payment.amount.currency_code !== order.currency || paidCents !== Number(order.amount_cents)) {
+    if (order.status !== 'paid') {
+      const now = new Date().toISOString();
+      await d1Run(event, "UPDATE orders SET status = 'risk_review', capture_id = ?, callback_at = ?, updated_at = ?, note = ? WHERE order_no = ?", [payment.id, now, now, `Capture mismatch: ${payment.amount.value} ${payment.amount.currency_code}`, order.order_no]);
+    }
+    throw createError({ statusCode: 409, statusMessage: 'Capture amount or currency mismatch' });
+  }
   if (order.status === 'paid') {
     const now = new Date().toISOString();
     await d1Run(event, `INSERT INTO entitlements (id, user_id, series_id, order_no, status, granted_at)
@@ -355,14 +365,7 @@ export const applyVerifiedCapture = async (event: H3Event, paypalOrderId: string
     statusMessage: 'Local order is no longer payable',
     data: { code: 'ORDER_NOT_PAYABLE', orderNo: order.order_no, status: order.status },
   });
-  const payment = capture.purchase_units?.[0]?.payments?.captures?.[0];
-  if (!payment || payment.status !== 'COMPLETED') throw createError({ statusCode: 409, statusMessage: 'PayPal capture is not completed' });
-  const paidCents = Math.round(Number(payment.amount.value) * 100);
   const now = new Date().toISOString();
-  if (payment.amount.currency_code !== order.currency || paidCents !== Number(order.amount_cents)) {
-    await d1Run(event, "UPDATE orders SET status = 'risk_review', capture_id = ?, callback_at = ?, updated_at = ?, note = ? WHERE order_no = ?", [payment.id, now, now, `Capture mismatch: ${payment.amount.value} ${payment.amount.currency_code}`, order.order_no]);
-    throw createError({ statusCode: 409, statusMessage: 'Capture amount or currency mismatch' });
-  }
   const feeCents = Math.round(Number(payment.seller_receivable_breakdown?.paypal_fee?.value || 0) * 100);
   // Grant first so a concurrent checkout cannot slip into the gap between the
   // open order becoming paid and its entitlement being visible.

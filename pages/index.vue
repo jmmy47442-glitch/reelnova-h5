@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { ChevronRight, Flame, Play } from 'lucide-vue-next';
+import { useAnalytics } from '~/composables/useAnalytics';
 
 const api = useContentApi();
 const { formatViews } = useFormatters();
 const activeTab = ref('Popular');
 const { data, status, error, refresh } = await useAsyncData('home', () => api.getHome());
+const { track } = useAnalytics();
+const featuredTracked = ref(false);
+let sectionObserver: IntersectionObserver | undefined;
 
 let scrollFrame: number | null = null;
 
@@ -37,6 +41,7 @@ const scrollToSection = (target: HTMLElement) => {
 
 const selectTab = (tab: string) => {
   activeTab.value = tab;
+  void track('filter', { properties: { source: 'home_tab', value: tab } });
   const map: Record<string, string> = { Popular: 'popular', New: 'new', Rankings: 'popular', Categories: 'romance' };
   const target = document.getElementById(map[tab]);
   if (target) scrollToSection(target);
@@ -45,6 +50,26 @@ const selectTab = (tab: string) => {
 onBeforeUnmount(() => {
   if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
 });
+
+watch(data, (value) => {
+  if (value && !featuredTracked.value) {
+    featuredTracked.value = true;
+    void track('home_section_exposure', { properties: { sectionId: 'featured' } });
+  }
+}, { immediate: true });
+
+onMounted(() => {
+  if (typeof IntersectionObserver === 'undefined') return;
+  sectionObserver = new IntersectionObserver((entries) => {
+    entries.filter((entry) => entry.isIntersecting).forEach((entry) => {
+      const sectionId = (entry.target as HTMLElement).id;
+      if (sectionId) void track('home_section_exposure', { properties: { sectionId } });
+      sectionObserver?.unobserve(entry.target);
+    });
+  }, { threshold: 0.2 });
+  document.querySelectorAll<HTMLElement>('.content-section').forEach((section) => sectionObserver?.observe(section));
+});
+onBeforeUnmount(() => sectionObserver?.disconnect());
 </script>
 
 <template>
@@ -59,7 +84,7 @@ onBeforeUnmount(() => {
           <h1>{{ data.featured.title }}</h1>
           <p>{{ data.featured.tagline }}</p>
           <div class="featured-strip__meta"><span>{{ data.featured.genres.join(' · ') }}</span><span>{{ formatViews(data.featured.views) }} plays</span></div>
-          <NuxtLink class="button button--primary" :to="`/watch/${data.featured.slug}/1`"><Play :size="18" fill="currentColor" /> Watch free</NuxtLink>
+          <NuxtLink class="button button--primary" :to="`/watch/${data.featured.slug}/1`" @click="track('card_click', { seriesId: data.featured.id, seriesTitle: data.featured.title, properties: { placement: 'featured' } })"><Play :size="18" fill="currentColor" /> Watch free</NuxtLink>
         </div>
       </section>
 
@@ -74,7 +99,7 @@ onBeforeUnmount(() => {
         <section v-for="(section, sectionIndex) in data.sections" :id="section.id" :key="section.id" class="content-section">
           <SectionHeader :title="section.title" :subtitle="section.subtitle" :to="`/explore?section=${section.id}`" />
           <div class="poster-grid">
-            <SeriesCard v-for="(series, index) in section.items" :key="series.id" :series="series" :rank="sectionIndex === 0 ? index + 1 : undefined" />
+            <SeriesCard v-for="(series, index) in section.items" :key="series.id" :series="series" :section-id="section.id" :rank="sectionIndex === 0 ? index + 1 : undefined" />
           </div>
           <NuxtLink v-if="sectionIndex === 0" class="section-inline-link" to="/explore">Explore every series <ChevronRight :size="17" /></NuxtLink>
         </section>

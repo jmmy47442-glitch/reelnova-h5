@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Search, SlidersHorizontal, X } from 'lucide-vue-next';
+import { useAnalytics } from '~/composables/useAnalytics';
 
 const api = useContentApi();
 const route = useRoute();
@@ -11,6 +12,8 @@ const showFilters = ref(false);
 const genres = ['All', 'Romance', 'Revenge', 'Billionaire', 'Young Adult', 'Suspense', 'Comedy'];
 const sortOptions = ['Popular', 'Newest', 'Most Watched', 'Most Purchased'];
 const { data, status, error, refresh } = await useAsyncData('explore', () => api.getExplore());
+const { track } = useAnalytics();
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
 const filtered = computed(() => {
   const list = [...(data.value || [])];
@@ -32,7 +35,14 @@ watch([query, activeGenre, sort], () => {
     ...(activeGenre.value !== 'All' ? { genre: activeGenre.value } : {}),
     ...(sort.value !== 'Popular' ? { sort: sort.value } : {}),
   } });
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    if (query.value.trim()) void track('search', { properties: { query: query.value.trim().slice(0, 100), resultCount: filtered.value.length } });
+    if (activeGenre.value !== 'All') void track('filter', { properties: { genre: activeGenre.value, sort: sort.value, resultCount: filtered.value.length } });
+  }, 400);
 });
+
+onBeforeUnmount(() => { if (searchTimer) clearTimeout(searchTimer); });
 
 const reset = () => { query.value = ''; activeGenre.value = 'All'; sort.value = 'Popular'; };
 </script>

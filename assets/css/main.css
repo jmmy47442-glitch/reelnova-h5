@@ -378,6 +378,21 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .watch-lock > p { color: var(--text-muted); font-size: 10px; }
 .watch-lock h1 { margin: 5px 0 16px; font-family: var(--font-display); font-size: 29px; text-transform: uppercase; }
 .watch-lock__secondary { min-height: 40px; margin-top: 6px; border: 0; background: transparent; color: var(--text-muted); font-size: 10px; }
+.resume-modal-backdrop { position: fixed; z-index: 10; inset: 0; display: grid; padding: 20px; background: rgba(3,3,7,.76); place-items: center; backdrop-filter: blur(12px); }
+.resume-modal { width: min(100%, 410px); padding: 28px 24px 24px; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; background: #17171e; box-shadow: 0 28px 90px rgba(0,0,0,.56); text-align: center; }
+.resume-modal__icon { display: grid; width: 48px; height: 48px; margin: 0 auto 15px; border: 1px solid rgba(67,219,192,.25); border-radius: 50%; background: rgba(67,219,192,.1); color: var(--mint); place-items: center; }
+.resume-modal__eyebrow { color: var(--mint); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.resume-modal h2 { margin-top: 6px; font-family: var(--font-display); font-size: 31px; line-height: 1; text-transform: uppercase; }
+.resume-modal__copy { max-width: 310px; margin: 10px auto 0; color: var(--text-muted); font-size: 11px; line-height: 1.55; }
+.resume-modal__progress { display: flex; margin: 22px 0 16px; padding: 10px 12px; border: 1px solid rgba(255,255,255,.1); border-radius: 5px; background: rgba(255,255,255,.045); color: var(--text-muted); align-items: center; justify-content: space-between; font-size: 9px; }
+.resume-modal__progress strong { color: #fff; font-size: 10px; }
+.resume-modal__actions { display: grid; gap: 8px; }
+.resume-modal__actions .button { min-height: 46px; font-size: 11px; }
+.resume-modal__actions .button--secondary { border-color: rgba(255,255,255,.16); background: rgba(255,255,255,.06); }
+.resume-modal-enter-active, .resume-modal-leave-active { transition: opacity .2s ease; }
+.resume-modal-enter-active .resume-modal, .resume-modal-leave-active .resume-modal { transition: transform .2s ease, opacity .2s ease; }
+.resume-modal-enter-from, .resume-modal-leave-to { opacity: 0; }
+.resume-modal-enter-from .resume-modal, .resume-modal-leave-to .resume-modal { opacity: 0; transform: translateY(10px) scale(.98); }
 .watch-bottom { position: absolute; z-index: 3; right: 0; bottom: 0; left: 0; padding: 18px 13px max(14px, env(safe-area-inset-bottom)); background: linear-gradient(transparent, rgba(0,0,0,.72) 25%); }
 .watch-progress { --played-progress: 0%; position: relative; width: 100%; height: 44px; }
 .watch-progress__track { position: absolute; top: 50%; right: 0; left: 0; height: 4px; overflow: hidden; border-radius: 4px; background: rgba(255,255,255,.22); transform: translateY(-50%); }

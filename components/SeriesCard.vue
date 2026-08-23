@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { Play } from 'lucide-vue-next';
 import type { Series } from '~/types/content';
+import { useAnalytics } from '~/composables/useAnalytics';
 
-const props = defineProps<{ series: Series; rank?: number; horizontal?: boolean }>();
+const props = defineProps<{ series: Series; rank?: number; horizontal?: boolean; sectionId?: string }>();
 const { formatViews } = useFormatters();
+const { track } = useAnalytics();
+const card = ref<HTMLElement | null>(null);
+let observer: IntersectionObserver | undefined;
 
 const badgeClass = computed(() => `badge--${props.series.badge.toLowerCase()}`);
 const fallbackCoverUrl = '/posters/vows-vengeance.jpg';
@@ -14,6 +18,19 @@ const useFallbackCover = (event: Event) => {
   image.dataset.fallbackApplied = 'true';
   image.src = fallbackCoverUrl;
 };
+const context = () => ({ seriesId: props.series.id, seriesTitle: props.series.title, properties: props.sectionId ? { sectionId: props.sectionId } : undefined });
+const cardClick = () => { void track('card_click', context()); };
+onMounted(() => {
+  if (!(card.value instanceof Element) || typeof IntersectionObserver === 'undefined') return;
+  observer = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) {
+      void track('card_exposure', context());
+      observer?.disconnect();
+    }
+  }, { threshold: 0.5 });
+  observer.observe(card.value);
+});
+onBeforeUnmount(() => observer?.disconnect());
 </script>
 
 <template>
@@ -22,8 +39,9 @@ const useFallbackCover = (event: Event) => {
     :class="{ 'series-card--horizontal': horizontal }"
     :to="`/series/${series.slug}`"
     :aria-label="`${series.title}, ${formatViews(series.views)} views`"
+    @click="cardClick"
   >
-    <div class="series-card__poster">
+    <div ref="card" class="series-card__poster">
       <img :src="series.coverUrl || fallbackCoverUrl" :alt="`${series.title} poster`" loading="lazy" @error="useFallbackCover" />
       <span v-if="rank" class="series-card__rank">{{ rank }}</span>
       <span class="content-badge" :class="badgeClass">{{ series.badge }}</span>

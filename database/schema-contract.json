@@ -16,13 +16,15 @@
     "0014_account_privacy.sql",
     "0015_admin_rbac.sql",
     "0016_paypal_environment.sql",
-    "0017_media_upload_idempotency.sql"
+    "0017_media_upload_idempotency.sql",
+    "0018_analytics_events.sql"
   ],
   "tables": {
     "schema_migrations": ["version", "name", "checksum", "applied_at", "applied_via", "duration_ms"],
     "admin_accounts": ["id", "email", "name", "role", "status", "password_salt", "password_hash", "invited_by", "invited_at", "last_login_at", "created_at", "updated_at", "permission_role"],
     "admin_audit_logs": ["id", "actor", "actor_id", "module", "action", "target", "detail", "risk", "ip", "created_at"],
     "admin_user_actions": ["id", "user_id", "actor", "action", "detail", "created_at"],
+    "analytics_events": ["event_id", "session_id", "user_id", "event_name", "page_path", "series_id", "series_title", "episode_no", "position_seconds", "duration_seconds", "properties_json", "country", "created_at"],
     "categories": ["id", "name", "locale_name", "locale", "color", "icon_url", "cover_url", "sort_order", "enabled", "created_at", "updated_at", "deleted_at"],
     "content_versions": ["id", "series_id", "version_no", "status", "snapshot_json", "created_by", "created_at", "published_at"],
     "entitlements": ["id", "user_id", "series_id", "order_no", "status", "granted_at", "revoked_at"],
@@ -47,7 +49,7 @@
     "watch_history": ["user_id", "series_id", "episode_no", "position_seconds", "duration_seconds", "completed", "last_event_type", "last_watched_at", "created_at", "updated_at"]
   },
   "indexes": [
-    "idx_admin_accounts_permission_role", "idx_admin_accounts_status", "idx_admin_audit_created",
+    "idx_admin_accounts_permission_role", "idx_admin_accounts_status", "idx_admin_audit_created", "idx_analytics_events_name_created", "idx_analytics_events_series_created", "idx_analytics_events_session_created",
     "idx_admin_audit_module_risk", "idx_admin_user_actions_created", "idx_admin_user_actions_user",
     "idx_content_versions_series", "idx_entitlements_user", "idx_episodes_series_no", "idx_episodes_status",
     "idx_manual_entitlements_user", "idx_media_assets_episode", "idx_media_assets_status",

@@ -18,6 +18,7 @@ export default defineEventHandler(async (event) => {
   try {
     await d1Run(event, 'DELETE FROM watch_history WHERE user_id = ?', [session.userId]);
     await d1Run(event, 'DELETE FROM playback_events WHERE user_id = ?', [session.userId]);
+    await d1Run(event, 'DELETE FROM analytics_events WHERE user_id = ?', [session.userId]);
     await d1Run(event, `UPDATE entitlements SET status = 'revoked', revoked_at = COALESCE(revoked_at, ?) WHERE user_id = ?`, [now, session.userId]);
     await d1Run(event, `UPDATE manual_entitlements SET status = 'revoked', revoked_at = COALESCE(revoked_at, ?) WHERE user_id = ?`, [now, session.userId]);
     await d1Run(event, 'DELETE FROM user_preferences WHERE user_id = ?', [session.userId]);

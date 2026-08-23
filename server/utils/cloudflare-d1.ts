@@ -12,7 +12,12 @@ interface D1Database {
 }
 
 interface CloudflareContext {
-  env?: { DB?: D1Database };
+  env?: {
+    DB?: D1Database;
+    CLOUDFLARE_ACCOUNT_ID?: string;
+    CLOUDFLARE_D1_DATABASE_ID?: string;
+    CLOUDFLARE_API_TOKEN?: string;
+  };
 }
 
 interface D1RestResult<T> {
@@ -22,14 +27,20 @@ interface D1RestResult<T> {
 }
 
 const d1RestTimeoutMs = 8_000;
-const getBinding = (event: H3Event) => (event.context.cloudflare as CloudflareContext | undefined)?.env?.DB;
+const getCloudflareEnv = (event: H3Event) =>
+  (event.context.cloudflare as CloudflareContext | undefined)?.env;
+
+const getBinding = (event: H3Event) => getCloudflareEnv(event)?.DB;
 
 const getRestConfig = (event: H3Event) => {
   const config = useRuntimeConfig(event);
+  const env = getCloudflareEnv(event);
   return {
-    accountId: config.cloudflareAccountId as string,
-    databaseId: config.cloudflareD1DatabaseId as string,
-    apiToken: config.cloudflareApiToken as string,
+    // Cloudflare Pages/Workers inject deployment variables into the request
+    // context. Use them when build-time Nuxt runtimeConfig was not populated.
+    accountId: String(config.cloudflareAccountId || env?.CLOUDFLARE_ACCOUNT_ID || ''),
+    databaseId: String(config.cloudflareD1DatabaseId || env?.CLOUDFLARE_D1_DATABASE_ID || ''),
+    apiToken: String(config.cloudflareApiToken || env?.CLOUDFLARE_API_TOKEN || ''),
   };
 };
 

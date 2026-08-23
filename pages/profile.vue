@@ -4,8 +4,10 @@ import { useUserAuth } from '~/composables/useUserAuth';
 import { useAccountSettings } from '~/composables/useAccountSettings';
 import { useColorTheme } from '~/composables/useColorTheme';
 import { useLocale } from '~/composables/useLocale';
+import { useAnalytics } from '~/composables/useAnalytics';
 
 const api = useContentApi();
+const { track } = useAnalytics();
 const { session, logout } = useUserAuth();
 const { settings } = useAccountSettings();
 const { t } = useLocale();
@@ -17,6 +19,7 @@ const restoreMessage = ref('');
 
 const restore = async () => {
   if (!lookup.value.trim()) return;
+  void track('restore_purchase', { properties: { lookupType: lookup.value.includes('@') ? 'email' : 'order' } });
   restoring.value = true;
   restoreMessage.value = '';
   try {

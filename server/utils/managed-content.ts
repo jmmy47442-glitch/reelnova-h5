@@ -173,7 +173,9 @@ export const softDeleteManagedSeriesRecord = async (event: H3Event, id: string) 
 export const getPublicSeries = async (event: H3Event) => {
   const managed = await getManagedSeries(event);
   const published = managed.filter((item) => item.publishStatus === '已上架');
-  const mockFallback = String(useRuntimeConfig(event).publicMockContentFallback).toLowerCase() === 'true';
+  const config = useRuntimeConfig(event);
+  const isProduction = process.env.NODE_ENV === 'production';
+  const mockFallback = !isProduction && String(config.publicMockContentFallback).toLowerCase() === 'true';
   const source = published.length ? published : mockFallback ? initialSeries() : [];
   return source
   .map(({ publishStatus: _publishStatus, publishAt: _publishAt, transcodeProgress: _transcodeProgress, targetRegion: _targetRegion, ...series }) => series);

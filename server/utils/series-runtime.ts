@@ -1,6 +1,6 @@
 import type { H3Event } from 'h3';
 import type { Series } from '~/types/content';
-import { d1All } from '~/server/utils/cloudflare-d1';
+import { d1All, hasD1Connection } from '~/server/utils/cloudflare-d1';
 import { getUserSession } from '~/server/utils/user-auth';
 
 interface ViewRow { series_id: string; views: number }
@@ -15,6 +15,16 @@ interface HistoryRow {
 }
 
 export const hydrateSeriesRuntimeData = async (event: H3Event, source: Series[]): Promise<Series[]> => {
+  // Local previews can use the built-in catalogue without a D1 connection.
+  // Runtime counters and purchase state simply start empty in that mode.
+  if (!hasD1Connection(event)) {
+    return source.map((series) => ({
+      ...series,
+      views: 0,
+      purchased: false,
+      episodes: series.episodes.map((episode) => ({ ...episode, isUnlocked: episode.isFree })),
+    }));
+  }
   const userId = (await getUserSession(event))?.userId;
   const [viewRows, entitlementRows, historyRows] = await Promise.all([
     d1All<ViewRow>(event, "SELECT series_id, COUNT(*) AS views FROM playback_events WHERE event_type = 'start' GROUP BY series_id"),

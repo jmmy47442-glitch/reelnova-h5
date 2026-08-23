@@ -9,6 +9,7 @@ export const useAdminApi = () => {
 
   return {
     getDashboard: () => request<DashboardSummary>('/admin/dashboard'),
+    getAnalytics: (days = 7) => request<Record<string, unknown>>('/admin/analytics', { query: { days } }),
     getPendingItems: () => request<AdminPendingItemsResponse>('/admin/pending-items'),
     getOrders: (query: Record<string, string | number | undefined> = {}) => request<AdminOrdersResponse>('/admin/orders', { query }),
     getUsers: (query: Record<string, string | number | undefined> = {}) => request<AdminUsersResponse>('/admin/users', { query }),

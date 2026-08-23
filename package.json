@@ -16,6 +16,9 @@
     "deploy:domain-redirect": "node scripts/configure-domain-redirect.mjs",
     "db:migrate": "node scripts/migrate-d1.mjs",
     "db:migrate:check": "node scripts/migrate-d1.mjs",
+    "db:seed:acceptance": "node scripts/seed-acceptance-data.mjs",
+    "db:seed:acceptance:transactions": "node scripts/seed-acceptance-data.mjs --with-transactions",
+    "check:acceptance-data": "node scripts/seed-acceptance-data.mjs --check",
     "check:media-worker": "node --check workers/media-worker.mjs",
     "test:media-worker": "node --test tests/media-worker-idempotency.test.mjs",
     "deploy:media-worker": "wrangler deploy --config wrangler.media.toml"

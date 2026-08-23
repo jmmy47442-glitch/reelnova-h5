@@ -125,11 +125,13 @@ export default defineEventHandler(async (event) => {
     WHERE user_id = ? AND series_id = ? AND status IN ('paid', 'refunding', 'risk_review')
     ORDER BY created_at DESC LIMIT 1`, [userId, series.id]);
   if (blockingOrder?.status === 'paid') {
-    await d1Run(event, `INSERT INTO entitlements (id, user_id, series_id, order_no, status, granted_at)
-      VALUES (?, ?, ?, ?, 'granted', ?) ON CONFLICT(user_id, series_id) DO UPDATE SET
-      order_no = excluded.order_no, status = 'granted', granted_at = excluded.granted_at, revoked_at = NULL`,
-    [crypto.randomUUID(), userId, series.id, blockingOrder.order_no, now.toISOString()]);
-    return ok({ ...toOrder(blockingOrder, 'granted'), approvalUrl: undefined });
+    // A paid row must already have an entitlement from the verified capture
+    // transaction. Never turn a locally edited/stale status into access here.
+    throw createError({
+      statusCode: 409,
+      statusMessage: 'This payment is awaiting entitlement reconciliation',
+      data: { code: 'ORDER_ENTITLEMENT_MISSING', orderNo: blockingOrder.order_no },
+    });
   }
   if (blockingOrder) throw createError({
     statusCode: 409,

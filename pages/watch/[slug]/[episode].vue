@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { ArrowLeft, Captions, ChevronRight, Gauge, LockKeyhole, Maximize2, MoreHorizontal, Pause, Play, RotateCcw, Share2, SkipForward, Volume2, VolumeX } from 'lucide-vue-next';
+import { ArrowLeft, Captions, ChevronRight, Gauge, History, LockKeyhole, Maximize2, MoreHorizontal, Pause, Play, RotateCcw, Share2, SkipForward, Volume2, VolumeX } from 'lucide-vue-next';
 import Hls from 'hls.js';
 import { useSafeBack } from '~/composables/useSafeBack';
+import { useAnalytics } from '~/composables/useAnalytics';
 
 definePageMeta({ layout: false });
 const route = useRoute();
 const api = useContentApi();
 const goBack = useSafeBack(() => `/series/${String(route.params.slug)}`);
+const { track } = useAnalytics();
 const episodeNo = computed(() => Number(route.params.episode || 1));
 const video = ref<HTMLVideoElement | null>(null);
 const isPlaying = ref(false);
@@ -28,7 +30,19 @@ const started = ref(false);
 const lastHeartbeat = ref(0);
 const renewing = ref(false);
 const resumePosition = ref(0);
+const firstFrameTracked = ref(false);
+const playbackStartedAt = ref(0);
+const stalled = ref(false);
+const sourceTransition = ref(false);
+const resumeFallbackAttempted = ref(false);
+const showResumePrompt = ref(false);
+const resumePromptPosition = ref(0);
+const resumePromptDuration = ref(0);
+const resumePromptResolved = ref(false);
+const resumePromptResolving = ref(false);
+const resumeContinueButton = ref<HTMLButtonElement | null>(null);
 let renewTimer: ReturnType<typeof setTimeout> | undefined;
+let sourceTransitionTimer: ReturnType<typeof setTimeout> | undefined;
 let hls: Hls | undefined;
 let recordQueue: Promise<void> = Promise.resolve();
 
@@ -89,6 +103,12 @@ const scheduleRenewal = () => {
 };
 const loadSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
   if (!video.value) return;
+  // Replacing an MSE source can briefly emit a native `error` event even when
+  // the new manifest is valid. Keep that transient event from blanking a
+  // playing episode while an authorization renewal swaps the source.
+  sourceTransition.value = true;
+  if (sourceTransitionTimer) clearTimeout(sourceTransitionTimer);
+  sourceTransitionTimer = setTimeout(() => { sourceTransition.value = false; }, 3_000);
   bufferedSegments.value = [];
   hls?.destroy();
   hls = undefined;
@@ -97,6 +117,8 @@ const loadSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
     if (restoreAt > 0 && restoreAt < (video.value.duration || Infinity) - 3) video.value.currentTime = restoreAt;
     snapshotPlayback();
     if (shouldPlay) void video.value.play().catch(() => undefined);
+    sourceTransition.value = false;
+    if (sourceTransitionTimer) clearTimeout(sourceTransitionTimer);
     video.value.removeEventListener('loadedmetadata', restore);
   };
   video.value.addEventListener('loadedmetadata', restore);
@@ -106,18 +128,32 @@ const loadSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
     return;
   }
   if (!Hls.isSupported()) throw new Error('HLS playback is not supported');
-  hls = new Hls({ enableWorker: true, lowLatencyMode: false, backBufferLength: 30 });
+  // Start with the smallest rendition and a short initial buffer so the first
+  // frame arrives quickly on mobile networks. hls.js will switch up after the
+  // bandwidth estimate stabilizes.
+  hls = new Hls({
+    enableWorker: true,
+    lowLatencyMode: false,
+    startLevel: 0,
+    capLevelToPlayerSize: true,
+    startFragPrefetch: true,
+    maxBufferLength: 12,
+    backBufferLength: 30,
+  });
   hls.on(Hls.Events.ERROR, (_event, data) => {
     if (!data.fatal) return;
     if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls?.startLoad();
     else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls?.recoverMediaError();
     else { hls?.destroy(); playbackError.value = 'The video stream stopped unexpectedly. Please retry.'; }
   });
-  hls.loadSource(source);
   hls.attachMedia(video.value);
+  hls.loadSource(source);
 };
 const authorize = async (renew = false) => {
-  if (!series.value || !currentEpisode.value || renewing.value) return;
+  if (!series.value || !currentEpisode.value) return;
+  // A tap can arrive while the eager grant request is still in flight. Wait
+  // for that request instead of dropping the tap and making the user retry.
+  while (renewing.value) await new Promise((resolve) => window.setTimeout(resolve, 25));
   renewing.value = true;
   try {
     const oldTime = video.value?.currentTime || currentTime.value;
@@ -127,13 +163,23 @@ const authorize = async (renew = false) => {
     signedUrl.value = authorization.signedUrl;
     trackingToken.value = authorization.trackingToken;
     expiresAt.value = Date.parse(authorization.expiresAt || '') || Date.now() + 9 * 60_000;
-    if (!renew && !started.value) {
+    if (!renew && !started.value && !resumePromptResolved.value) {
       resumePosition.value = authorization.resumePositionSeconds || 0;
+      resumeFallbackAttempted.value = false;
       currentTime.value = resumePosition.value;
       durationSeconds.value = authorization.resumeDurationSeconds || durationSeconds.value;
       progress.value = durationSeconds.value ? Math.min(100, currentTime.value / durationSeconds.value * 100) : 0;
     }
-    if (video.value) loadSource(authorization.signedUrl, !renew && resumePosition.value > 0 ? resumePosition.value : oldTime, renew && wasPlaying);
+    const hasMeaningfulResume = resumePosition.value > 0;
+    if (!renew && !started.value && !resumePromptResolved.value && hasMeaningfulResume) {
+      playbackError.value = '';
+      resumePromptPosition.value = resumePosition.value;
+      resumePromptDuration.value = durationSeconds.value;
+      showResumePrompt.value = true;
+      scheduleRenewal();
+      return;
+    }
+    if (video.value) loadSource(authorization.signedUrl, !renew && !resumePromptResolved.value && resumePosition.value > 0 ? resumePosition.value : oldTime, renew && wasPlaying);
     playbackError.value = '';
     scheduleRenewal();
   } catch {
@@ -143,7 +189,7 @@ const authorize = async (renew = false) => {
 };
 
 const togglePlayback = async () => {
-  if (!video.value || !canPlay.value) return;
+  if (!video.value || !canPlay.value || showResumePrompt.value) return;
   if (!signedUrl.value) await authorize();
   if (!video.value || !signedUrl.value || playbackError.value) return;
   try {
@@ -154,7 +200,11 @@ const togglePlayback = async () => {
 const onPlay = () => {
   isPlaying.value = true;
   snapshotPlayback();
-  if (!started.value) { started.value = true; lastHeartbeat.value = Date.now(); void record('start'); }
+  if (!started.value) {
+    started.value = true; lastHeartbeat.value = Date.now(); playbackStartedAt.value = performance.now();
+    void record('start');
+    void track(currentEpisode.value?.isFree ? 'preview_start' : 'playback_start', { seriesId: series.value?.id, seriesTitle: series.value?.title, episodeNo: episodeNo.value });
+  }
 };
 const onPause = () => {
   isPlaying.value = false;
@@ -171,7 +221,39 @@ const onTimeUpdate = () => {
 const onLoadedMetadata = () => { snapshotPlayback(); updateBuffered(); };
 const onProgress = () => { updateBuffered(); };
 const onEmptied = () => { bufferedSegments.value = []; };
-const onEnded = async () => { isPlaying.value = false; snapshotPlayback(); progress.value = 100; await record('complete'); };
+const onFirstFrame = () => {
+  if (firstFrameTracked.value || !started.value || !series.value || !currentEpisode.value) return;
+  firstFrameTracked.value = true;
+  void track('playback_first_frame', { seriesId: series.value.id, seriesTitle: series.value.title, episodeNo: episodeNo.value, properties: { latencyMs: Math.max(0, Math.round(performance.now() - playbackStartedAt.value)) } });
+};
+const onWaiting = () => {
+  if (!started.value || stalled.value) return;
+  stalled.value = true;
+  void track('playback_stall', { seriesId: series.value?.id, seriesTitle: series.value?.title, episodeNo: episodeNo.value, positionSeconds: currentTime.value });
+};
+const onPlaying = () => {
+  onFirstFrame();
+  if (stalled.value) { stalled.value = false; void track('playback_resume', { seriesId: series.value?.id, seriesTitle: series.value?.title, episodeNo: episodeNo.value, positionSeconds: currentTime.value }); }
+};
+const onVideoError = () => {
+  if (sourceTransition.value || renewing.value) return;
+  // Some browsers cannot decode a resumed fMP4 fragment when playback starts
+  // close to the end of a VOD. Retry once from the beginning before exposing
+  // the connection error UI; subsequent failures still remain actionable.
+  if (signedUrl.value && currentTime.value > 0 && !resumeFallbackAttempted.value) {
+    resumeFallbackAttempted.value = true;
+    playbackError.value = '';
+    loadSource(signedUrl.value, 0, started.value);
+    return;
+  }
+  playbackError.value = 'The video stream is unavailable. Please retry.';
+  isPlaying.value = false;
+  void track('playback_error', { seriesId: series.value?.id, seriesTitle: series.value?.title, episodeNo: episodeNo.value, positionSeconds: currentTime.value });
+};
+const onEnded = async () => {
+  isPlaying.value = false; snapshotPlayback(); progress.value = 100; await record('complete');
+  void track(currentEpisode.value?.isFree ? 'preview_complete' : 'playback_complete', { seriesId: series.value?.id, seriesTitle: series.value?.title, episodeNo: episodeNo.value, positionSeconds: currentTime.value, durationSeconds: durationSeconds.value });
+};
 const seek = (event: Event) => {
   const value = Number((event.target as HTMLInputElement).value);
   if (video.value && durationSeconds.value) {
@@ -187,21 +269,52 @@ const returnToSeries = () => navigateTo(`/series/${String(route.params.slug)}`, 
 const nextEpisode = () => {
   if (!series.value || episodeNo.value >= series.value.episodeCount) return;
   const next = series.value.episodes[episodeNo.value];
-  if (!next?.isUnlocked && !next?.isFree && !locallyUnlocked.value) { showUnlock.value = true; return; }
+  if (!next?.isUnlocked && !next?.isFree && !locallyUnlocked.value) { void track('lock_trigger', { seriesId: series.value.id, seriesTitle: series.value.title, episodeNo: episodeNo.value + 1, properties: { source: 'next_episode' } }); showUnlock.value = true; return; }
+  void track('next_episode_click', { seriesId: series.value.id, seriesTitle: series.value.title, episodeNo: episodeNo.value + 1 });
   if (!video.value?.ended) void record('heartbeat');
   navigateTo(`/watch/${series.value.slug}/${episodeNo.value + 1}`);
 };
-const retry = async () => { playbackError.value = ''; await authorize(); await togglePlayback(); };
-const share = async () => { await navigator.clipboard?.writeText(window.location.href).catch(() => undefined); };
+const retry = async () => { playbackError.value = ''; resumeFallbackAttempted.value = false; await authorize(); await togglePlayback(); };
+const share = async () => { void track('share', { seriesId: series.value?.id, seriesTitle: series.value?.title, episodeNo: episodeNo.value, properties: { source: 'watch' } }); await navigator.clipboard?.writeText(window.location.href).catch(() => undefined); };
+const chooseResume = async (choice: 'resume' | 'restart') => {
+  if (resumePromptResolving.value || !signedUrl.value) return;
+  resumePromptResolving.value = true;
+  resumePromptResolved.value = true;
+  showResumePrompt.value = false;
+  resumePosition.value = choice === 'resume' ? resumePromptPosition.value : 0;
+  currentTime.value = resumePosition.value;
+  progress.value = resumePromptDuration.value ? Math.min(100, resumePosition.value / resumePromptDuration.value * 100) : 0;
+  try {
+    await nextTick();
+    if (video.value) loadSource(signedUrl.value, resumePosition.value, false);
+  } catch {
+    playbackError.value = 'This browser could not start the video stream. Please retry.';
+  } finally {
+    resumePromptResolving.value = false;
+  }
+};
 const persistOnExit = () => { if (started.value && !video.value?.ended) void record('heartbeat', true); };
 const persistWhenHidden = () => { if (document.visibilityState === 'hidden') persistOnExit(); };
+const handleUnlocked = () => {
+  locallyUnlocked.value = true;
+  showUnlock.value = false;
+  // The video element is created by v-if after the unlock event.
+  void nextTick(() => authorize());
+};
 
 onMounted(() => {
   window.addEventListener('pagehide', persistOnExit);
   document.addEventListener('visibilitychange', persistWhenHidden);
+  // Fetch the playback grant while the watch surface is rendering. This keeps
+  // the play button responsive and lets preload=auto fetch the first segment.
+  if (canPlay.value) void authorize();
+});
+watch(showResumePrompt, (open) => {
+  if (open) void nextTick(() => resumeContinueButton.value?.focus());
 });
 onBeforeUnmount(() => {
   if (renewTimer) clearTimeout(renewTimer);
+  if (sourceTransitionTimer) clearTimeout(sourceTransitionTimer);
   window.removeEventListener('pagehide', persistOnExit);
   document.removeEventListener('visibilitychange', persistWhenHidden);
   if (started.value && !video.value?.ended) void record('heartbeat', true);
@@ -212,14 +325,15 @@ onBeforeUnmount(() => {
 <template>
   <main v-if="series && currentEpisode" class="watch-page" @click="showControls = !showControls">
     <div class="watch-visual" :style="{ '--watch-image': `url(${series.backdropUrl})` }" />
-    <video v-if="canPlay" ref="video" class="watch-video" :poster="series.backdropUrl" playsinline preload="metadata" @click.stop @play="onPlay" @pause="onPause" @timeupdate="onTimeUpdate" @loadedmetadata="onLoadedMetadata" @durationchange="onLoadedMetadata" @progress="onProgress" @emptied="onEmptied" @ended="onEnded" @error="playbackError = 'The video stream is unavailable. Please retry.'; isPlaying = false" />
+    <video v-if="canPlay" ref="video" class="watch-video" :poster="series.backdropUrl" playsinline preload="auto" @click.stop @play="onPlay" @playing="onPlaying" @waiting="onWaiting" @stalled="onWaiting" @pause="onPause" @timeupdate="onTimeUpdate" @loadedmetadata="onLoadedMetadata" @durationchange="onLoadedMetadata" @progress="onProgress" @emptied="onEmptied" @ended="onEnded" @error="onVideoError" />
     <div class="watch-vignette" />
     <Transition name="fade"><div v-if="showControls" class="watch-top" @click.stop><button type="button" aria-label="Go back" @click="goBack"><ArrowLeft :size="22" /></button><div><strong>{{ series.title }}</strong><span>Episode {{ episodeNo }} · {{ currentEpisode.title }}</span></div><button type="button" aria-label="Share" @click="share"><Share2 :size="20" /></button><button type="button" aria-label="More"><MoreHorizontal :size="21" /></button></div></Transition>
     <button v-if="canPlay && !playbackError" class="watch-center" type="button" :aria-label="isPlaying ? 'Pause' : 'Play'" @click.stop="togglePlayback"><Pause v-if="isPlaying" :size="32" fill="currentColor" /><Play v-else :size="34" fill="currentColor" /></button>
-    <section v-if="!canPlay" class="watch-lock" @click.stop><span><LockKeyhole :size="28" /></span><p>Episode {{ episodeNo }} is locked</p><h1>Keep the story going</h1><button class="button button--primary button--wide" type="button" @click="showUnlock = true">Unlock full series</button><button class="watch-lock__secondary" type="button" @click="returnToSeries">Choose another episode</button></section>
+    <section v-if="!canPlay" class="watch-lock" @click.stop><span><LockKeyhole :size="28" /></span><p>Episode {{ episodeNo }} is locked</p><h1>Keep the story going</h1><button class="button button--primary button--wide" type="button" @click="track('lock_trigger', { seriesId: series.id, seriesTitle: series.title, episodeNo, properties: { source: 'watch_lock' } }); showUnlock = true">Unlock full series</button><button class="watch-lock__secondary" type="button" @click="returnToSeries">Choose another episode</button></section>
     <section v-if="playbackError" class="watch-lock" @click.stop><span><RotateCcw :size="27" /></span><h1>Connection interrupted</h1><p>{{ playbackError }}</p><button class="button button--primary" type="button" @click="retry">Retry playback</button></section>
+    <Transition name="resume-modal"><div v-if="showResumePrompt" class="resume-modal-backdrop" @click.stop><section class="resume-modal" role="dialog" aria-modal="true" aria-labelledby="resume-modal-title" @click.stop><div class="resume-modal__icon"><History :size="22" /></div><p class="resume-modal__eyebrow">Welcome back</p><h2 id="resume-modal-title">Continue watching?</h2><p class="resume-modal__copy">Pick up {{ series.title }} where you left off, or start this episode again.</p><div class="resume-modal__progress"><span>Episode {{ episodeNo }}</span><strong>{{ formatTime(resumePromptPosition) }} watched</strong></div><div class="resume-modal__actions"><button ref="resumeContinueButton" class="button button--primary button--wide" type="button" @click="chooseResume('resume')"><Play :size="17" fill="currentColor" />Continue from {{ formatTime(resumePromptPosition) }}</button><button class="button button--secondary button--wide" type="button" @click="chooseResume('restart')"><RotateCcw :size="17" />Start from beginning</button></div></section></div></Transition>
     <Transition name="fade"><div v-if="showControls && canPlay" class="watch-bottom" @click.stop><div class="watch-progress" :style="{ '--played-progress': `${progress}%` }"><div class="watch-progress__track" aria-hidden="true"><span v-for="(segment, index) in bufferedSegments" :key="index" class="watch-progress__buffered" :style="{ left: `${segment.left}%`, width: `${segment.width}%` }" /><i class="watch-progress__played" /></div><input class="watch-progress-input" type="range" min="0" max="100" step="0.1" :value="progress" :aria-valuetext="`${formatTime(currentTime)} of ${durationLabel}`" aria-label="Seek" @input="seek" @change="persistSeek" /></div><div class="watch-time"><span>{{ formatTime(currentTime) }}</span><span>{{ durationLabel }}</span></div><div class="watch-controls"><button type="button" :aria-label="muted ? 'Unmute' : 'Mute'" @click="toggleMute"><VolumeX v-if="muted" :size="21" /><Volume2 v-else :size="21" /></button><button type="button" aria-label="Captions"><Captions :size="22" /><span>CC</span></button><button type="button" aria-label="Playback speed" @click="cycleSpeed"><Gauge :size="22" /><span>{{ speed }}×</span></button><button type="button" aria-label="Fullscreen" @click="fullscreen"><Maximize2 :size="21" /></button><button type="button" aria-label="Next episode" @click="nextEpisode"><SkipForward :size="22" /><span>Next</span></button></div><button v-if="episodeNo < series.episodeCount" class="up-next" type="button" @click="nextEpisode"><span>UP NEXT</span><strong>Episode {{ episodeNo + 1 }}</strong><ChevronRight :size="20" /></button></div></Transition>
-    <UnlockSheet :series="series" :open="showUnlock" @close="showUnlock = false" @unlocked="locallyUnlocked = true; showUnlock = false" />
+    <UnlockSheet :series="series" :open="showUnlock" @close="showUnlock = false" @unlocked="handleUnlocked" />
   </main>
   <main v-else class="watch-page watch-page--loading"><div class="skeleton skeleton--poster" /><span>{{ status === 'pending' ? 'Preparing episode…' : 'Episode unavailable' }}</span></main>
 </template>

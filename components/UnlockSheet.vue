@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { Check, CircleAlert, Clock3, LoaderCircle, ShieldCheck, X } from 'lucide-vue-next';
 import { useUserAuth } from '~/composables/useUserAuth';
+import { useAnalytics } from '~/composables/useAnalytics';
 import type { OrderStatus, Series } from '~/types/content';
 
 const props = defineProps<{ series: Series; open: boolean }>();
 const emit = defineEmits<{ close: []; unlocked: [] }>();
 const api = useContentApi();
+const { track } = useAnalytics();
 const { formatPrice } = useFormatters();
 const route = useRoute();
 const { isAuthenticated } = useUserAuth();
@@ -58,9 +60,16 @@ const loadPayPalSdk = async () => {
 
 const completePayment = async (paypalOrderId: string) => {
   status.value = 'processing';
-  await api.capturePayPalOrder(paypalOrderId);
-  status.value = 'paid';
-  window.setTimeout(() => emit('unlocked'), 900);
+  try {
+    await api.capturePayPalOrder(paypalOrderId);
+    status.value = 'paid';
+    void track('payment_success', { seriesId: props.series.id, seriesTitle: props.series.title, properties: { provider: 'paypal' } });
+    window.setTimeout(() => emit('unlocked'), 900);
+  } catch (reason) {
+    status.value = 'failed';
+    void track('payment_failure', { seriesId: props.series.id, seriesTitle: props.series.title, properties: { provider: 'paypal', stage: 'capture', reason: reason instanceof Error ? reason.message.slice(0, 120) : 'unknown' } });
+    throw reason;
+  }
 };
 
 const renderPayPal = async () => {
@@ -75,14 +84,15 @@ const renderPayPal = async () => {
       style: { layout: 'vertical', color: 'gold', shape: 'rect', label: 'paypal', tagline: false, height: 48 },
       createOrder: async () => {
         checkoutKey.value ||= crypto.randomUUID();
+        void track('paypal_click', { seriesId: props.series.id, seriesTitle: props.series.title, properties: { action: 'create_order' } });
         const order = await api.createOrder(props.series.id, checkoutKey.value);
         if (order.status === 'paid') { status.value = 'paid'; window.setTimeout(() => emit('unlocked'), 500); return order.paypalOrderId || ''; }
         if (!order.paypalOrderId) throw new Error('PayPal order missing');
         return order.paypalOrderId;
       },
       onApprove: async ({ orderID }: { orderID: string }) => completePayment(orderID),
-      onCancel: () => { status.value = 'cancelled'; error.value = 'Payment was cancelled. Your order is saved and can be resumed.'; },
-      onError: () => { status.value = 'failed'; error.value = 'PayPal could not complete checkout. Try again or contact support.'; },
+      onCancel: () => { status.value = 'cancelled'; void track('payment_cancel', { seriesId: props.series.id, seriesTitle: props.series.title, properties: { provider: 'paypal' } }); error.value = 'Payment was cancelled. Your order is saved and can be resumed.'; },
+      onError: () => { status.value = 'failed'; void track('payment_failure', { seriesId: props.series.id, seriesTitle: props.series.title, properties: { provider: 'paypal', stage: 'sdk' } }); error.value = 'PayPal could not complete checkout. Try again or contact support.'; },
     }).render(paypalContainer.value);
     paypalReady.value = true;
   } catch {
@@ -97,6 +107,7 @@ const renderPayPal = async () => {
 
 watch(() => props.open, (isOpen) => {
   if (isOpen) {
+    void track('payment_sheet_open', { seriesId: props.series.id, seriesTitle: props.series.title });
     status.value = 'pending';
     error.value = '';
     checkoutKey.value = '';
@@ -128,6 +139,7 @@ const checkout = async () => {
   status.value = 'processing';
   error.value = '';
   try {
+    void track('paypal_click', { seriesId: props.series.id, seriesTitle: props.series.title, properties: { action: 'redirect_checkout' } });
     checkoutKey.value ||= crypto.randomUUID();
     const order = await api.createOrder(props.series.id, checkoutKey.value);
     if (order.status === 'paid') { status.value = 'paid'; emit('unlocked'); return; }
@@ -135,6 +147,7 @@ const checkout = async () => {
     window.location.assign(order.approvalUrl);
   } catch (reason: unknown) {
     status.value = 'failed';
+    void track('payment_failure', { seriesId: props.series.id, seriesTitle: props.series.title, properties: { provider: 'paypal', stage: 'create_order' } });
     const failure = reason as { statusCode?: number; response?: { status?: number }; data?: { code?: string; data?: { code?: string } } };
     const statusCode = failure.statusCode || failure.response?.status;
     const errorCode = failure.data?.data?.code || failure.data?.code;

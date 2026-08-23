@@ -31,7 +31,8 @@ npm run dev
 - 管理后台：概览 `/admin`，短剧 `/admin/series`，订单 `/admin/orders`，首页配置 `/admin/operations`，支付配置 `/admin/system`。
 - 管理后台仅提供登录，不开放注册。所有管理员账号（包括开发环境预设超级管理员）均保存在 Cloudflare D1 `admin_accounts` 表，未连接数据库时不使用内存数据兜底。为兼容现有 D1 数据，开发环境仍使用历史预设账号 `admin@reelnova.com` / `ReelNova@2026`；新生产部署应通过 `SUPER_ADMIN_EMAIL=admin@iseedrama.com`、`SUPER_ADMIN_PASSWORD`、`ADMIN_SESSION_SECRET` 和 `ADMIN_CREDENTIAL_SECRET` 覆盖默认值。已有生产账号需由超级管理员确认后迁移，不能仅靠修改默认值替换。
 - 超级管理员可在 `/admin/administrators` 直接创建管理员，系统生成的登录密码仅在创建成功时返回一次。
-- D1 尚无已上架短剧时，用户端会自动展示原型测试内容，后台仍使用真实 D1 接口。D1 出现真实已上架内容后会自动切换，也可用 `REELNOVA_PUBLIC_MOCK_FALLBACK=false` 关闭测试内容。
+- D1 尚无已上架短剧时，用户端返回内容不可用；仅本地开发可显式设置 `REELNOVA_PUBLIC_MOCK_FALLBACK=true` 展示原型内容，生产构建强制禁用该回退。
+- MVP 验收目录可通过 `npm run db:seed:acceptance` 幂等导入，并用 `npm run check:acceptance-data` 只读核对；该命令不会创建伪造支付或购买权益。需要验收后台订单状态时，必须在隔离环境显式运行 `npm run db:seed:acceptance:transactions`。字段、PayPal Sandbox 实测步骤见 [`docs/MVP-ACCEPTANCE-DATA.md`](./docs/MVP-ACCEPTANCE-DATA.md)。生产构建始终禁用 mock fallback。
 - PayPal 与 R2/Stream 可以后开通：配置留空时 H5 会关闭结账入口、后台会禁用媒体上传，服务端不会写入失败订单或上传任务；开通后补齐 `.env.example` 对应变量并重启即可启用。
 - MVP 域名使用普通 Cloudflare Custom Domains：Nuxt 绑定根域名和 `admin`，媒体 Worker 绑定 `media`，`www` 通过 Cloudflare Redirect Rule 301 到根域名。后台动态添加任意第三方备用域名需在 Cloudflare for SaaS 开通后再启用。
 - 验收命令：`npm run typecheck`、`npm run build`、`npm run visual-check`；正式域名绑定后运行 `npm run check:domains` 验证 DNS、TLS 与 `www` 301。

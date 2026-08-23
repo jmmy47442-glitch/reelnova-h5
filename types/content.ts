@@ -61,6 +61,30 @@ export interface PlaybackEventInput {
   authorizationToken: string;
 }
 
+export const analyticsEventNames = [
+  'home_section_exposure', 'card_exposure', 'card_click', 'detail_open',
+  'preview_start', 'preview_complete', 'lock_trigger', 'payment_sheet_open',
+  'paypal_click', 'payment_success', 'payment_failure', 'payment_cancel',
+  'playback_start', 'playback_first_frame', 'playback_stall', 'playback_resume',
+  'playback_error', 'playback_complete', 'next_episode_click', 'search',
+  'filter', 'share', 'restore_purchase',
+] as const;
+
+export type AnalyticsEventName = typeof analyticsEventNames[number];
+
+export interface AnalyticsEventInput {
+  eventId: string;
+  sessionId: string;
+  eventName: AnalyticsEventName;
+  pagePath?: string;
+  seriesId?: string;
+  seriesTitle?: string;
+  episodeNo?: number;
+  positionSeconds?: number;
+  durationSeconds?: number;
+  properties?: Record<string, string | number | boolean | null>;
+}
+
 export interface HomeSection {
   id: string;
   title: string;
