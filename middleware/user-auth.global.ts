@@ -23,5 +23,10 @@ export default defineNuxtRouteMiddleware(async (to) => {
   if (!isAuthenticated.value) {
     return navigateTo({ path: '/login', query: { redirect: to.fullPath } });
   }
-  await accountSettings.fetchSettings();
+  // Account preferences are presentation data. Let content routes start
+  // rendering while the preference request completes; profile screens still
+  // await it because they edit and display those values immediately.
+  const needsSettingsBeforeRender = to.path === '/profile' || to.path.startsWith('/profile/');
+  if (import.meta.server || needsSettingsBeforeRender) await accountSettings.fetchSettings();
+  else void accountSettings.fetchSettings().catch(() => undefined);
 });

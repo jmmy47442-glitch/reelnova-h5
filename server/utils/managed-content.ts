@@ -39,6 +39,8 @@ const initialDomains = (): DomainConfig[] => [];
 let memorySeries = initialSeries();
 let memoryTaxonomy = initialTaxonomy();
 let memoryDomains = initialDomains();
+const normalizedSeriesCacheTtlMs = 5_000;
+let normalizedSeriesCache: { expiresAt: number; value: ManagedSeries[] } | undefined;
 
 const cloneSeries = (items: ManagedSeries[]) => items.map((item) => ({
   ...item,
@@ -47,6 +49,7 @@ const cloneSeries = (items: ManagedSeries[]) => items.map((item) => ({
   episodes: item.episodes.map((episode) => ({ ...episode })),
 }));
 const cloneItems = <T extends object>(items: T[]) => items.map((item) => ({ ...item }));
+const invalidateNormalizedSeriesCache = () => { normalizedSeriesCache = undefined; };
 
 const isMissingConfigTable = (error: unknown) => {
   const value = error as { statusMessage?: unknown; data?: { errors?: Array<{ message?: unknown }> } };
@@ -78,8 +81,13 @@ const writeConfig = async (event: H3Event, id: string, value: unknown) => {
 
 export const getManagedSeries = async (event: H3Event) => {
   if (hasD1Connection(event)) {
+    if (normalizedSeriesCache && normalizedSeriesCache.expiresAt > Date.now()) {
+      return cloneSeries(normalizedSeriesCache.value);
+    }
     const { listNormalizedSeries } = await import('./normalized-content');
-    return listNormalizedSeries(event);
+    const value = await listNormalizedSeries(event);
+    normalizedSeriesCache = { value: cloneSeries(value), expiresAt: Date.now() + normalizedSeriesCacheTtlMs };
+    return cloneSeries(value);
   }
   const stored = await readConfig<ManagedSeries[]>(event, 'managed-series', memorySeries);
   if (Array.isArray(stored)) memorySeries = cloneSeries(stored);
@@ -95,8 +103,11 @@ export const saveManagedSeries = async (event: H3Event, items: ManagedSeries[]) 
 
 export const createManagedSeriesRecord = async (event: H3Event, input: Parameters<typeof createManagedSeries>[1]) => {
   if (hasD1Connection(event)) {
+    invalidateNormalizedSeriesCache();
     const { createNormalizedSeries } = await import('./normalized-content');
-    return createNormalizedSeries(event, input);
+    const created = await createNormalizedSeries(event, input);
+    invalidateNormalizedSeriesCache();
+    return created;
   }
   const items = await getManagedSeries(event);
   const created = createManagedSeries(items, input);
@@ -107,8 +118,11 @@ export const createManagedSeriesRecord = async (event: H3Event, input: Parameter
 
 export const updateManagedSeriesRecord = async (event: H3Event, id: string, input: Parameters<typeof createManagedSeries>[1]) => {
   if (hasD1Connection(event)) {
+    invalidateNormalizedSeriesCache();
     const { updateNormalizedSeries } = await import('./normalized-content');
-    return updateNormalizedSeries(event, id, input);
+    const updated = await updateNormalizedSeries(event, id, input);
+    invalidateNormalizedSeriesCache();
+    return updated;
   }
   const items = await getManagedSeries(event);
   const item = items.find((entry) => entry.id === id);
@@ -121,8 +135,11 @@ export const updateManagedSeriesRecord = async (event: H3Event, id: string, inpu
 
 export const updateManagedSeriesStatusRecord = async (event: H3Event, id: string, publishStatus: PublishStatus) => {
   if (hasD1Connection(event)) {
+    invalidateNormalizedSeriesCache();
     const { updateNormalizedSeriesStatus } = await import('./normalized-content');
-    return updateNormalizedSeriesStatus(event, id, publishStatus);
+    const updated = await updateNormalizedSeriesStatus(event, id, publishStatus);
+    invalidateNormalizedSeriesCache();
+    return updated;
   }
   const items = await getManagedSeries(event);
   const item = items.find((entry) => entry.id === id);
@@ -138,8 +155,11 @@ export const updateManagedSeriesStatusRecord = async (event: H3Event, id: string
 
 export const duplicateManagedSeriesRecord = async (event: H3Event, id: string) => {
   if (hasD1Connection(event)) {
+    invalidateNormalizedSeriesCache();
     const { duplicateNormalizedSeries } = await import('./normalized-content');
-    return duplicateNormalizedSeries(event, id);
+    const duplicated = await duplicateNormalizedSeries(event, id);
+    invalidateNormalizedSeriesCache();
+    return duplicated;
   }
   const items = await getManagedSeries(event);
   const source = items.find((entry) => entry.id === id);
@@ -159,8 +179,11 @@ export const duplicateManagedSeriesRecord = async (event: H3Event, id: string) =
 
 export const softDeleteManagedSeriesRecord = async (event: H3Event, id: string) => {
   if (hasD1Connection(event)) {
+    invalidateNormalizedSeriesCache();
     const { softDeleteNormalizedSeries } = await import('./normalized-content');
-    return softDeleteNormalizedSeries(event, id);
+    const deleted = await softDeleteNormalizedSeries(event, id);
+    invalidateNormalizedSeriesCache();
+    return deleted;
   }
   const items = await getManagedSeries(event);
   const index = items.findIndex((entry) => entry.id === id);

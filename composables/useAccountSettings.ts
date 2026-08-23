@@ -10,16 +10,22 @@ export const useAccountSettings = () => {
   const requestFetch = useRequestFetch();
   const settings = useState<AccountSettings>('account-settings', defaults);
   const settingsChecked = useState('account-settings-checked', () => false);
+  const settingsLoading = useState('account-settings-loading', () => false);
   const request = <T>(path: string, options: Parameters<typeof $fetch>[1] = {}) =>
     requestFetch<ApiEnvelope<T>>(path, { baseURL, credentials: 'include', ...options }).then((response) => response.data);
 
   const fetchSettings = async (force = false) => {
     if (settingsChecked.value && !force) return settings.value;
+    // Route middleware can run again while the first settings request is in
+    // flight. Do not serialize navigation behind duplicate requests.
+    if (settingsLoading.value) return settings.value;
+    settingsLoading.value = true;
     try {
       settings.value = await request<AccountSettings>('/me/settings');
       if (import.meta.client) document.documentElement.lang = settings.value.language;
     } finally {
       settingsChecked.value = true;
+      settingsLoading.value = false;
     }
     return settings.value;
   };
@@ -35,6 +41,7 @@ export const useAccountSettings = () => {
   const resetSettings = () => {
     settings.value = defaults();
     settingsChecked.value = false;
+    settingsLoading.value = false;
     if (import.meta.client) document.documentElement.lang = 'en';
   };
   return { settings, settingsChecked, fetchSettings, updateSettings, exportData, deleteAccount, resetSettings };

@@ -14,6 +14,16 @@ interface HistoryRow {
   last_watched_at: string;
 }
 
+const viewsCacheTtlMs = 5_000;
+let viewsCache: { expiresAt: number; value: ViewRow[] } | undefined;
+
+const getViewRows = async (event: H3Event) => {
+  if (viewsCache && viewsCache.expiresAt > Date.now()) return viewsCache.value;
+  const value = await d1All<ViewRow>(event, "SELECT series_id, COUNT(*) AS views FROM playback_events WHERE event_type = 'start' GROUP BY series_id");
+  viewsCache = { value, expiresAt: Date.now() + viewsCacheTtlMs };
+  return value;
+};
+
 export const hydrateSeriesRuntimeData = async (event: H3Event, source: Series[]): Promise<Series[]> => {
   // Local previews can use the built-in catalogue without a D1 connection.
   // Runtime counters and purchase state simply start empty in that mode.
@@ -27,7 +37,7 @@ export const hydrateSeriesRuntimeData = async (event: H3Event, source: Series[])
   }
   const userId = (await getUserSession(event))?.userId;
   const [viewRows, entitlementRows, historyRows] = await Promise.all([
-    d1All<ViewRow>(event, "SELECT series_id, COUNT(*) AS views FROM playback_events WHERE event_type = 'start' GROUP BY series_id"),
+    getViewRows(event),
     userId
       ? d1All<EntitlementRow>(event, `SELECT series_id FROM entitlements WHERE user_id = ? AND status = 'granted'
         UNION SELECT series_id FROM manual_entitlements WHERE user_id = ? AND status = 'granted'`, [userId, userId])

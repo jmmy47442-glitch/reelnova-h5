@@ -215,20 +215,33 @@ export const clearUserSession = (event: H3Event) => {
 };
 
 export const getUserSession = async (event: H3Event): Promise<UserSession | null> => {
-  const token = getCookie(event, sessionCookie);
-  if (!token) return null;
-  const [payload, signature, extra] = token.split('.');
-  if (!payload || !signature || extra) return null;
-  const expected = await sign(payload, String(useRuntimeConfig(event).userSessionSecret));
-  if (!constantTimeEqual(signature, expected)) return null;
+  const context = event.context as typeof event.context & {
+    userSession?: UserSession | null;
+    userSessionPromise?: Promise<UserSession | null>;
+  };
+  if (Object.prototype.hasOwnProperty.call(context, 'userSession')) return context.userSession || null;
+  if (context.userSessionPromise) return context.userSessionPromise;
 
-  try {
-    const session = decodeJson<UserSession>(payload);
-    if (!session.userId || !session.email || Date.parse(session.expiresAt) <= Date.now()) return null;
-    const account = await findById(event, session.userId);
-    if (!account || account.status !== 'active' || account.user_id !== session.userId || account.email !== session.email) return null;
-    return { ...session, name: account.display_name };
-  } catch {
-    return null;
-  }
+  context.userSessionPromise = (async () => {
+    const token = getCookie(event, sessionCookie);
+    if (!token) return null;
+    const [payload, signature, extra] = token.split('.');
+    if (!payload || !signature || extra) return null;
+    const expected = await sign(payload, String(useRuntimeConfig(event).userSessionSecret));
+    if (!constantTimeEqual(signature, expected)) return null;
+
+    try {
+      const session = decodeJson<UserSession>(payload);
+      if (!session.userId || !session.email || Date.parse(session.expiresAt) <= Date.now()) return null;
+      const account = await findById(event, session.userId);
+      if (!account || account.status !== 'active' || account.user_id !== session.userId || account.email !== session.email) return null;
+      return { ...session, name: account.display_name };
+    } catch {
+      return null;
+    }
+  })();
+  const session = await context.userSessionPromise;
+  context.userSession = session;
+  context.userSessionPromise = undefined;
+  return session;
 };
