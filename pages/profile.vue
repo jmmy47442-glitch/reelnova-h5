@@ -6,6 +6,7 @@ import { useColorTheme } from '~/composables/useColorTheme';
 import { useLocale } from '~/composables/useLocale';
 import { useAnalytics } from '~/composables/useAnalytics';
 
+definePageMeta({ keepalive: true });
 const api = useContentApi();
 const { track } = useAnalytics();
 const { session, logout } = useUserAuth();

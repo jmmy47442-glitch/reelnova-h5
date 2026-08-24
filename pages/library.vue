@@ -1,14 +1,19 @@
 <script setup lang="ts">
 import { Clock3, LockKeyhole, Play } from 'lucide-vue-next';
+import { usePageData } from '~/composables/usePageData';
+import { useUserAuth } from '~/composables/useUserAuth';
 
+definePageMeta({ keepalive: true });
 const api = useContentApi();
+const { session } = useUserAuth();
 const activeTab = ref('Continue watching');
-const { data, status, error, refresh } = await useAsyncData('library', () => api.getLibrary());
+const libraryKey = `library-${session.value?.userId || 'current'}`;
+const { data, status, error, refresh } = usePageData(libraryKey, () => api.getLibrary());
 </script>
 
 <template>
   <div class="content-width page-top">
-    <AppHeader compact />
+    <AppHeader compact refreshable :refreshing="status === 'pending'" @refresh="refresh" />
     <header class="page-title"><span class="eyebrow">YOUR STORIES</span><h1>Library</h1></header>
     <div class="library-tabs"><button v-for="tab in ['Continue watching', 'Purchased']" :key="tab" type="button" :class="{ 'is-active': activeTab === tab }" @click="activeTab = tab">{{ tab }}</button></div>
     <PageSkeleton v-if="status === 'pending'" />

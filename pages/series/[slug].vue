@@ -2,8 +2,9 @@
 import { ArrowLeft, ChevronDown, Clock3, Eye, LockKeyhole, Play, Share2, Star } from 'lucide-vue-next';
 import { useSafeBack } from '~/composables/useSafeBack';
 import { useAnalytics } from '~/composables/useAnalytics';
+import { usePageData } from '~/composables/usePageData';
 
-definePageMeta({ hideBottomNav: true });
+definePageMeta({ hideBottomNav: true, keepalive: true });
 const route = useRoute();
 const api = useContentApi();
 const goBack = useSafeBack(() => '/');
@@ -11,7 +12,7 @@ const { formatPrice, formatViews } = useFormatters();
 const showFullDescription = ref(false);
 const showUnlock = ref(false);
 const locallyUnlocked = ref(false);
-const { data: series, status, error, refresh } = await useAsyncData(`series-${route.params.slug}`, () => api.getSeries(String(route.params.slug)));
+const { data: series, status, error, refresh } = usePageData(`series-${String(route.params.slug)}`, () => api.getSeries(String(route.params.slug)));
 const { track } = useAnalytics();
 watch(series, (value) => {
   if (value) void track('detail_open', { seriesId: value.id, seriesTitle: value.title });

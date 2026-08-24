@@ -6,7 +6,7 @@ import { ElMessage, ElMessageBox, type UploadFile, type UploadFiles, type Upload
 import type { AdminEpisode, MediaUploadPart, MediaUploadSession } from '~/types/admin';
 import type { AdminSeries, PublishStatus } from '~/composables/useAdminStore';
 
-definePageMeta({ layout: 'admin' });
+definePageMeta({ layout: 'admin', keepalive: true });
 
 const { state } = useAdminStore();
 const api = useAdminApi();

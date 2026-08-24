@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { Search, SlidersHorizontal, X } from 'lucide-vue-next';
 import { useAnalytics } from '~/composables/useAnalytics';
+import { usePageData } from '~/composables/usePageData';
 
+definePageMeta({ keepalive: true });
 const api = useContentApi();
 const route = useRoute();
 const router = useRouter();
@@ -11,7 +13,7 @@ const sort = ref(String(route.query.sort || 'Popular'));
 const showFilters = ref(false);
 const genres = ['All', 'Romance', 'Revenge', 'Billionaire', 'Young Adult', 'Suspense', 'Comedy'];
 const sortOptions = ['Popular', 'Newest', 'Most Watched', 'Most Purchased'];
-const { data, status, error, refresh } = await useAsyncData('explore', () => api.getExplore());
+const { data, status, error, refresh } = usePageData('explore', () => api.getExplore());
 const { track } = useAnalytics();
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -49,7 +51,7 @@ const reset = () => { query.value = ''; activeGenre.value = 'All'; sort.value = 
 
 <template>
   <div class="content-width page-top">
-    <AppHeader compact />
+    <AppHeader compact refreshable :refreshing="status === 'pending'" @refresh="refresh" />
     <header class="page-title"><span class="eyebrow">FIND YOUR NEXT OBSESSION</span><h1>Explore</h1></header>
     <div class="search-row">
       <label class="search-field"><Search :size="19" /><input v-model="query" type="search" placeholder="Title, cast or tag" /><button v-if="query" type="button" aria-label="Clear search" @click="query = ''"><X :size="17" /></button></label>

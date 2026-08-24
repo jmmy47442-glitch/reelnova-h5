@@ -3,6 +3,7 @@ import { ArrowLeft, Captions, ChevronRight, Gauge, History, LockKeyhole, Maximiz
 import Hls from 'hls.js';
 import { useSafeBack } from '~/composables/useSafeBack';
 import { useAnalytics } from '~/composables/useAnalytics';
+import { usePageData } from '~/composables/usePageData';
 
 definePageMeta({ layout: false });
 const route = useRoute();
@@ -46,7 +47,7 @@ let sourceTransitionTimer: ReturnType<typeof setTimeout> | undefined;
 let hls: Hls | undefined;
 let recordQueue: Promise<void> = Promise.resolve();
 
-const { data: series, status } = await useAsyncData(`watch-${route.params.slug}`, () => api.getSeries(String(route.params.slug)));
+const { data: series, status } = usePageData(`watch-${String(route.params.slug)}`, () => api.getSeries(String(route.params.slug)));
 const currentEpisode = computed(() => series.value?.episodes.find((episode) => episode.episodeNo === episodeNo.value));
 const canPlay = computed(() => Boolean(currentEpisode.value?.isUnlocked || currentEpisode.value?.isFree || locallyUnlocked.value));
 

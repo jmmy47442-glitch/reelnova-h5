@@ -2,14 +2,15 @@
 import {
   AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronRight, CircleHelp, Clock3, Download,
   ExternalLink, FileText, Globe2, History, LockKeyhole, Mail, MessageCircle,
-  Play, ReceiptText, Search, Shield, ShoppingBag, Trash2,
+  Play, ReceiptText, RefreshCw, Search, Shield, ShoppingBag, Trash2,
 } from 'lucide-vue-next';
 import type { OrderStatus } from '~/types/content';
 import { useAccountSettings } from '~/composables/useAccountSettings';
 import { useLocale } from '~/composables/useLocale';
 import { useUserAuth } from '~/composables/useUserAuth';
+import { usePageData } from '~/composables/usePageData';
 
-definePageMeta({ hideBottomNav: true });
+definePageMeta({ hideBottomNav: true, keepalive: true });
 const route = useRoute();
 const api = useContentApi();
 const { session, logout } = useUserAuth();
@@ -46,18 +47,28 @@ useHead(() => ({ title: `${displayConfig.value.title} - ReelNova` }));
 
 const needsLibrary = section === 'purchases';
 const needsOrders = section === 'orders';
-const { data: library, status: libraryStatus, error: libraryError, refresh: refreshLibrary } = await useAsyncData(
-  `profile-library-${section}`,
+const accountKey = session.value?.userId || 'current';
+const { data: library, status: libraryStatus, error: libraryError, refresh: refreshLibrary } = usePageData(
+  `profile-${accountKey}-library-${section}`,
   () => needsLibrary ? api.getLibrary() : Promise.resolve(null),
 );
-const { data: orders, status: ordersStatus, error: ordersError, refresh: refreshOrders } = await useAsyncData(
-  'profile-orders',
+const { data: orders, status: ordersStatus, error: ordersError, refresh: refreshOrders } = usePageData(
+  `profile-${accountKey}-orders-${section}`,
   () => needsOrders ? api.getMyOrders() : Promise.resolve(null),
 );
-const { data: history, status: historyStatus, error: historyError, refresh: refreshHistory } = await useAsyncData(
-  'profile-watch-history',
+const { data: history, status: historyStatus, error: historyError, refresh: refreshHistory } = usePageData(
+  `profile-${accountKey}-watch-history-${section}`,
   () => section === 'history' ? api.getWatchHistory() : Promise.resolve(null),
 );
+const sectionRefreshable = ['purchases', 'orders', 'history'].includes(section);
+const sectionRefreshing = computed(() => section === 'purchases'
+  ? libraryStatus.value === 'pending'
+  : section === 'orders' ? ordersStatus.value === 'pending' : historyStatus.value === 'pending');
+const refreshSection = () => {
+  if (section === 'purchases') void refreshLibrary();
+  else if (section === 'orders') void refreshOrders();
+  else if (section === 'history') void refreshHistory();
+};
 
 const selectedOrder = ref('');
 const clearingHistory = ref(false);
@@ -194,8 +205,11 @@ onBeforeUnmount(() => { if (noticeTimer.value) clearTimeout(noticeTimer.value); 
     <header class="account-toolbar">
       <NuxtLink class="account-toolbar__back" to="/profile" aria-label="Back to profile"><ArrowLeft :size="21" /></NuxtLink>
       <span>{{ t('account.label') }}</span>
-      <NuxtLink v-if="section !== 'help'" class="account-toolbar__help" to="/profile/help" aria-label="Open help center"><CircleHelp :size="20" /></NuxtLink>
-      <span v-else class="account-toolbar__spacer" />
+      <span class="account-toolbar__actions">
+        <button v-if="sectionRefreshable" class="account-toolbar__refresh" type="button" :disabled="sectionRefreshing" aria-label="Refresh page data" @click="refreshSection"><RefreshCw :size="18" /></button>
+        <NuxtLink v-if="section !== 'help'" class="account-toolbar__help" to="/profile/help" aria-label="Open help center"><CircleHelp :size="20" /></NuxtLink>
+        <span v-else class="account-toolbar__spacer" />
+      </span>
     </header>
 
     <header class="account-heading">

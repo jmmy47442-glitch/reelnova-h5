@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ChevronRight, Flame, Play } from 'lucide-vue-next';
 import { useAnalytics } from '~/composables/useAnalytics';
+import { usePageData } from '~/composables/usePageData';
 
+definePageMeta({ keepalive: true });
 const api = useContentApi();
 const { formatViews } = useFormatters();
 const activeTab = ref('Popular');
-const { data, status, error, refresh } = await useAsyncData('home', () => api.getHome());
+const { data, status, error, refresh } = usePageData('home', () => api.getHome());
 const { track } = useAnalytics();
 const featuredTracked = ref(false);
 let sectionObserver: IntersectionObserver | undefined;
@@ -74,7 +76,7 @@ onBeforeUnmount(() => sectionObserver?.disconnect());
 
 <template>
   <div>
-    <AppHeader />
+    <AppHeader refreshable :refreshing="status === 'pending'" @refresh="refresh" />
     <div v-if="status === 'pending'" class="content-width"><PageSkeleton /></div>
     <div v-else-if="error" class="content-width page-state"><EmptyState title="We lost the signal" message="The latest shows could not be loaded." action="Try again" @action="refresh" /></div>
     <template v-else-if="data">

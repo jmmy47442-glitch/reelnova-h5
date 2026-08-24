@@ -3,7 +3,7 @@ import { CloudOff, Download, RefreshCw, Search } from 'lucide-vue-next';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { PersistedOrder, PersistedOrderStatus, PersistedRefundStatus } from '~/types/admin';
 
-definePageMeta({ layout: 'admin' });
+definePageMeta({ layout: 'admin', keepalive: true });
 const api = useAdminApi();
 const statusFilter = ref('');
 const refundStatusFilter = ref('');
@@ -26,7 +26,7 @@ const queryParams = computed(() => ({
   keyword: keyword.value || undefined, status: statusFilter.value || undefined, refundStatus: refundStatusFilter.value || undefined, country: country.value || undefined,
   from: dateRange.value?.[0]?.toISOString(), to: dateRange.value?.[1] ? new Date(dateRange.value[1].getTime() + 86_399_999).toISOString() : undefined, pageSize: 100,
 }));
-const { data, status, error, refresh } = await useAsyncData('admin-orders-real', () => api.getOrders(queryParams.value), { watch: [queryParams] });
+const { data, status, error, refresh } = useLazyAsyncData('admin-orders-real', () => api.getOrders(queryParams.value), { watch: [queryParams] });
 const rows = computed(() => data.value?.items || []);
 const type = (value: PersistedOrderStatus) => ({ paid: 'success', processing: 'warning', pending: 'info', failed: 'danger', cancelled: 'info', refunding: 'primary', refunded: 'info', risk_review: 'danger' }[value]);
 const resetFilters = () => { statusFilter.value = ''; refundStatusFilter.value = ''; country.value = ''; keyword.value = ''; dateRange.value = undefined; };

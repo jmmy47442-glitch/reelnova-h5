@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ArrowDownRight, ArrowUpRight, CircleDollarSign, CloudOff, Download, Eye, Film, Plus, RefreshCw, ShoppingCart, TriangleAlert } from 'lucide-vue-next';
 import { ElMessage } from 'element-plus';
+import { usePageData } from '~/composables/usePageData';
 
-definePageMeta({ layout: 'admin' });
+definePageMeta({ layout: 'admin', keepalive: true });
 const api = useAdminApi();
 const { can } = useAdminAuth();
 const { formatViews } = useFormatters();
 const chartMode = ref<'播放量' | '收入'>('播放量');
-const { data, status, error, refresh } = await useAsyncData('admin-dashboard-real', () => api.getDashboard());
+const { data, status, error, refresh } = usePageData('admin-dashboard-real', () => api.getDashboard());
 
 const formatChange = (value: number | null) => value === null ? '新数据' : `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
 const metrics = computed(() => data.value ? [
@@ -18,7 +19,10 @@ const metrics = computed(() => data.value ? [
 ] : []);
 const chartValues = computed(() => data.value?.trends.map((point) => chartMode.value === '播放量' ? point.plays : point.revenue) || []);
 const chartMax = computed(() => Math.max(1, ...chartValues.value));
-const errorMessage = computed(() => (error.value?.data as { data?: { message?: string } } | undefined)?.data?.message || error.value?.statusMessage || 'Cloudflare D1 连接失败');
+const errorMessage = computed(() => {
+  const detail = error.value as { data?: { data?: { message?: string } }; statusMessage?: string } | null | undefined;
+  return detail?.data?.data?.message || detail?.statusMessage || 'Cloudflare D1 连接失败';
+});
 
 const downloadReport = () => {
   if (!data.value) return;
@@ -29,7 +33,7 @@ const downloadReport = () => {
 
 <template>
   <div>
-    <AdminPageHeader title="数据概览" description="数据来自 Cloudflare D1；播放事件与 PayPal 已确认订单实时聚合。"><el-button :disabled="!data" @click="downloadReport"><Download :size="16" />下载报表</el-button><el-button v-if="can('content.manage')" type="primary" @click="navigateTo('/admin/series')"><Plus :size="16" />创建短剧</el-button></AdminPageHeader>
+    <AdminPageHeader title="数据概览" description="数据来自 Cloudflare D1；播放事件与 PayPal 已确认订单实时聚合。"><el-button :loading="status === 'pending'" @click="() => refresh()"><RefreshCw :size="16" />刷新</el-button><el-button :disabled="!data" @click="downloadReport"><Download :size="16" />下载报表</el-button><el-button v-if="can('content.manage')" type="primary" @click="navigateTo('/admin/series')"><Plus :size="16" />创建短剧</el-button></AdminPageHeader>
 
     <section v-if="status === 'pending'" class="admin-panel admin-data-state"><el-skeleton :rows="8" animated /></section>
     <section v-else-if="error || !data" class="admin-panel admin-data-state"><span><CloudOff :size="28" /></span><h2>Cloudflare 尚未连接</h2><p>{{ errorMessage }}</p><div><el-button @click="() => refresh()"><RefreshCw :size="16" />重试连接</el-button><NuxtLink v-if="can('system.read')" to="/admin/system" class="el-button el-button--primary">检查配置</NuxtLink></div></section>

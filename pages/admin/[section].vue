@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ArrowLeft, Construction } from 'lucide-vue-next';
 
-definePageMeta({ layout: 'admin' });
+definePageMeta({ layout: 'admin', keepalive: true });
 const route = useRoute();
 const names: Record<string, [string, string]> = {
   taxonomy: ['分类与标签', '管理内容分类、多语言名称、标签颜色与有效期。'],

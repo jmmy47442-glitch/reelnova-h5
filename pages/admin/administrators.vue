@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { CheckCircle2, Copy, Plus, ShieldCheck, ShieldOff, Trash2, UserCog } from 'lucide-vue-next';
+import { CheckCircle2, Copy, Plus, RefreshCw, ShieldCheck, ShieldOff, Trash2, UserCog } from 'lucide-vue-next';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { AdminAccount } from '~/types/admin';
 import type { AssignableAdminRole } from '~/shared/admin-rbac';
 import { adminRoleLabels } from '~/shared/admin-rbac';
+import { usePageData } from '~/composables/usePageData';
 
-definePageMeta({ layout: 'admin' });
+definePageMeta({ layout: 'admin', keepalive: true });
 useHead({ title: '管理员账号 · ReelNova Admin' });
 
 const api = useAdminApi();
-const { data, status, refresh } = await useAsyncData('admin-accounts', () => api.getAdministrators());
+const { data, status, refresh } = usePageData('admin-accounts', () => api.getAdministrators());
 const dialogVisible = ref(false);
 const submitting = ref(false);
 const changingId = ref('');
@@ -122,7 +123,7 @@ const deleteAdministrator = async (account: AdminAccount) => {
 
 <template>
   <div>
-    <AdminPageHeader title="管理员账号" description="按内容运营、财务运营岗位分配最小权限，并控制账号状态。"><el-button type="primary" @click="openCreate"><Plus :size="16" />创建管理员</el-button></AdminPageHeader>
+    <AdminPageHeader title="管理员账号" description="按内容运营、财务运营岗位分配最小权限，并控制账号状态。"><el-button :loading="status === 'pending'" @click="() => refresh()"><RefreshCw :size="16" />刷新</el-button><el-button type="primary" @click="openCreate"><Plus :size="16" />创建管理员</el-button></AdminPageHeader>
     <el-alert title="登录密码仅在创建成功时显示一次。请通过可信渠道转交并妥善保管。" type="warning" show-icon :closable="false" class="admin-alert" />
 
     <section class="admin-panel admin-table-panel">

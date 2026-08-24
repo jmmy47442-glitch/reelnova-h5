@@ -3,7 +3,7 @@ import { CloudOff, Download, RefreshCw, Search, ShieldAlert } from 'lucide-vue-n
 import { ElMessage } from 'element-plus';
 import type { AuditLog, AuditRisk } from '~/types/admin';
 
-definePageMeta({ layout: 'admin' });
+definePageMeta({ layout: 'admin', keepalive: true });
 
 const api = useAdminApi();
 const keyword = ref('');
@@ -23,7 +23,7 @@ const queryParams = computed(() => ({
   page: currentPage.value,
   pageSize,
 }));
-const { data, status, error, refresh } = await useAsyncData('admin-audit-real', () => api.getAudit(queryParams.value), { watch: [queryParams] });
+const { data, status, error, refresh } = useLazyAsyncData('admin-audit-real', () => api.getAudit(queryParams.value), { watch: [queryParams] });
 const rows = computed(() => data.value?.items || []);
 const modules = computed(() => data.value?.modules || []);
 const formatDate = (value: string) => new Date(value).toLocaleString('zh-CN', { hour12: false });

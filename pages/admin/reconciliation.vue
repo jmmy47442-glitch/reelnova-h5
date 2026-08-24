@@ -2,11 +2,11 @@
 import { AlertTriangle, CloudOff, Download, ReceiptText, RefreshCw } from 'lucide-vue-next';
 import { ElMessage } from 'element-plus';
 
-definePageMeta({ layout: 'admin' });
+definePageMeta({ layout: 'admin', keepalive: true });
 const api = useAdminApi();
 const period = ref<'今日' | '近 7 天' | '近 30 天'>('近 7 天');
 const days = computed(() => ({ 今日: 1, '近 7 天': 7, '近 30 天': 30 }[period.value]));
-const { data, status, error, refresh } = await useAsyncData('admin-reconciliation-real', () => api.getReconciliation(days.value), { watch: [days] });
+const { data, status, error, refresh } = useLazyAsyncData('admin-reconciliation-real', () => api.getReconciliation(days.value), { watch: [days] });
 const rows = computed(() => data.value?.rows || []);
 const totals = computed(() => rows.value.reduce((sum, row) => ({ gross: sum.gross + row.gross, fee: sum.fee + row.fee, refunds: sum.refunds + row.refunds, net: sum.net + row.net, paid: sum.paid + row.paid, exceptions: sum.exceptions + row.exceptions }), { gross: 0, fee: 0, refunds: 0, net: 0, paid: 0, exceptions: 0 }));
 const maxGross = computed(() => Math.max(1, ...rows.value.map((row) => row.gross)));

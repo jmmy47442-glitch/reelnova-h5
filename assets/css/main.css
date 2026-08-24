@@ -43,7 +43,22 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .app-header__actions { display: flex; gap: 4px; }
 .icon-button { display: inline-grid; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text); place-items: center; cursor: pointer; }
 .icon-button:hover { background: rgba(255,255,255,.08); }
+.icon-button:disabled { opacity: .58; cursor: wait; }
+.icon-button.is-spinning svg { animation: route-spin .75s linear infinite; }
 .icon-button--glass { border: 1px solid rgba(255,255,255,.14); background: rgba(9,9,13,.46); backdrop-filter: blur(12px); }
+
+.route-loading-overlay { position: fixed; z-index: 1000; inset: 0; display: grid; background: rgba(9,9,13,.12); pointer-events: none; place-items: center; }
+.route-loading-overlay__content { display: inline-flex; min-height: 38px; padding: 0 13px; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; background: rgba(25,25,32,.96); color: var(--text); align-items: center; gap: 8px; font-size: 10px; font-weight: 800; box-shadow: 0 12px 34px rgba(0,0,0,.3); backdrop-filter: blur(14px); }
+.route-loading-overlay__content svg { color: var(--signal); animation: route-spin .75s linear infinite; }
+.route-loading-overlay--admin { background: rgba(245,247,251,.18); }
+.route-loading-overlay--admin .route-loading-overlay__content { border-color: #dfe3eb; background: rgba(255,255,255,.97); color: #242938; box-shadow: 0 10px 30px rgba(25,31,48,.14); }
+.route-loading-enter-active, .route-loading-leave-active { transition: opacity .16s ease; }
+.route-loading-enter-from, .route-loading-leave-to { opacity: 0; }
+@keyframes route-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .route-loading-overlay__content svg, .icon-button.is-spinning svg, .account-toolbar__refresh:disabled svg { animation: none; }
+  .route-loading-enter-active, .route-loading-leave-active { transition: none; }
+}
 
 .featured-strip { position: relative; min-height: 440px; background: linear-gradient(180deg, rgba(9,9,13,.15) 0%, rgba(9,9,13,.32) 46%, var(--ink) 100%), var(--feature-image) center 24% / cover no-repeat; }
 .featured-strip::after { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(9,9,13,.88), transparent 68%); content: ''; }
@@ -189,11 +204,14 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 
 /* Account secondary pages */
 .account-page { padding-bottom: 34px; }
-.account-toolbar { display: grid; min-height: 58px; border-bottom: 1px solid var(--line); grid-template-columns: 44px 1fr 44px; align-items: center; }
+.account-toolbar { display: grid; min-height: 58px; border-bottom: 1px solid var(--line); grid-template-columns: 44px 1fr auto; align-items: center; }
 .account-toolbar > span { color: #77737e; text-align: center; font-size: 10px; font-weight: 800; text-transform: uppercase; }
-.account-toolbar__back, .account-toolbar__help { display: grid; width: 44px; height: 44px; border-radius: 50%; place-items: center; }
+.account-toolbar__back, .account-toolbar__help, .account-toolbar__refresh { display: grid; width: 44px; height: 44px; border: 0; border-radius: 50%; background: transparent; color: inherit; place-items: center; }
 .account-toolbar__back { margin-left: -10px; }.account-toolbar__help { margin-right: -10px; }
-.account-toolbar__back:hover, .account-toolbar__help:hover { background: rgba(255,255,255,.07); }
+.account-toolbar__actions { display: flex; min-width: 44px; align-items: center; justify-content: flex-end; }
+.account-toolbar__spacer { display: block; width: 44px; height: 44px; }
+.account-toolbar__refresh:disabled { opacity: .55; cursor: wait; }.account-toolbar__refresh:disabled svg { animation: route-spin .75s linear infinite; }
+.account-toolbar__back:hover, .account-toolbar__help:hover, .account-toolbar__refresh:hover { background: rgba(255,255,255,.07); }
 .account-heading { display: flex; min-height: 176px; padding: 31px 0 27px; border-bottom: 1px solid var(--line); align-items: flex-start; gap: 15px; }
 .account-heading__icon { display: grid; width: 44px; height: 44px; margin-top: 2px; border: 1px solid rgba(255,61,121,.26); border-radius: 6px; background: rgba(255,61,121,.09); color: var(--signal); flex: 0 0 auto; place-items: center; }
 .account-heading h1 { margin-top: 5px; font-family: var(--font-display); font-size: 36px; line-height: .95; text-transform: uppercase; }

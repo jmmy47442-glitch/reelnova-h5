@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { CheckCircle2, Cloud, Copy, Database, ExternalLink, RefreshCw, ShieldAlert, Video } from 'lucide-vue-next';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { usePageData } from '~/composables/usePageData';
 
-definePageMeta({ layout: 'admin' });
+definePageMeta({ layout: 'admin', keepalive: true });
 const api = useAdminApi();
-const { data, status, refresh } = await useAsyncData('admin-real-connection', () => api.getConnection());
+const { data, status, refresh } = usePageData('admin-real-connection', () => api.getConnection());
 const copyValue = async (value: string) => { await navigator.clipboard.writeText(value); ElMessage.success('已复制'); };
 const webhookUrl = computed(() => import.meta.client ? `${window.location.origin}/api/paypal/webhook` : '/api/paypal/webhook');
 const productionReady = computed(() => Boolean(data.value?.cloudflare.database && data.value?.cloudflare.mediaConfigured

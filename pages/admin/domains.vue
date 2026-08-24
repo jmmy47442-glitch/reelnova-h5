@@ -15,7 +15,7 @@ import {
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { DomainConfig } from '~/composables/useAdminStore';
 
-definePageMeta({ layout: 'admin' });
+definePageMeta({ layout: 'admin', keepalive: true });
 
 const { state } = useAdminStore();
 const api = useAdminApi();

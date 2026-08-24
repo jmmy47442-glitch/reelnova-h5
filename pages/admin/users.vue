@@ -3,7 +3,7 @@ import { CloudOff, KeyRound, RefreshCw, Search, ShieldOff, Smartphone, UserCheck
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { AdminUserDetail, PersistedUser, PersistedUserStatus } from '~/types/admin';
 
-definePageMeta({ layout: 'admin' });
+definePageMeta({ layout: 'admin', keepalive: true });
 
 const { state, addAudit } = useAdminStore();
 const api = useAdminApi();
@@ -19,7 +19,7 @@ const detailError = ref('');
 const detailTab = ref('history');
 const grantForm = reactive({ seriesId: '', reason: '' });
 const queryParams = computed(() => ({ keyword: keyword.value || undefined, status: statusFilter.value || undefined, country: country.value || undefined, pageSize: 100 }));
-const { data, status, error, refresh } = await useAsyncData('admin-users-real', () => api.getUsers(queryParams.value), { watch: [queryParams] });
+const { data, status, error, refresh } = useLazyAsyncData('admin-users-real', () => api.getUsers(queryParams.value), { watch: [queryParams] });
 onMounted(async () => {
   try {
     state.value.series = (await api.getSeries()).items;

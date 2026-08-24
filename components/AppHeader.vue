@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { Globe2, Search } from 'lucide-vue-next';
+import { Globe2, RefreshCw, Search } from 'lucide-vue-next';
 
-defineProps<{ compact?: boolean }>();
+withDefaults(defineProps<{ compact?: boolean; refreshable?: boolean; refreshing?: boolean }>(), {
+  compact: false,
+  refreshable: false,
+  refreshing: false,
+});
+defineEmits<{ refresh: [] }>();
 </script>
 
 <template>
@@ -11,6 +16,17 @@ defineProps<{ compact?: boolean }>();
       <span>REELNOVA</span>
     </NuxtLink>
     <div class="app-header__actions">
+      <button
+        v-if="refreshable"
+        class="icon-button"
+        :class="{ 'is-spinning': refreshing }"
+        type="button"
+        :disabled="refreshing"
+        aria-label="Refresh page data"
+        @click="$emit('refresh')"
+      >
+        <RefreshCw :size="20" />
+      </button>
       <NuxtLink class="icon-button" to="/explore" aria-label="Search">
         <Search :size="21" />
       </NuxtLink>

@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, Eye, GripVertical, Plus, Settings2, Trash2 } from '
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { AdminSeries, HomeSectionConfig } from '~/composables/useAdminStore';
 
-definePageMeta({ layout: 'admin' });
+definePageMeta({ layout: 'admin', keepalive: true });
 
 const { state, addAudit } = useAdminStore();
 const adminApi = useAdminApi();

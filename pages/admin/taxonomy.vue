@@ -3,7 +3,7 @@ import { Check, Palette, Plus, Search, Tag, Trash2 } from 'lucide-vue-next';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { TaxonomyItem } from '~/composables/useAdminStore';
 
-definePageMeta({ layout: 'admin' });
+definePageMeta({ layout: 'admin', keepalive: true });
 
 const { state } = useAdminStore();
 const api = useAdminApi();

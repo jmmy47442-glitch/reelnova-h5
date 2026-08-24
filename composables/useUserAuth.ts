@@ -1,6 +1,7 @@
 import type { ApiEnvelope } from '~/types/content';
 import type { UserLoginInput, UserPasswordResetInput, UserRegisterInput, UserSession } from '~/types/user';
 import { useAccountSettings } from '~/composables/useAccountSettings';
+import { clearPageDataCache } from '~/composables/usePageData';
 import {
   createUserPasswordSalt,
   deriveUserPasswordHash,
@@ -91,6 +92,7 @@ export const useUserAuth = () => {
       session.value = null;
       sessionChecked.value = true;
       accountSettings.resetSettings();
+      clearPageDataCache();
     }
   };
 
