@@ -1,6 +1,6 @@
 import { ok } from '~/server/utils/response';
 import { d1First, d1Run, getRequestCountry } from '~/server/utils/cloudflare-d1';
-import { createPayPalOrder, getActivePayPalEnvironment, requirePayPalConfiguration, type PayPalEnvironment } from '~/server/utils/paypal';
+import { createPayPalOrder, getActivePayPalEnvironment, reconcilePayPalOrder, requirePayPalConfiguration, type PayPalEnvironment } from '~/server/utils/paypal';
 import { assertUserEnabled, upsertUserProfile } from '~/server/utils/user-profile';
 import { getUserSession } from '~/server/utils/user-auth';
 import { getPublicSeries } from '~/server/utils/managed-content';
@@ -19,6 +19,7 @@ interface OrderRow {
   paypal_order_id: string | null;
   approval_url: string | null;
   paypal_environment: PayPalEnvironment | null;
+  updated_at?: string;
 }
 
 const toOrder = (row: OrderRow, entitlementStatus: Order['entitlementStatus'] = 'pending'): Order => ({
@@ -36,7 +37,7 @@ const toOrder = (row: OrderRow, entitlementStatus: Order['entitlementStatus'] = 
 
 const findOpenOrder = (event: Parameters<typeof d1First>[0], userId: string, seriesId: string) =>
   d1First<OrderRow>(event, `SELECT order_no, series_id, series_slug, series_title, user_id, amount_cents, currency,
-    status, created_at, paypal_order_id, approval_url, paypal_environment
+    status, created_at, updated_at, paypal_order_id, approval_url, paypal_environment
     FROM orders WHERE user_id = ? AND series_id = ? AND status IN ('pending', 'processing')
     ORDER BY created_at DESC LIMIT 1`, [userId, seriesId]);
 
@@ -61,7 +62,7 @@ const initializePayPal = async (event: Parameters<typeof d1First>[0], row: Order
       seriesTitle: row.series_title,
       amount: (Number(row.amount_cents) / 100).toFixed(2),
       returnUrl: `${origin}/api/paypal/return?orderNo=${encodeURIComponent(row.order_no)}`,
-      cancelUrl: `${origin}/series/${row.series_slug}?payment=cancelled&orderNo=${encodeURIComponent(row.order_no)}`,
+      cancelUrl: `${origin}/api/paypal/cancel?orderNo=${encodeURIComponent(row.order_no)}`,
       environment: row.paypal_environment || undefined,
     });
     const updatedAt = new Date().toISOString();
@@ -117,7 +118,16 @@ export default defineEventHandler(async (event) => {
       amount: series.price, currency: 'USD' as const, status: 'paid' as const, createdAt: now.toISOString(), entitlementStatus: 'granted' as const });
   }
 
-  const existingPending = await findOpenOrder(event, userId, series.id);
+  let existingPending = await findOpenOrder(event, userId, series.id);
+  if (existingPending?.paypal_order_id && existingPending.updated_at
+    && Date.parse(existingPending.updated_at) < Date.now() - 15 * 60 * 1000) {
+    await reconcilePayPalOrder(event, {
+      paypalOrderId: existingPending.paypal_order_id,
+      environment: existingPending.paypal_environment || undefined,
+      captureApproved: true,
+    }).catch(() => undefined);
+    existingPending = await findOpenOrder(event, userId, series.id);
+  }
   if (existingPending) return ok(await initializePayPal(event, existingPending));
 
   const blockingOrder = await d1First<OrderRow>(event, `SELECT order_no, series_id, series_slug, series_title, user_id,

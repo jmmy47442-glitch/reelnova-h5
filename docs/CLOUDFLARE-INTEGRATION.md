@@ -171,6 +171,8 @@ Subscribe at minimum to:
 
 Copy PayPal's Webhook ID to `PAYPAL_WEBHOOK_ID`. The server verifies every webhook with PayPal before updating an order. Duplicate events are recorded once by `event_id`; verified processing failures can be replayed from the admin connection page.
 
+The hourly Worker cron also calls the signed `/api/internal/paypal/reconcile` endpoint. It rechecks open orders after 15 minutes, captures PayPal orders that are already approved, applies completed or denied capture facts, and closes orders that still cannot be confirmed after 24 hours. Keep the media Worker cron and `APP_BASE_URL` enabled so missed browser responses or Webhooks cannot leave checkout rows permanently in `processing`.
+
 ## 6. Custom domains and HTTPS
 
 ### 6.1 MVP: ordinary Custom Domains

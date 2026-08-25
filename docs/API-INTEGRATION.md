@@ -64,6 +64,8 @@ Episode uploads use 10 MiB R2 multipart chunks. The browser may resume an unexpi
 
 Order creation must use a server-side price snapshot. Playback requests must validate the user session and entitlement every time. PayPal approval in the browser is not proof of payment; only a verified capture or webhook may issue entitlement.
 
+Paid-order and refunded-order transitions drive payment entitlements through D1 triggers. Applying `0019_entitlement_lifecycle.sql` makes the order update and its entitlement grant/revocation one atomic database statement. Repeated capture, webhook, refresh, and login requests read the same persisted entitlement, while a completed refund immediately removes access unless another paid order for the same account and series remains valid.
+
 Playback clients send a `start` when video playback begins, a `heartbeat` every 15 seconds and on pause/seek/page exit, and `complete` when the episode ends. Each write appends the authorized event to `playback_events` and updates one account-level snapshot in `watch_history`. Resume playback, Library and Profile all read that snapshot; clearing history removes only the snapshot so aggregate playback reporting remains intact.
 
 `POST /api/orders` accepts an optional client request `idempotencyKey`, while the server also derives a stable purchase key from the authenticated user and series. A granted entitlement returns `status: "paid"` and `entitlementStatus: "granted"`; an existing `pending` or `processing` checkout returns its original order and PayPal approval details. The database permits only one open checkout per user and series, and the captured price version, amount and activity fields are immutable.

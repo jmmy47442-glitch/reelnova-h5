@@ -17,7 +17,8 @@
     "0015_admin_rbac.sql",
     "0016_paypal_environment.sql",
     "0017_media_upload_idempotency.sql",
-    "0018_analytics_events.sql"
+    "0018_analytics_events.sql",
+    "0019_entitlement_lifecycle.sql"
   ],
   "tables": {
     "schema_migrations": ["version", "name", "checksum", "applied_at", "applied_via", "duration_ms"],
@@ -68,10 +69,11 @@
   "triggers": [
     "prevent_manual_entitlement_during_checkout_insert",
     "prevent_manual_entitlement_during_checkout_update",
-    "protect_order_checkout_snapshot_update",
+    "grant_paid_order_entitlement", "protect_order_checkout_snapshot_update",
     "protect_order_paypal_environment_update",
     "protect_ordered_series_delete",
-    "require_order_paypal_environment_insert",
-    "validate_order_checkout_snapshot_insert"
+    "require_order_paypal_environment_insert", "revoke_refunded_order_entitlement",
+    "validate_order_checkout_snapshot_insert", "validate_payment_entitlement_insert",
+    "validate_payment_entitlement_update"
   ]
 }

@@ -1,14 +1,19 @@
 import type { H3Event } from 'h3';
 import { ofetch, type FetchOptions } from 'ofetch';
-import { d1First, d1Run } from '~/server/utils/cloudflare-d1';
+import { d1All, d1First, d1Run } from '~/server/utils/cloudflare-d1';
 import { upsertUserProfile } from '~/server/utils/user-profile';
 import { getSystemConfig, saveSystemConfig } from '~/server/utils/system-config';
+import {
+  isCancelledPayPalOrderStatus,
+  isCompletedCaptureStatus,
+  isTerminalCaptureFailureStatus,
+} from '~/server/utils/paypal-payment-state';
 
 interface PayPalAccessToken { access_token: string }
 interface PayPalLink { rel: string; href: string }
 interface PayPalOrderResponse { id: string; status: string; links?: PayPalLink[] }
 interface PayPalRefundResponse { id: string; status: string; amount?: { currency_code: string; value: string } }
-interface PayPalCaptureResponse {
+export interface PayPalCaptureResponse {
   id: string;
   status: string;
   payer?: { email_address?: string; address?: { country_code?: string } };
@@ -23,6 +28,8 @@ interface OrderSnapshot {
   order_no: string; series_id: string; series_slug: string; series_title: string; user_id: string;
   amount_cents: number; currency: string; status: string; paypal_order_id: string | null; capture_id: string | null;
   paypal_environment: PayPalEnvironment | null;
+  created_at: string;
+  updated_at: string;
 }
 
 interface RefundRequestRow {
@@ -290,13 +297,20 @@ export const applyVerifiedRefund = async (event: H3Event, input: {
   const paypalRefundId = request.paypal_refund_id || input.paypalRefundId || null;
   let entitlementRevokeStatus = request.entitlement_revoke_status;
   if (nextStatus === 'completed') {
+    // The status transition and entitlement revocation are atomic in D1 via
+    // revoke_refunded_order_entitlement. Replaying it also repairs drift.
+    await d1Run(event, "UPDATE orders SET status = 'refunded', note = ?, updated_at = ? WHERE order_no = ?", [
+      `Refund ${paypalRefundId || request.id} confirmed`, now, order.order_no,
+    ]);
     const entitlement = await d1First<{ status: string }>(event, 'SELECT status FROM entitlements WHERE order_no = ? LIMIT 1', [order.order_no]);
     if (entitlement?.status === 'granted') {
-      await d1Run(event, "UPDATE entitlements SET status = 'revoked', revoked_at = ? WHERE order_no = ? AND status = 'granted'", [now, order.order_no]);
-      entitlementRevokeStatus = 'revoked';
-    } else {
-      entitlementRevokeStatus = entitlement?.status === 'revoked' ? 'revoked' : 'not_applicable';
+      throw createError({
+        statusCode: 503,
+        statusMessage: 'Refund was recorded but entitlement revocation is not available',
+        data: { code: 'ENTITLEMENT_LIFECYCLE_MIGRATION_REQUIRED', orderNo: order.order_no },
+      });
     }
+    entitlementRevokeStatus = entitlement?.status === 'revoked' ? 'revoked' : 'not_applicable';
   }
 
   await d1Run(event, `UPDATE refund_requests SET paypal_refund_id = COALESCE(paypal_refund_id, ?), status = ?, provider_status = ?,
@@ -307,15 +321,11 @@ export const applyVerifiedRefund = async (event: H3Event, input: {
     nextStatus, input.actor || 'PayPal', input.detail || null, now, nextStatus, now, request.id,
   ]);
 
-  if (nextStatus === 'completed') {
-    await d1Run(event, "UPDATE orders SET status = 'refunded', note = ?, updated_at = ? WHERE order_no = ?", [
-      `Refund ${paypalRefundId || request.id} confirmed; entitlement ${entitlementRevokeStatus}`, now, order.order_no,
-    ]);
-  } else if (nextStatus === 'processing') {
+  if (nextStatus === 'processing') {
     await d1Run(event, "UPDATE orders SET status = 'refunding', note = ?, updated_at = ? WHERE order_no = ? AND status != 'refunded'", [
       `Refund ${paypalRefundId || request.id} is ${input.status.toUpperCase()}`, now, order.order_no,
     ]);
-  } else {
+  } else if (nextStatus !== 'completed') {
     await d1Run(event, "UPDATE orders SET status = 'paid', note = ?, updated_at = ? WHERE order_no = ? AND status = 'refunding'", [
       `Refund ${paypalRefundId || request.id} ${nextStatus}: ${input.status.toUpperCase()}`, now, order.order_no,
     ]);
@@ -343,7 +353,7 @@ export const applyVerifiedCapture = async (event: H3Event, paypalOrderId: string
   const payerCountry = capture.payer?.address?.country_code || capture.payment_source?.paypal?.address?.country_code || null;
   if (['refunding', 'refunded'].includes(order.status)) return order;
   const payment = capture.purchase_units?.[0]?.payments?.captures?.[0];
-  if (!payment || payment.status !== 'COMPLETED') throw createError({ statusCode: 409, statusMessage: 'PayPal capture is not completed' });
+  if (!payment || !isCompletedCaptureStatus(payment.status)) throw createError({ statusCode: 409, statusMessage: 'PayPal capture is not completed' });
   const paidCents = Math.round(Number(payment.amount.value) * 100);
   if (payment.amount.currency_code !== order.currency || paidCents !== Number(order.amount_cents)) {
     if (order.status !== 'paid') {
@@ -352,33 +362,153 @@ export const applyVerifiedCapture = async (event: H3Event, paypalOrderId: string
     }
     throw createError({ statusCode: 409, statusMessage: 'Capture amount or currency mismatch' });
   }
-  if (order.status === 'paid') {
-    const now = new Date().toISOString();
-    await d1Run(event, `INSERT INTO entitlements (id, user_id, series_id, order_no, status, granted_at)
-      VALUES (?, ?, ?, ?, 'granted', ?) ON CONFLICT(user_id, series_id) DO NOTHING`,
-    [crypto.randomUUID(), order.user_id, order.series_id, order.order_no, now]);
-    await upsertUserProfile(event, { userId: order.user_id, country: payerCountry, includeDevice: false });
-    return order;
-  }
-  if (!['pending', 'processing'].includes(order.status)) throw createError({
+  // A verified payment fact wins over an earlier local timeout/cancellation.
+  // This also repairs an ambiguous capture request that completed after its HTTP response was lost.
+  if (!['pending', 'processing', 'failed', 'cancelled', 'paid'].includes(order.status)) throw createError({
     statusCode: 409,
     statusMessage: 'Local order is no longer payable',
     data: { code: 'ORDER_NOT_PAYABLE', orderNo: order.order_no, status: order.status },
   });
+  if (order.capture_id && order.capture_id !== payment.id) throw createError({
+    statusCode: 409,
+    statusMessage: 'Local order is already linked to a different capture',
+    data: { code: 'CAPTURE_ID_CONFLICT', orderNo: order.order_no },
+  });
   const now = new Date().toISOString();
   const feeCents = Math.round(Number(payment.seller_receivable_breakdown?.paypal_fee?.value || 0) * 100);
-  // Grant first so a concurrent checkout cannot slip into the gap between the
-  // open order becoming paid and its entitlement being visible.
-  await d1Run(event, `INSERT INTO entitlements (id, user_id, series_id, order_no, status, granted_at)
-    VALUES (?, ?, ?, ?, 'granted', ?) ON CONFLICT(user_id, series_id) DO UPDATE SET order_no = excluded.order_no, status = 'granted', granted_at = excluded.granted_at, revoked_at = NULL`,
-  [crypto.randomUUID(), order.user_id, order.series_id, order.order_no, now]);
-  await d1Run(event, "UPDATE orders SET status = 'paid', capture_id = ?, fee_cents = ?, email = COALESCE(?, email), country = COALESCE(?, country), callback_at = ?, updated_at = ? WHERE order_no = ? AND status != 'paid'", [payment.id, feeCents, payerEmail, payerCountry, now, now, order.order_no]);
+  // The paid transition and entitlement grant are one atomic statement via
+  // grant_paid_order_entitlement. Updating paid again is deliberate: retries
+  // stay idempotent and repair historical partial writes.
+  await d1Run(event, `UPDATE orders SET status = 'paid', capture_id = COALESCE(capture_id, ?), fee_cents = ?,
+    email = COALESCE(?, email), country = COALESCE(?, country), callback_at = COALESCE(callback_at, ?), updated_at = ?
+    WHERE order_no = ? AND status IN ('pending', 'processing', 'failed', 'cancelled', 'paid')`,
+  [payment.id, feeCents, payerEmail, payerCountry, now, now, order.order_no]);
+  const current = await d1First<OrderSnapshot>(event, 'SELECT * FROM orders WHERE order_no = ?', [order.order_no]);
+  const entitlement = await d1First<{ status: string }>(event,
+    "SELECT status FROM entitlements WHERE user_id = ? AND series_id = ? AND status = 'granted' LIMIT 1",
+    [order.user_id, order.series_id]);
+  if (current?.status !== 'paid' || !entitlement) throw createError({
+    statusCode: 503,
+    statusMessage: 'Payment was captured but entitlement issuance is not available',
+    data: { code: 'ENTITLEMENT_LIFECYCLE_MIGRATION_REQUIRED', orderNo: order.order_no },
+  });
   await upsertUserProfile(event, {
     userId: order.user_id,
     country: payerCountry,
     includeDevice: false,
   });
-  return order;
+  return current;
+};
+
+export const applyPayPalPaymentTerminalState = async (event: H3Event, input: {
+  paypalOrderId: string;
+  status: 'failed' | 'cancelled';
+  note: string;
+}) => {
+  const now = new Date().toISOString();
+  await d1Run(event, `UPDATE orders SET status = ?, note = ?,
+    callback_at = COALESCE(callback_at, ?), updated_at = ?
+    WHERE paypal_order_id = ? AND status IN ('pending', 'processing')`, [
+    input.status, input.note.slice(0, 500), now, now, input.paypalOrderId,
+  ]);
+  return d1First<OrderSnapshot>(event, 'SELECT * FROM orders WHERE paypal_order_id = ?', [input.paypalOrderId]);
+};
+
+export const recordPayPalProcessingIssue = async (event: H3Event, paypalOrderId: string, note: string) => {
+  await d1Run(event, `UPDATE orders SET note = ?, updated_at = ?
+    WHERE paypal_order_id = ? AND status IN ('pending', 'processing')`, [
+    note.slice(0, 500), new Date().toISOString(), paypalOrderId,
+  ]);
+};
+
+const captureFromOrder = (details: PayPalCaptureResponse) => details.purchase_units?.[0]?.payments?.captures?.[0];
+
+export const reconcilePayPalOrder = async (event: H3Event, input: {
+  paypalOrderId: string;
+  environment?: PayPalEnvironment;
+  captureApproved?: boolean;
+}) => {
+  let details = await getPayPalOrderDetails(event, input.paypalOrderId, input.environment);
+  let payment = captureFromOrder(details);
+  if (payment && isCompletedCaptureStatus(payment.status)) {
+    await applyVerifiedCapture(event, input.paypalOrderId, details);
+    return 'paid' as const;
+  }
+  if (payment && isTerminalCaptureFailureStatus(payment.status)) {
+    await applyPayPalPaymentTerminalState(event, {
+      paypalOrderId: input.paypalOrderId,
+      status: 'failed',
+      note: `PayPal capture ${payment.id} failed: ${String(payment.status).toUpperCase()}`,
+    });
+    return 'failed' as const;
+  }
+  if (isCancelledPayPalOrderStatus(details.status)) {
+    await applyPayPalPaymentTerminalState(event, {
+      paypalOrderId: input.paypalOrderId,
+      status: 'cancelled',
+      note: 'PayPal checkout was voided',
+    });
+    return 'cancelled' as const;
+  }
+  if (input.captureApproved && String(details.status).toUpperCase() === 'APPROVED') {
+    details = await capturePayPalOrder(event, input.paypalOrderId, input.environment);
+    payment = captureFromOrder(details);
+    if (payment && isCompletedCaptureStatus(payment.status)) {
+      await applyVerifiedCapture(event, input.paypalOrderId, details);
+      return 'paid' as const;
+    }
+    if (payment && isTerminalCaptureFailureStatus(payment.status)) {
+      await applyPayPalPaymentTerminalState(event, {
+        paypalOrderId: input.paypalOrderId,
+        status: 'failed',
+        note: `PayPal capture ${payment.id} failed: ${String(payment.status).toUpperCase()}`,
+      });
+      return 'failed' as const;
+    }
+  }
+  return 'processing' as const;
+};
+
+export const reconcileStalePayPalOrders = async (event: H3Event) => {
+  const now = new Date();
+  const staleBefore = new Date(now.getTime() - 15 * 60 * 1000).toISOString();
+  const hardTimeoutBefore = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const orders = await d1All<OrderSnapshot>(event, `SELECT * FROM orders
+    WHERE status IN ('pending', 'processing') AND updated_at < ? AND paypal_order_id IS NOT NULL
+    ORDER BY updated_at ASC LIMIT 10`, [staleBefore]);
+  const results: Array<{ orderNo: string; status: string }> = [];
+  for (const order of orders) {
+    try {
+      const status = await reconcilePayPalOrder(event, {
+        paypalOrderId: order.paypal_order_id!,
+        environment: order.paypal_environment || undefined,
+        captureApproved: true,
+      });
+      if (status === 'processing' && order.created_at < hardTimeoutBefore) {
+        await applyPayPalPaymentTerminalState(event, {
+          paypalOrderId: order.paypal_order_id!,
+          status: 'failed',
+          note: 'Payment confirmation timed out after 24 hours',
+        });
+        results.push({ orderNo: order.order_no, status: 'failed' });
+      } else {
+        results.push({ orderNo: order.order_no, status });
+      }
+    } catch (error) {
+      if (order.created_at < hardTimeoutBefore) {
+        await applyPayPalPaymentTerminalState(event, {
+          paypalOrderId: order.paypal_order_id!,
+          status: 'failed',
+          note: 'Payment confirmation timed out after 24 hours; PayPal reconciliation was unavailable',
+        });
+        results.push({ orderNo: order.order_no, status: 'failed' });
+      } else {
+        await recordPayPalProcessingIssue(event, order.paypal_order_id!, `PayPal reconciliation pending: ${error instanceof Error ? error.message : 'provider unavailable'}`);
+        results.push({ orderNo: order.order_no, status: 'processing' });
+      }
+    }
+  }
+  return results;
 };
 
 export const processVerifiedPayPalWebhook = async (event: H3Event, webhook: PayPalWebhookEvent) => {
@@ -390,6 +520,16 @@ export const processVerifiedPayPalWebhook = async (event: H3Event, webhook: PayP
       id: paypalOrderId,
       status: 'COMPLETED',
       purchase_units: [{ payments: { captures: [webhook.resource as any] } }],
+    });
+    return true;
+  }
+
+  if (webhook.event_type === 'PAYMENT.CAPTURE.DENIED') {
+    if (!paypalOrderId) throw createError({ statusCode: 422, statusMessage: 'Denied capture webhook has no PayPal Order ID' });
+    await applyPayPalPaymentTerminalState(event, {
+      paypalOrderId,
+      status: 'failed',
+      note: `PayPal capture denied${webhook.resource.id ? `: ${webhook.resource.id}` : ''}`,
     });
     return true;
   }

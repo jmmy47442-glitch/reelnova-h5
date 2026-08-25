@@ -20,6 +20,7 @@ const paypalRendering = ref(false);
 const paypalReady = ref(false);
 const sdkFailed = ref(false);
 const checkoutKey = ref('');
+const activePayPalOrderId = ref('');
 const paypalAvailable = computed(() => Boolean(paymentConfig.value?.available && paymentConfig.value.clientId));
 const purchasable = computed(() => props.series.price > 0);
 
@@ -67,6 +68,16 @@ const completePayment = async (paypalOrderId: string) => {
     window.setTimeout(() => emit('unlocked'), 900);
   } catch (reason) {
     status.value = 'failed';
+    const failure = reason as { data?: { code?: string; data?: { code?: string } } };
+    const code = failure.data?.data?.code || failure.data?.code;
+    error.value = code === 'PAYMENT_CAPTURE_DENIED' || code === 'PAYMENT_CAPTURE_FAILED'
+      ? 'PayPal declined this payment. Choose another funding source and try again.'
+      : code === 'PAYMENT_CONFIRMATION_TIMEOUT' || code === 'PAYMENT_CAPTURE_UNCONFIRMED'
+        ? 'Payment confirmation is taking too long. We will keep checking before you retry.'
+        : 'PayPal could not confirm the payment. Try again or contact support.';
+    paypalRendered.value = false;
+    paypalReady.value = false;
+    checkoutKey.value = '';
     void track('payment_failure', { seriesId: props.series.id, seriesTitle: props.series.title, properties: { provider: 'paypal', stage: 'capture', reason: reason instanceof Error ? reason.message.slice(0, 120) : 'unknown' } });
     throw reason;
   }
@@ -88,11 +99,24 @@ const renderPayPal = async () => {
         const order = await api.createOrder(props.series.id, checkoutKey.value);
         if (order.status === 'paid') { status.value = 'paid'; window.setTimeout(() => emit('unlocked'), 500); return order.paypalOrderId || ''; }
         if (!order.paypalOrderId) throw new Error('PayPal order missing');
+        activePayPalOrderId.value = order.paypalOrderId;
         return order.paypalOrderId;
       },
       onApprove: async ({ orderID }: { orderID: string }) => completePayment(orderID),
-      onCancel: () => { status.value = 'cancelled'; void track('payment_cancel', { seriesId: props.series.id, seriesTitle: props.series.title, properties: { provider: 'paypal' } }); error.value = 'Payment was cancelled. Your order is saved and can be resumed.'; },
-      onError: () => { status.value = 'failed'; void track('payment_failure', { seriesId: props.series.id, seriesTitle: props.series.title, properties: { provider: 'paypal', stage: 'sdk' } }); error.value = 'PayPal could not complete checkout. Try again or contact support.'; },
+      onCancel: () => {
+        status.value = 'cancelled';
+        checkoutKey.value = '';
+        if (activePayPalOrderId.value) void api.cancelPayPalOrder(activePayPalOrderId.value).catch(() => undefined);
+        void track('payment_cancel', { seriesId: props.series.id, seriesTitle: props.series.title, properties: { provider: 'paypal' } });
+        error.value = 'Payment was cancelled. No access was granted and you can start a new checkout.';
+      },
+      onError: () => {
+        status.value = 'failed';
+        paypalRendered.value = false;
+        paypalReady.value = false;
+        void track('payment_failure', { seriesId: props.series.id, seriesTitle: props.series.title, properties: { provider: 'paypal', stage: 'sdk' } });
+        error.value ||= 'PayPal could not complete checkout. Try again or contact support.';
+      },
     }).render(paypalContainer.value);
     paypalReady.value = true;
   } catch {
@@ -111,6 +135,7 @@ watch(() => props.open, (isOpen) => {
     status.value = 'pending';
     error.value = '';
     checkoutKey.value = '';
+    activePayPalOrderId.value = '';
     paypalRendered.value = false;
     paypalRendering.value = false;
     paypalReady.value = false;
@@ -144,6 +169,7 @@ const checkout = async () => {
     const order = await api.createOrder(props.series.id, checkoutKey.value);
     if (order.status === 'paid') { status.value = 'paid'; emit('unlocked'); return; }
     if (!order.approvalUrl) throw new Error('PayPal approval URL missing');
+    activePayPalOrderId.value = order.paypalOrderId || '';
     window.location.assign(order.approvalUrl);
   } catch (reason: unknown) {
     status.value = 'failed';
@@ -210,7 +236,7 @@ watch(paypalContainer, () => { void renderPayPal(); });
               <li><Check :size="17" /> Keep access on restored devices</li>
               <li v-if="purchasable"><Check :size="17" /> Secure checkout through PayPal</li>
             </ul>
-            <div v-if="error" class="inline-error"><CircleAlert :size="18" />{{ error }}</div>
+            <div v-if="error" class="inline-error"><CircleAlert :size="18" /><span>{{ error }} <a href="mailto:support@iseedrama.com?subject=Payment%20support">Contact support</a></span></div>
             <div class="paypal-slot">
               <template v-if="purchasable && paypalAvailable">
                 <div v-if="!sdkFailed" ref="paypalContainer" class="paypal-buttons" aria-label="PayPal checkout" />

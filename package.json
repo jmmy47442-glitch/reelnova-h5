@@ -21,6 +21,8 @@
     "check:acceptance-data": "node scripts/seed-acceptance-data.mjs --check",
     "check:media-worker": "node --check workers/media-worker.mjs",
     "test:media-worker": "node --test tests/media-worker-idempotency.test.mjs",
+    "test:entitlements": "node --test tests/entitlement-lifecycle.test.mjs",
+    "test:payments": "node --experimental-strip-types --test tests/paypal-payment-state.test.mjs",
     "deploy:media-worker": "wrangler deploy --config wrangler.media.toml"
   },
   "dependencies": {

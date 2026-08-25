@@ -332,12 +332,12 @@ const reconcileResources = async (env, body) => {
   return result;
 };
 
-const triggerApplicationReconciliation = async (env) => {
+const triggerApplicationReconciliation = async (env, path) => {
   if (!env.APP_BASE_URL) throw new Error('APP_BASE_URL is not configured');
   const rawBody = JSON.stringify({ triggeredAt: new Date().toISOString() });
   const timestamp = String(Math.floor(Date.now() / 1000));
   const signature = bytesToHex(await hmac(`${timestamp}.${rawBody}`, env.MEDIA_WORKER_SECRET));
-  const response = await fetch(`${String(env.APP_BASE_URL).replace(/\/$/, '')}/api/internal/media/reconcile`, {
+  const response = await fetch(`${String(env.APP_BASE_URL).replace(/\/$/, '')}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-reelnova-timestamp': timestamp, 'x-reelnova-signature': signature },
     body: rawBody,
@@ -421,6 +421,9 @@ export default {
     }
   },
   async scheduled(_controller, env, ctx) {
-    ctx.waitUntil(triggerApplicationReconciliation(env));
+    ctx.waitUntil(Promise.all([
+      triggerApplicationReconciliation(env, '/api/internal/media/reconcile'),
+      triggerApplicationReconciliation(env, '/api/internal/paypal/reconcile'),
+    ]));
   },
 };

@@ -22,6 +22,7 @@ export const useContentApi = () => {
     createOrder: (seriesId: string, idempotencyKey?: string) => request<Order>('/orders', { method: 'POST', timeout: 15_000, body: { seriesId, idempotencyKey } }),
     getPayPalConfig: () => request<{ environment: 'sandbox' | 'production'; clientId: string; available: boolean }>('/paypal/config'),
     capturePayPalOrder: (paypalOrderId: string) => request<{ orderNo: string; status: 'paid' }>('/paypal/capture', { method: 'POST', body: { paypalOrderId } }),
+    cancelPayPalOrder: (paypalOrderId: string) => request<{ orderNo: string; status: 'paid' | 'cancelled' }>('/paypal/cancel', { method: 'POST', body: { paypalOrderId } }),
     getMyOrders: () => request<Order[]>('/me/orders'),
     getOrder: (orderNo: string) => request<Order>(`/orders/${orderNo}`),
     restoreOrder: (lookup: string) => request<{ restored: number }>('/orders/restore', {

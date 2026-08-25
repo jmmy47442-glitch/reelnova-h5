@@ -1,6 +1,7 @@
 import { ok } from '~/server/utils/response';
 import { d1First } from '~/server/utils/cloudflare-d1';
-import { applyVerifiedCapture, applyVerifiedRefund, getPayPalOrderDetails, getPayPalRefundDetails } from '~/server/utils/paypal';
+import { applyPayPalPaymentTerminalState, applyVerifiedCapture, applyVerifiedRefund, getPayPalOrderDetails, getPayPalRefundDetails } from '~/server/utils/paypal';
+import { isCancelledPayPalOrderStatus, isTerminalCaptureFailureStatus } from '~/server/utils/paypal-payment-state';
 import { recordAdminAudit } from '~/server/utils/admin-audit';
 import type { PayPalEnvironment } from '~/server/utils/paypal';
 
@@ -16,6 +17,11 @@ export default defineEventHandler(async (event) => {
   const details = await getPayPalOrderDetails(event, order.paypal_order_id, order.paypal_environment || undefined);
   const capture = details.purchase_units?.[0]?.payments?.captures?.[0];
   if (capture?.status === 'COMPLETED') await applyVerifiedCapture(event, order.paypal_order_id, details);
+  if (capture && isTerminalCaptureFailureStatus(capture.status)) {
+    await applyPayPalPaymentTerminalState(event, { paypalOrderId: order.paypal_order_id, status: 'failed', note: `PayPal capture ${capture.id} failed: ${capture.status}` });
+  } else if (isCancelledPayPalOrderStatus(details.status)) {
+    await applyPayPalPaymentTerminalState(event, { paypalOrderId: order.paypal_order_id, status: 'cancelled', note: 'PayPal checkout was voided' });
+  }
   if (capture && ['REFUNDED', 'REVERSED'].includes(capture.status)) {
     await applyVerifiedRefund(event, { paypalOrderId: order.paypal_order_id, captureId: capture.id, status: capture.status, source: 'admin', actor, detail: 'PayPal order verification detected refunded capture' });
   }
@@ -32,6 +38,7 @@ export default defineEventHandler(async (event) => {
     paypalStatus: details.status,
     captureStatus: capture?.status || null,
     refundStatus,
-    synchronized: capture?.status === 'COMPLETED' || ['REFUNDED', 'REVERSED'].includes(capture?.status || '') || refundStatus === 'completed',
+    synchronized: capture?.status === 'COMPLETED' || isTerminalCaptureFailureStatus(capture?.status)
+      || isCancelledPayPalOrderStatus(details.status) || ['REFUNDED', 'REVERSED'].includes(capture?.status || '') || refundStatus === 'completed',
   });
 });
