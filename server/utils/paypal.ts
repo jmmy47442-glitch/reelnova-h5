@@ -6,6 +6,8 @@ import { getSystemConfig, saveSystemConfig } from '~/server/utils/system-config'
 import {
   isCancelledPayPalOrderStatus,
   isCompletedCaptureStatus,
+  isMissingPayPalResource,
+  isPayPalCheckoutExpired,
   isTerminalCaptureFailureStatus,
 } from '~/server/utils/paypal-payment-state';
 
@@ -472,7 +474,6 @@ export const reconcilePayPalOrder = async (event: H3Event, input: {
 export const reconcileStalePayPalOrders = async (event: H3Event) => {
   const now = new Date();
   const staleBefore = new Date(now.getTime() - 15 * 60 * 1000).toISOString();
-  const hardTimeoutBefore = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
   const orders = await d1All<OrderSnapshot>(event, `SELECT * FROM orders
     WHERE status IN ('pending', 'processing') AND updated_at < ? AND paypal_order_id IS NOT NULL
     ORDER BY updated_at ASC LIMIT 10`, [staleBefore]);
@@ -484,22 +485,24 @@ export const reconcileStalePayPalOrders = async (event: H3Event) => {
         environment: order.paypal_environment || undefined,
         captureApproved: true,
       });
-      if (status === 'processing' && order.created_at < hardTimeoutBefore) {
+      if (status === 'processing' && isPayPalCheckoutExpired(order.created_at, now.getTime())) {
         await applyPayPalPaymentTerminalState(event, {
           paypalOrderId: order.paypal_order_id!,
           status: 'failed',
-          note: 'Payment confirmation timed out after 24 hours',
+          note: 'PayPal checkout expired before payment confirmation',
         });
         results.push({ orderNo: order.order_no, status: 'failed' });
       } else {
         results.push({ orderNo: order.order_no, status });
       }
     } catch (error) {
-      if (order.created_at < hardTimeoutBefore) {
+      if (isMissingPayPalResource(error) || isPayPalCheckoutExpired(order.created_at)) {
         await applyPayPalPaymentTerminalState(event, {
           paypalOrderId: order.paypal_order_id!,
           status: 'failed',
-          note: 'Payment confirmation timed out after 24 hours; PayPal reconciliation was unavailable',
+          note: isMissingPayPalResource(error)
+            ? 'PayPal checkout no longer exists; start a new payment'
+            : 'PayPal checkout expired before payment confirmation',
         });
         results.push({ orderNo: order.order_no, status: 'failed' });
       } else {

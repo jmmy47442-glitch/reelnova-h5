@@ -4,6 +4,8 @@ import {
   isCancelledPayPalOrderStatus,
   isCompletedCaptureStatus,
   isDefinitiveCaptureFailure,
+  isMissingPayPalResource,
+  isPayPalCheckoutExpired,
   isPayPalTimeoutError,
   isTerminalCaptureFailureStatus,
   payPalErrorIssueCodes,
@@ -30,4 +32,18 @@ test('recognizes provider timeout variants', () => {
   assert.equal(isPayPalTimeoutError({ code: 'ETIMEDOUT' }), true);
   assert.equal(isPayPalTimeoutError(new Error('request timed out')), true);
   assert.equal(isPayPalTimeoutError(new Error('provider rejected request')), false);
+});
+
+test('recognizes expired checkout sessions at the PayPal three-hour boundary', () => {
+  const now = Date.parse('2026-08-25T12:00:00.000Z');
+  assert.equal(isPayPalCheckoutExpired('2026-08-25T09:00:00.000Z', now), true);
+  assert.equal(isPayPalCheckoutExpired('2026-08-25T09:00:00.001Z', now), false);
+  assert.equal(isPayPalCheckoutExpired('invalid-date', now), false);
+});
+
+test('recognizes PayPal orders that no longer exist', () => {
+  assert.equal(isMissingPayPalResource({ response: { status: 404 } }), true);
+  assert.equal(isMissingPayPalResource({ response: { _data: { details: [{ issue: 'INVALID_RESOURCE_ID' }] } } }), true);
+  assert.equal(isMissingPayPalResource({ statusCode: 502, data: { details: [{ issue: 'RESOURCE_NOT_FOUND' }] } }), true);
+  assert.equal(isMissingPayPalResource({ response: { status: 500 } }), false);
 });

@@ -9,6 +9,17 @@ export const isTerminalCaptureFailureStatus = (status: unknown) =>
 
 export const isCancelledPayPalOrderStatus = (status: unknown) => normalizePayPalStatus(status) === 'VOIDED';
 
+export const paypalCheckoutLifetimeMs = 3 * 60 * 60 * 1000;
+
+export const isPayPalCheckoutExpired = (
+  createdAt: string,
+  now = Date.now(),
+  lifetimeMs = paypalCheckoutLifetimeMs,
+) => {
+  const createdAtMs = Date.parse(createdAt);
+  return Number.isFinite(createdAtMs) && createdAtMs <= now - lifetimeMs;
+};
+
 const terminalCaptureIssues = new Set([
   'INSTRUMENT_DECLINED',
   'PAYER_CANNOT_PAY',
@@ -38,6 +49,15 @@ export const payPalErrorIssueCodes = (error: unknown): string[] => {
 
 export const isDefinitiveCaptureFailure = (error: unknown) =>
   payPalErrorIssueCodes(error).some((issue) => terminalCaptureIssues.has(issue));
+
+export const isMissingPayPalResource = (error: unknown) => {
+  if (!error || typeof error !== 'object') return false;
+  const record = error as Record<string, unknown>;
+  const response = record.response as Record<string, unknown> | undefined;
+  const status = Number(record.statusCode || record.status || response?.status || 0);
+  return status === 404 || payPalErrorIssueCodes(error).some((issue) =>
+    issue === 'INVALID_RESOURCE_ID' || issue === 'RESOURCE_NOT_FOUND');
+};
 
 export const isPayPalTimeoutError = (error: unknown) => {
   if (!error || typeof error !== 'object') return false;

@@ -1,6 +1,14 @@
 import { ok } from '~/server/utils/response';
 import { d1First, d1Run, getRequestCountry } from '~/server/utils/cloudflare-d1';
-import { createPayPalOrder, getActivePayPalEnvironment, reconcilePayPalOrder, requirePayPalConfiguration, type PayPalEnvironment } from '~/server/utils/paypal';
+import {
+  applyPayPalPaymentTerminalState,
+  createPayPalOrder,
+  getActivePayPalEnvironment,
+  reconcilePayPalOrder,
+  requirePayPalConfiguration,
+  type PayPalEnvironment,
+} from '~/server/utils/paypal';
+import { isMissingPayPalResource, isPayPalCheckoutExpired } from '~/server/utils/paypal-payment-state';
 import { assertUserEnabled, upsertUserProfile } from '~/server/utils/user-profile';
 import { getUserSession } from '~/server/utils/user-auth';
 import { getPublicSeries } from '~/server/utils/managed-content';
@@ -119,14 +127,45 @@ export default defineEventHandler(async (event) => {
   }
 
   let existingPending = await findOpenOrder(event, userId, series.id);
-  if (existingPending?.paypal_order_id && existingPending.updated_at
-    && Date.parse(existingPending.updated_at) < Date.now() - 15 * 60 * 1000) {
-    await reconcilePayPalOrder(event, {
-      paypalOrderId: existingPending.paypal_order_id,
-      environment: existingPending.paypal_environment || undefined,
-      captureApproved: true,
-    }).catch(() => undefined);
-    existingPending = await findOpenOrder(event, userId, series.id);
+  if (existingPending?.paypal_order_id) {
+    const checkoutExpired = isPayPalCheckoutExpired(existingPending.created_at);
+    const needsReconciliation = checkoutExpired || Boolean(existingPending.updated_at
+      && Date.parse(existingPending.updated_at) < Date.now() - 15 * 60 * 1000);
+    if (needsReconciliation) {
+      try {
+        const paypalStatus = await reconcilePayPalOrder(event, {
+          paypalOrderId: existingPending.paypal_order_id,
+          environment: existingPending.paypal_environment || undefined,
+          captureApproved: true,
+        });
+        if (paypalStatus === 'paid') {
+          const paid = await d1First<OrderRow>(event, `SELECT order_no, series_id, series_slug, series_title, user_id,
+            amount_cents, currency, status, created_at, paypal_order_id, approval_url, paypal_environment
+            FROM orders WHERE order_no = ?`, [existingPending.order_no]);
+          if (paid) return ok({ ...toOrder(paid, 'granted'), status: 'paid' as const, approvalUrl: undefined });
+        }
+      } catch (error) {
+        const checkoutMissing = isMissingPayPalResource(error);
+        if (checkoutExpired || checkoutMissing) {
+          await applyPayPalPaymentTerminalState(event, {
+            paypalOrderId: existingPending.paypal_order_id,
+            status: 'failed',
+            note: checkoutMissing
+              ? 'PayPal checkout no longer exists; start a new payment'
+              : 'PayPal checkout expired before payment confirmation',
+          });
+        }
+      }
+      existingPending = await findOpenOrder(event, userId, series.id);
+      if (existingPending?.paypal_order_id && isPayPalCheckoutExpired(existingPending.created_at)) {
+        await applyPayPalPaymentTerminalState(event, {
+          paypalOrderId: existingPending.paypal_order_id,
+          status: 'failed',
+          note: 'PayPal checkout expired before payment confirmation',
+        });
+        existingPending = await findOpenOrder(event, userId, series.id);
+      }
+    }
   }
   if (existingPending) return ok(await initializePayPal(event, existingPending));
 
