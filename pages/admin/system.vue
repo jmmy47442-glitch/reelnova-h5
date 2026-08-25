@@ -5,7 +5,11 @@ import { usePageData } from '~/composables/usePageData';
 
 definePageMeta({ layout: 'admin', keepalive: true });
 const api = useAdminApi();
-const { data, status, refresh } = usePageData('admin-real-connection', () => api.getConnection());
+const { data, status, refresh } = usePageData(
+  'admin-real-connection',
+  () => api.getConnection(),
+  { revalidateOnMount: true },
+);
 const copyValue = async (value: string) => { await navigator.clipboard.writeText(value); ElMessage.success('已复制'); };
 const webhookUrl = computed(() => import.meta.client ? `${window.location.origin}/api/paypal/webhook` : '/api/paypal/webhook');
 const productionReady = computed(() => Boolean(data.value?.cloudflare.database && data.value?.cloudflare.mediaConfigured

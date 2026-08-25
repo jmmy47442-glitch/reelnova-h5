@@ -9,6 +9,10 @@ type CachedPageData<DataT> = {
   data: DataT;
 };
 
+type PageDataOptions<DataT> = AsyncDataOptions<DataT> & {
+  revalidateOnMount?: boolean;
+};
+
 const storageKey = (key: string) => `${STORAGE_PREFIX}${key}`;
 
 const readCache = <DataT>(key: string): { found: boolean; data?: DataT } => {
@@ -57,9 +61,10 @@ export const clearPageDataCache = () => {
 export const usePageData = <DataT>(
   key: string,
   handler: () => Promise<DataT>,
-  options: AsyncDataOptions<DataT> = {},
+  options: PageDataOptions<DataT> = {},
 ) => {
-  const asyncData = useAsyncData(key, handler, { ...options, immediate: false });
+  const { revalidateOnMount = false, ...asyncDataOptions } = options;
+  const asyncData = useAsyncData(key, handler, { ...asyncDataOptions, immediate: false });
   const loading = ref(true);
   const hydratedFromCache = ref(false);
 
@@ -79,6 +84,7 @@ export const usePageData = <DataT>(
       asyncData.data.value = cached.data as typeof asyncData.data.value;
       hydratedFromCache.value = true;
       loading.value = false;
+      if (revalidateOnMount) await refresh();
       return;
     }
     if (asyncData.status.value === 'idle') await refresh();
