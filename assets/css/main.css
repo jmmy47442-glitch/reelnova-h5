@@ -384,6 +384,12 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .watch-visual { position: absolute; inset: 0; background: var(--watch-image) center / cover no-repeat; }
 .watch-video { position: absolute; inset: 0; width: 100%; height: 100%; background: #000; object-fit: contain; }
 .watch-vignette { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,.66), transparent 25%, transparent 58%, rgba(0,0,0,.9)); }
+.watch-loading-overlay { position: absolute; z-index: 4; inset: 0; display: grid; padding: 24px; background: rgba(0,0,0,.34); pointer-events: none; place-items: center; }
+.watch-loading-overlay__content { display: flex; min-width: min(280px, 86vw); padding: 22px 24px 20px; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; background: rgba(13,13,18,.86); box-shadow: 0 18px 60px rgba(0,0,0,.32); text-align: center; align-items: center; flex-direction: column; gap: 7px; backdrop-filter: blur(16px); }
+.watch-loading-overlay__spinner { color: var(--signal); animation: spin 1s linear infinite; }
+.watch-loading-overlay__content strong { margin-top: 3px; font-size: 13px; }
+.watch-loading-overlay__content span { color: #f1edf1; font-size: 10px; }
+.watch-loading-overlay__content small { color: var(--text-muted); font-size: 9px; }
 .watch-top { position: absolute; z-index: 3; top: 0; right: 0; left: 0; display: grid; padding: max(15px, env(safe-area-inset-top)) 12px 12px; grid-template-columns: 44px 1fr 44px 44px; align-items: center; gap: 2px; }
 .watch-top button, .watch-controls button { display: grid; width: 44px; height: 44px; padding: 0; border: 0; background: transparent; color: #fff; place-items: center; }
 .watch-top div { min-width: 0; }
@@ -391,6 +397,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .watch-top strong { font-size: 11px; }
 .watch-top span { margin-top: 3px; color: rgba(255,255,255,.65); font-size: 9px; }
 .watch-center { position: absolute; z-index: 3; top: 50%; left: 50%; display: grid; width: 64px; height: 64px; padding: 0; border: 1px solid rgba(255,255,255,.22); border-radius: 50%; background: rgba(0,0,0,.38); color: #fff; place-items: center; transform: translate(-50%, -50%); backdrop-filter: blur(8px); }
+.watch-center.is-loading { cursor: wait; border-color: rgba(255,255,255,.38); background: rgba(0,0,0,.56); }
 .watch-lock { position: absolute; z-index: 4; top: 50%; left: 50%; display: flex; width: min(86%, 380px); padding: 24px 20px; border: 1px solid rgba(255,255,255,.14); border-radius: 7px; background: rgba(14,14,19,.88); text-align: center; flex-direction: column; align-items: center; transform: translate(-50%, -50%); backdrop-filter: blur(16px); }
 .watch-lock > span { display: grid; width: 52px; height: 52px; margin-bottom: 13px; border-radius: 50%; background: rgba(255,61,121,.16); color: var(--signal); place-items: center; }
 .watch-lock > p { color: var(--text-muted); font-size: 10px; }
