@@ -6,7 +6,9 @@ export default defineNuxtRouteMiddleware(async (to) => {
   if (to.path === '/admin/register') return navigateTo('/admin/login');
 
   const { isAuthenticated, landingPath, can, fetchSession } = useAdminAuth();
-  await fetchSession();
+  // Revalidate protected navigation against the HttpOnly session cookie so a
+  // stale client-side session cannot keep an expired or disabled login alive.
+  await fetchSession(true);
 
   if (to.path === '/admin/login') {
     if (isAuthenticated.value) return navigateTo(landingPath.value);

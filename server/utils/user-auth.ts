@@ -29,6 +29,8 @@ export interface UserAccount {
 }
 
 const sessionCookie = 'reelnova-user-session';
+const standardSessionMaxAge = 60 * 60 * 2;
+const rememberedSessionMaxAge = 60 * 60 * 24 * 7;
 const encoder = new TextEncoder();
 
 const encodeJson = (value: unknown) => userBytesToBase64Url(encoder.encode(JSON.stringify(value)));
@@ -186,7 +188,7 @@ export const resetUserPassword = async (
 };
 
 export const setUserSession = async (event: H3Event, account: UserAccount, remember: boolean) => {
-  const maxAge = remember ? 60 * 60 * 24 * 30 : 60 * 60 * 12;
+  const maxAge = remember ? rememberedSessionMaxAge : standardSessionMaxAge;
   const loggedInAt = new Date().toISOString();
   const session: UserSession = {
     userId: account.userId,

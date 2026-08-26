@@ -149,18 +149,19 @@ results.push({ name: 'admin-interactions', createDialogVisible, orderDrawerVisib
 await interactionPage.close();
 
 const authPage = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
-await authPage.goto(`${baseURL}/admin/series`, { waitUntil: 'networkidle' });
-const protectedRouteRedirected = authPage.url().includes('/admin/login');
+await authPage.goto(`${baseURL}/admin/system`, { waitUntil: 'networkidle' });
+const protectedRouteRedirected = authPage.url().includes('/admin/login?redirect=/admin/system');
+const protectedShellHidden = await authPage.locator('.admin-app').count() === 0;
 await authPage.locator('input[type="email"]').fill('admin@reelnova.com');
 await authPage.locator('input[type="password"]').fill('ReelNova@2026');
 await authPage.getByRole('button', { name: '登录工作台' }).click();
-await authPage.waitForURL(`${baseURL}/admin/series`);
-const loginRestoredRoute = authPage.url().endsWith('/admin/series');
+await authPage.waitForURL(`${baseURL}/admin/system`);
+const loginRestoredRoute = authPage.url().endsWith('/admin/system');
 await authPage.locator('.admin-user').click();
 await authPage.getByText('退出登录', { exact: true }).click();
 await authPage.waitForURL(/\/admin\/login/);
 const logoutReturnedToLogin = authPage.url().includes('/admin/login');
-results.push({ name: 'admin-auth', protectedRouteRedirected, loginRestoredRoute, logoutReturnedToLogin });
+results.push({ name: 'admin-auth', protectedRouteRedirected, protectedShellHidden, loginRestoredRoute, logoutReturnedToLogin });
 await authPage.close();
 
 const checkoutPage = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
