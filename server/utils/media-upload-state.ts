@@ -20,6 +20,7 @@ export interface MediaUploadStateRow {
   stream_created_at: string | null;
   last_error: string | null;
   reconciled_at: string | null;
+  idempotency_key: string;
   r2_completion_key: string;
   stream_idempotency_key: string;
   asset_stream_uid: string | null;

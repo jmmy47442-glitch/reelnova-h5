@@ -12,11 +12,11 @@ const sign = async (rawBody) => {
   return { timestamp, signature: Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('') };
 };
 
-const signedRequest = async (path, body) => {
+const signedRequest = async (path, body, method = 'POST') => {
   const rawBody = JSON.stringify(body);
   const { timestamp, signature } = await sign(rawBody);
   return new Request(`https://media.example.test${path}`, {
-    method: 'POST',
+    method,
     headers: { 'content-type': 'application/json', 'x-reelnova-timestamp': timestamp, 'x-reelnova-signature': signature },
     body: rawBody,
   });
@@ -26,6 +26,7 @@ const createBucket = () => {
   const objects = new Map();
   const uploads = new Map();
   let creates = 0;
+  let aborts = 0;
   const withMetadata = (value) => ({
     ...value,
     writeHttpMetadata(headers) {
@@ -44,6 +45,7 @@ const createBucket = () => {
   };
   return {
     get createCount() { return creates; },
+    get abortCount() { return aborts; },
     async createMultipartUpload(key, options) {
       creates += 1;
       const uploadId = `r2-upload-${creates}`;
@@ -68,7 +70,7 @@ const createBucket = () => {
           uploads.delete(uploadId);
           return object;
         },
-        async abort() { uploads.delete(uploadId); },
+        async abort() { aborts += 1; uploads.delete(uploadId); },
       };
     },
     async put(key, body, options) {
@@ -82,6 +84,43 @@ const createBucket = () => {
     async list() { return { objects: [], truncated: false }; },
   };
 };
+
+test('cancelling an upload aborts multipart state and removes its resume marker', async () => {
+  const bucket = createBucket();
+  const env = {
+    MEDIA_BUCKET: bucket,
+    MEDIA_WORKER_SECRET: secret,
+    CLOUDFLARE_ACCOUNT_ID: 'account-id',
+    CLOUDFLARE_API_TOKEN: 'api-token',
+    PUBLIC_BASE_URL: 'https://media.example.test',
+    APP_ORIGINS: '',
+  };
+  const creation = {
+    idempotencyKey: 'upload:33333333-3333-4333-8333-333333333333',
+    sessionId: 'upload_session_cancel',
+    completionKey: 'r2:upload_session_cancel',
+    streamIdempotencyKey: 'reelnova:upload:upload_session_cancel',
+    objectKey: 'originals/series/episode/asset/cancel.mp4',
+    contentType: 'video/mp4',
+    fileSizeBytes: 1024,
+    metadata: { assetId: 'asset_cancel' },
+  };
+  const upload = await (await worker.fetch(await signedRequest('/uploads', creation), env)).json();
+  const cancellation = {
+    uploadId: upload.uploadId,
+    sessionId: creation.sessionId,
+    objectKey: creation.objectKey,
+    idempotencyKey: creation.idempotencyKey,
+  };
+  const response = await worker.fetch(await signedRequest(`/uploads/${upload.uploadId}`, cancellation, 'DELETE'), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { uploadId: upload.uploadId, sessionId: creation.sessionId, status: 'aborted' });
+  assert.equal(bucket.abortCount, 1);
+
+  const restarted = await (await worker.fetch(await signedRequest('/uploads', creation), env)).json();
+  assert.notEqual(restarted.uploadId, upload.uploadId);
+  assert.equal(bucket.createCount, 2);
+});
 
 test('repeated upload creation and completion reuse R2 and Stream resources', async () => {
   const bucket = createBucket();

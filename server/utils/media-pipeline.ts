@@ -12,6 +12,7 @@ interface EpisodeMediaRow {
   video_status: AdminEpisode['videoStatus'];
   thumbnail_url: string;
   media_asset_id: string | null;
+  upload_id: string | null;
   source_file_name: string | null;
   source_size_bytes: number | null;
   stream_uid: string | null;
@@ -163,12 +164,14 @@ export const listAdminEpisodes = async (event: H3Event, seriesId: string, sync =
     ORDER BY updated_at ASC LIMIT 8`, [seriesId]) : [];
   await Promise.all(processing.map((asset) => syncStreamAsset(event, asset.id, asset.stream_uid).catch(() => undefined)));
   const rows = await d1All<EpisodeMediaRow>(event, `SELECT e.id, e.episode_no, e.title, e.duration_seconds, e.is_free, e.video_status, e.thumbnail_url,
-      a.id AS media_asset_id, a.source_file_name, a.source_size_bytes, a.stream_uid, a.hls_url, a.status AS asset_status,
+      a.id AS media_asset_id, u.id AS upload_id, a.source_file_name, a.source_size_bytes, a.stream_uid, a.hls_url, a.status AS asset_status,
       j.progress, COALESCE(j.error_message, a.validation_error) AS error_message
     FROM episodes e
     LEFT JOIN media_assets a ON a.id = e.active_media_asset_id OR (e.active_media_asset_id IS NULL AND a.id = (
       SELECT id FROM media_assets candidate WHERE candidate.episode_id = e.id AND candidate.deleted_at IS NULL ORDER BY candidate.created_at DESC LIMIT 1))
     LEFT JOIN transcode_jobs j ON j.id = (SELECT id FROM transcode_jobs candidate WHERE candidate.media_asset_id = a.id ORDER BY candidate.created_at DESC LIMIT 1)
+    LEFT JOIN media_upload_sessions u ON u.id = (SELECT id FROM media_upload_sessions candidate
+      WHERE candidate.media_asset_id = a.id AND candidate.status IN ('created', 'uploading') ORDER BY candidate.created_at DESC LIMIT 1)
     WHERE e.series_id = ? AND e.deleted_at IS NULL ORDER BY e.episode_no`, [seriesId]);
   const config = useRuntimeConfig(event);
   const customerCode = String(config.cloudflareStreamCustomerCode || '');
@@ -176,7 +179,7 @@ export const listAdminEpisodes = async (event: H3Event, seriesId: string, sync =
     id: row.id, episodeNo: row.episode_no, title: row.title, durationSeconds: Number(row.duration_seconds),
     isFree: Boolean(row.is_free), videoStatus: row.video_status,
     transcodeProgress: row.video_status === 'ready' ? 100 : Number(row.progress || 0), thumbnailUrl: row.thumbnail_url || '',
-    mediaAssetId: row.media_asset_id, sourceFileName: row.source_file_name, sourceSizeBytes: row.source_size_bytes,
+    mediaAssetId: row.media_asset_id, uploadId: row.upload_id, sourceFileName: row.source_file_name, sourceSizeBytes: row.source_size_bytes,
     errorMessage: row.error_message,
     previewUrl: row.stream_uid && row.video_status === 'ready' && (row.hls_url || customerCode)
       ? `/api/admin/media/${encodeURIComponent(row.media_asset_id || '')}/preview`

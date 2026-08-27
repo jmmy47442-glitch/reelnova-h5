@@ -15,8 +15,18 @@ export default defineEventHandler(async (event) => {
     subtitle: section.subtitle,
     items: section.itemIds.slice(0, section.count).map((id) => seriesById.get(id)).filter((series): series is typeof seriesList[number] => Boolean(series)),
   })).filter((section) => section.items.length);
+  const configuredItemIds = new Set(configured.flatMap((section) => section.items.map((series) => series.id)));
+  const latestUnplaced = configured.length ? seriesList.filter((series) => !configuredItemIds.has(series.id)).slice(0, 12) : [];
   const featured = seriesById.get(homeData.featured.id) || seriesList[0];
-  const sections = configured.length ? configured : [{
+  const sections = configured.length ? [
+    ...configured,
+    ...(latestUnplaced.length ? [{
+      id: 'latest-releases',
+      title: 'Latest releases',
+      subtitle: 'Newly published and ready to watch',
+      items: latestUnplaced,
+    }] : []),
+  ] : [{
     id: 'popular',
     title: 'Popular now',
     subtitle: 'Available to watch now',

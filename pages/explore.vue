@@ -13,7 +13,7 @@ const sort = ref(String(route.query.sort || 'Popular'));
 const showFilters = ref(false);
 const genres = ['All', 'Romance', 'Revenge', 'Billionaire', 'Young Adult', 'Suspense', 'Comedy'];
 const sortOptions = ['Popular', 'Newest', 'Most Watched', 'Most Purchased'];
-const { data, status, error, refresh } = usePageData('explore', () => api.getExplore());
+const { data, status, error, refresh } = usePageData('explore', () => api.getExplore(), { revalidateOnMount: true });
 const { track } = useAnalytics();
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 

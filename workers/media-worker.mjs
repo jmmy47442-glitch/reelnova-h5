@@ -246,6 +246,19 @@ const completeUpload = async (env, body, uploadId) => {
   }
 };
 
+const abortUpload = async (env, body, uploadId) => {
+  if (body.uploadId !== uploadId || !body.sessionId || !body.objectKey || !body.idempotencyKey) {
+    throw new Error('Invalid upload cancellation request');
+  }
+  if (!uploadId.startsWith('pending:')) {
+    await env.MEDIA_BUCKET.resumeMultipartUpload(body.objectKey, uploadId).abort().catch((error) => {
+      if (!/not found|no such upload|does not exist/i.test(error instanceof Error ? error.message : '')) throw error;
+    });
+  }
+  await env.MEDIA_BUCKET.delete(uploadMarkerKey(body.idempotencyKey));
+  return { uploadId, sessionId: body.sessionId, status: 'aborted' };
+};
+
 const reconcileResources = async (env, body) => {
   const keepObjectKeys = new Set(Array.isArray(body.keepObjectKeys) ? body.keepObjectKeys : []);
   const keepStreamUids = new Set(Array.isArray(body.keepStreamUids) ? body.keepStreamUids : []);
@@ -393,6 +406,15 @@ export default {
         const body = JSON.parse(rawBody);
         const uploadId = decodeURIComponent(completeMatch[1]);
         return json(await completeUpload(env, body, uploadId));
+      }
+
+      const cancelMatch = url.pathname.match(/^\/uploads\/([^/]+)$/);
+      if (cancelMatch && request.method === 'DELETE') {
+        const rawBody = await request.text();
+        if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
+        const body = JSON.parse(rawBody);
+        const uploadId = decodeURIComponent(cancelMatch[1]);
+        return json(await abortUpload(env, body, uploadId));
       }
 
       if (url.pathname === '/transcodes' && request.method === 'POST') {

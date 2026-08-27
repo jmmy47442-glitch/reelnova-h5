@@ -100,6 +100,7 @@ export interface AdminEpisode {
   transcodeProgress: number;
   thumbnailUrl: string;
   mediaAssetId: string | null;
+  uploadId: string | null;
   sourceFileName: string | null;
   sourceSizeBytes: number | null;
   errorMessage: string | null;

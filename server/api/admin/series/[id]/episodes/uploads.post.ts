@@ -89,6 +89,10 @@ export default defineEventHandler(async (event) => {
   const now = new Date().toISOString();
 
   if (existing) {
+    // Keep replaced media out of the active catalogue and reconciliation set.
+    // The new asset becomes active only after its Stream job is submitted.
+    await d1Run(event, `UPDATE media_assets SET status = 'superseded', deleted_at = COALESCE(deleted_at, ?), updated_at = ?
+      WHERE episode_id = ? AND deleted_at IS NULL AND status <> 'superseded'`, [now, now, episodeId]);
     await d1Run(event, `UPDATE episodes SET title = ?, is_free = ?, video_status = 'uploading', active_media_asset_id = NULL,
       updated_at = ? WHERE id = ?`, [title, episodeNo <= series.free_episode_count ? 1 : 0, now, episodeId]);
   } else {

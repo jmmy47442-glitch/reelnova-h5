@@ -9,6 +9,7 @@ interface D1Statement {
 
 interface D1Database {
   prepare: (sql: string) => D1Statement;
+  batch: (statements: D1Statement[]) => Promise<Array<{ success: boolean; error?: string; meta?: { changes?: number }; results?: unknown[] }>>;
 }
 
 interface CloudflareContext {
@@ -92,6 +93,36 @@ export const d1Run = async (event: H3Event, sql: string, params: unknown[] = [])
   const result = await binding.prepare(sql).bind(...params).run();
   if (!result.success) throw createError({ statusCode: 502, statusMessage: result.error || 'Cloudflare D1 mutation failed' });
   return result;
+};
+
+export interface D1BatchStatement {
+  sql: string;
+  params?: unknown[];
+}
+
+export const d1Batch = async (event: H3Event, statements: D1BatchStatement[]) => {
+  if (!statements.length) return [];
+  const binding = getBinding(event);
+  if (!binding) {
+    const { accountId, databaseId, apiToken } = getRestConfig(event);
+    if (!accountId || !databaseId || !apiToken) throw missingConfiguration();
+    const response = await $fetch<D1RestResult<unknown>>(`https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`, {
+      method: 'POST',
+      timeout: d1RestTimeoutMs,
+      headers: { Authorization: `Bearer ${apiToken}` },
+      body: { batch: statements.map(({ sql, params = [] }) => ({ sql, params })) },
+    });
+    const results = response.result || [];
+    const failed = !response.success || results.find((result) => !result.success);
+    if (failed) {
+      throw createError({ statusCode: 502, statusMessage: failed && typeof failed === 'object' ? failed.error || response.errors?.[0]?.message || 'Cloudflare D1 batch failed' : response.errors?.[0]?.message || 'Cloudflare D1 batch failed' });
+    }
+    return results;
+  }
+  const results = await binding.batch(statements.map(({ sql, params = [] }) => binding.prepare(sql).bind(...params)));
+  const failed = results.find((result) => !result.success);
+  if (failed) throw createError({ statusCode: 502, statusMessage: failed.error || 'Cloudflare D1 batch failed' });
+  return results;
 };
 
 export const getRequestCountry = (event: H3Event) => {

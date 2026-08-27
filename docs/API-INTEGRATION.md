@@ -48,7 +48,7 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | Dashboard | `GET /api/admin/dashboard` (Cloudflare D1 only) |
 | Pending items | `GET /api/admin/pending-items` (orders and PayPal Webhook failures from Cloudflare D1) |
 | Series | `GET/POST /api/admin/series`, `PUT/DELETE /api/admin/series/{id}`, `PATCH /api/admin/series/{id}/status`, `POST /api/admin/series/{id}/duplicate` |
-| Episodes | `GET /api/admin/series/{id}/episodes`, `POST /api/admin/series/{id}/episodes/uploads`, `PATCH /api/admin/media/uploads/{id}/progress`, `POST /api/admin/media/uploads/{id}/complete`, `POST /api/admin/media/{assetId}/retry`, `GET /api/admin/media/{assetId}/preview` |
+| Episodes | `GET/POST /api/admin/series/{id}/episodes`, `DELETE /api/admin/series/{id}/episodes/{episodeId}`, `POST /api/admin/series/{id}/episodes/uploads`, `PATCH /api/admin/media/uploads/{id}/progress`, `POST /api/admin/media/uploads/{id}/complete`, `POST /api/admin/media/{assetId}/retry`, `GET /api/admin/media/{assetId}/preview` |
 | Home sections | `GET/PUT /api/admin/home-config` |
 | Orders | `GET /api/admin/orders`, `POST /api/admin/orders/{orderNo}/verify`, `GET/POST /api/admin/orders/{orderNo}/refund` (refund mutation requires super administrator) |
 | Users | `GET /api/admin/users`, `GET/PATCH /api/admin/users/{userId}`, `POST /api/admin/users/{userId}/release-device`, `POST /api/admin/users/{userId}/entitlements` |

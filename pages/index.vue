@@ -7,7 +7,7 @@ definePageMeta({ keepalive: true });
 const api = useContentApi();
 const { formatViews } = useFormatters();
 const activeTab = ref('Popular');
-const { data, status, error, refresh } = usePageData('home', () => api.getHome());
+const { data, status, error, refresh } = usePageData('home', () => api.getHome(), { revalidateOnMount: true });
 const { track } = useAnalytics();
 const featuredTracked = ref(false);
 let sectionObserver: IntersectionObserver | undefined;
