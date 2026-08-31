@@ -23,6 +23,7 @@
     "test:media-worker": "node --test tests/media-worker-idempotency.test.mjs",
     "test:entitlements": "node --test tests/entitlement-lifecycle.test.mjs",
     "test:payments": "node --experimental-strip-types --test tests/paypal-payment-state.test.mjs",
+    "test:playback-security": "node --test tests/playback-security.test.mjs",
     "deploy:media-worker": "wrangler deploy --config wrangler.media.toml"
   },
   "dependencies": {

@@ -5,6 +5,7 @@ import { getUserSession } from '~/server/utils/user-auth';
 import { getPublicSeries } from '~/server/utils/managed-content';
 import { createStreamManifestUrl, createStreamPlaybackToken } from '~/server/utils/media-pipeline';
 import { getPlaybackAuthorizationSecret, signPlaybackAuthorization } from '~/server/utils/playback-authorization';
+import { enforcePlaybackRateLimits, establishPlaybackSession, getPlaybackClientContext } from '~/server/utils/playback-security';
 
 export default defineEventHandler(async (event) => {
   const requestUrl = getRequestURL(event);
@@ -54,6 +55,8 @@ export default defineEventHandler(async (event) => {
   const userId = userSession.userId;
   const sessionId = String(query.sessionId || '');
   if (!sessionId || sessionId.length > 100) throw createError({ statusCode: 400, statusMessage: 'Playback session is required' });
+  const playbackContext = await getPlaybackClientContext(event);
+  await enforcePlaybackRateLimits(event, playbackContext, userId, sessionId);
   await upsertUserProfile(event, { userId });
   await assertUserEnabled(event, userId);
   if (!episode.isFree) {
@@ -71,22 +74,15 @@ export default defineEventHandler(async (event) => {
     : null;
   const config = useRuntimeConfig(event);
   const customerCode = String(config.cloudflareStreamCustomerCode || '');
-  const mediaBaseUrl = String(config.cloudflareMediaBaseUrl || '').replace(/\/$/, '');
   const hasStreamSource = Boolean(streamAsset?.stream_uid && (streamAsset.hls_url || customerCode));
-  if (!hasStreamSource && (!mediaBaseUrl || !config.cloudflareMediaSigningSecret)) {
-    throw createError({ statusCode: 503, statusMessage: 'Cloudflare media delivery is not configured' });
-  }
+  if (!hasStreamSource) throw createError({ statusCode: 503, statusMessage: 'Cloudflare Stream signed delivery is not configured' });
   const trackingSecret = getPlaybackAuthorizationSecret(event);
   const expires = Math.floor(Date.now() / 1000) + 10 * 60;
-  const path = `/hls/${series.id}/${episode.episodeNo}/master.m3u8`;
+  await establishPlaybackSession(event, { sessionId, userId, seriesId: series.id, episodeNo: episode.episodeNo, context: playbackContext });
   const trackingSignature = await signPlaybackAuthorization(`track:${userId}:${sessionId}:${series.id}:${episode.episodeNo}:${expires}`, trackingSecret);
-  const streamToken = hasStreamSource && streamAsset?.stream_uid ? await createStreamPlaybackToken(event, streamAsset.stream_uid) : '';
-  const legacySignature = !streamToken
-    ? await signPlaybackAuthorization(`${path}:${userId}:${expires}`, String(config.cloudflareMediaSigningSecret))
-    : '';
-  const signedUrl = streamAsset?.stream_uid && streamToken
-    ? createStreamManifestUrl(streamAsset.stream_uid, streamToken, streamAsset.hls_url, customerCode)
-    : `${mediaBaseUrl}${path}?user=${encodeURIComponent(userId)}&expires=${expires}&signature=${legacySignature}`;
+  const streamToken = await createStreamPlaybackToken(event, streamAsset!.stream_uid!);
+  const signedUrl = createStreamManifestUrl(streamAsset!.stream_uid!, streamToken, streamAsset!.hls_url, customerCode);
+  if (!signedUrl) throw createError({ statusCode: 503, statusMessage: 'Cloudflare Stream signed delivery is not configured' });
   return ok({ authorized: true, signedUrl, expiresAt: new Date(expires * 1000).toISOString(), trackingToken: `${expires}.${trackingSignature}`,
     // A completed episode should start from the beginning on the next visit.
     // Keeping its terminal heartbeat here sends HLS clients straight to the

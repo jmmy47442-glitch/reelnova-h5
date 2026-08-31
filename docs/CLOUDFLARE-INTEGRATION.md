@@ -19,6 +19,8 @@ The admin dashboard and administrator accounts never fall back to sample or in-m
 | Original media | Private Cloudflare R2 bucket | Multipart source uploads; no public bucket URL |
 | Playback media | Cloudflare Stream | Private adaptive HLS authorized with short-lived Stream tokens |
 
+Playback delivery is intentionally Stream-only in production. The application no longer falls back to a legacy `/hls/...` media base URL unless a separately deployed edge verifier is added in the future; this avoids exposing a signed-looking URL whose segments are not enforced at the edge. Each playback grant creates or renews a D1 `playback_sessions` row bound to the signed user session and an HttpOnly playback-device cookie, limits active playback to two devices per account, applies D1-backed fixed-window rate limits, and records rejected or suspicious requests in `playback_security_events` using HMAC hashes rather than raw IP/device values.
+
 Cloudflare Web Analytics request counts are not used as play counts. Page requests, bots, reloads and media segment requests do not represent a user starting an episode.
 
 R2 is private object storage for original videos, not the application database. D1 remains the database for accounts, content metadata, orders, entitlements and media job state.

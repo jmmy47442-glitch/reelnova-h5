@@ -18,7 +18,8 @@
     "0016_paypal_environment.sql",
     "0017_media_upload_idempotency.sql",
     "0018_analytics_events.sql",
-    "0019_entitlement_lifecycle.sql"
+    "0019_entitlement_lifecycle.sql",
+    "0020_playback_security.sql"
   ],
   "tables": {
     "schema_migrations": ["version", "name", "checksum", "applied_at", "applied_via", "duration_ms"],
@@ -37,6 +38,9 @@
     "orders": ["order_no", "series_id", "series_slug", "series_title", "user_id", "email", "country", "amount_cents", "currency", "fee_cents", "status", "paypal_order_id", "capture_id", "note", "created_at", "updated_at", "callback_at", "approval_url", "idempotency_key", "business_idempotency_key", "price_version", "pricing_snapshot_json", "activity_snapshot_json", "paypal_environment"],
     "paypal_webhook_events": ["event_id", "event_type", "paypal_order_id", "verification_status", "processing_status", "error_message", "received_at", "processed_at", "payload_json", "retry_count", "last_retry_at"],
     "playback_events": ["event_id", "session_id", "user_id", "series_id", "series_title", "episode_no", "event_type", "position_seconds", "duration_seconds", "country", "created_at"],
+    "playback_rate_limits": ["bucket_key", "window_started_at", "request_count", "blocked_until", "updated_at"],
+    "playback_security_events": ["id", "session_id", "user_id", "series_id", "episode_no", "event_type", "device_hash", "ip_hash", "detail", "created_at"],
+    "playback_sessions": ["session_id", "user_id", "series_id", "episode_no", "device_hash", "ip_hash", "user_agent_hash", "status", "blocked_reason", "token_count", "event_count", "created_at", "last_seen_at", "expires_at", "last_token_at", "revoked_at"],
     "privacy_requests": ["id", "user_id", "request_type", "status", "detail", "requested_at", "completed_at"],
     "refund_events": ["id", "refund_request_id", "order_no", "event_type", "source", "actor", "from_status", "to_status", "paypal_event_id", "paypal_refund_id", "detail", "created_at"],
     "refund_requests": ["id", "order_no", "capture_id", "paypal_refund_id", "amount_cents", "currency", "status", "request_source", "provider_status", "customer_service_result", "entitlement_revoke_status", "reason", "requested_by", "resolved_by", "resolution_note", "attempt_count", "provider_request_id", "last_attempt_at", "error_message", "created_at", "updated_at", "completed_at"],
@@ -57,7 +61,8 @@
     "idx_orders_active_business_idempotency", "idx_orders_business_idempotency", "idx_orders_one_open_checkout",
     "idx_orders_paypal", "idx_orders_paypal_environment", "idx_orders_series_created", "idx_orders_status_created",
     "idx_orders_user_series_idempotency", "idx_orders_user_series_status", "idx_playback_created",
-    "idx_playback_series_created", "idx_playback_unique_start", "idx_privacy_requests_status",
+    "idx_playback_rate_limits_updated", "idx_playback_security_events_created", "idx_playback_security_events_type_created", "idx_playback_security_events_user_created",
+    "idx_playback_series_created", "idx_playback_sessions_device_active", "idx_playback_sessions_expiry", "idx_playback_sessions_user_active", "idx_playback_unique_start", "idx_privacy_requests_status",
     "idx_privacy_requests_user", "idx_refund_events_order", "idx_refund_events_paypal_event",
     "idx_refund_events_request", "idx_refund_requests_order", "idx_refund_requests_status",
     "idx_series_categories_category", "idx_series_deleted", "idx_series_status_published", "idx_series_tags_tag",

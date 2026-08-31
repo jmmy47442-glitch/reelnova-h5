@@ -4,6 +4,7 @@ import { d1Run, getRequestCountry } from './cloudflare-d1';
 import { getUserSession } from './user-auth';
 import { assertUserEnabled, upsertUserProfile } from './user-profile';
 import { getPlaybackAuthorizationSecret, signPlaybackAuthorization } from './playback-authorization';
+import { enforcePlaybackRateLimits, getPlaybackClientContext, verifyPlaybackEventSession } from './playback-security';
 
 const eventTypes = ['start', 'heartbeat', 'complete'] as const;
 
@@ -37,6 +38,8 @@ export const persistAuthorizedPlaybackEvent = async (event: H3Event, body: Playb
   const secret = getPlaybackAuthorizationSecret(event);
   const session = await getUserSession(event);
   if (!session) throw createError({ statusCode: 401, statusMessage: 'Login required' });
+  const playbackContext = await getPlaybackClientContext(event);
+  await enforcePlaybackRateLimits(event, playbackContext, session.userId, body.sessionId);
 
   const expectedSignature = await signPlaybackAuthorization(`track:${session.userId}:${body.sessionId}:${body.seriesId}:${body.episodeNo}:${expires}`, secret);
   if (!suppliedSignature || !constantTimeEqual(suppliedSignature, expectedSignature)) {
@@ -45,6 +48,13 @@ export const persistAuthorizedPlaybackEvent = async (event: H3Event, body: Playb
 
   await upsertUserProfile(event, { userId: session.userId });
   await assertUserEnabled(event, session.userId);
+  await verifyPlaybackEventSession(event, {
+    sessionId: body.sessionId,
+    userId: session.userId,
+    seriesId: body.seriesId,
+    episodeNo: body.episodeNo,
+    context: playbackContext,
+  });
 
   const now = new Date().toISOString();
   const duration = Math.max(0, Math.round(body.durationSeconds));
