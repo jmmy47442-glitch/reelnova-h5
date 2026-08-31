@@ -271,3 +271,16 @@ Visit `/admin/system`. D1, PayPal and media delivery are checked independently. 
 7. A ready Stream callback updates the episode to `ready`, generates a thumbnail, and enables publish preview.
 
 The admin user page reads `GET /api/admin/users` from D1, the administrator page reads `GET /api/admin/administrators`, and the audit page reads `GET /api/admin/audit`. Run all migrations in numeric order before opening these pages; otherwise the UI will show the explicit database migration error state. Registration creates the `users` row, and authenticated playback or order activity refreshes its country, device and last-seen fields. Verified PayPal captures update order payer details and the user's country without replacing the login email. Administrator credentials and account state use `admin_accounts`; sessions are signed HttpOnly cookies and are revalidated against that table on every protected request.
+# Admin Access security
+
+When `CLOUDFLARE_ACCESS_REQUIRED=true`, admin API requests require a valid
+Cloudflare Access JWT. Configure
+`CLOUDFLARE_ACCESS_TEAM_DOMAIN` with the Access team issuer URL and
+`CLOUDFLARE_ACCESS_AUDIENCE` with the protected application's AUD tag. The
+server fetches the Access JWKS and validates the JWT signature, issuer,
+audience, `exp`, and `nbf`; a request header alone is never trusted.
+
+The administrator values can be supplied through `SUPER_ADMIN_EMAIL`,
+`SUPER_ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`, `ADMIN_CREDENTIAL_SECRET`,
+and `USER_SESSION_SECRET`; the application retains its historical bootstrap
+defaults when these variables are omitted.

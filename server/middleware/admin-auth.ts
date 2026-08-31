@@ -1,6 +1,7 @@
 import { getAdminSession } from '../utils/admin-auth';
 import { getAdminApiPermission } from '../../shared/admin-rbac';
 import { requireAdminPermission } from '../utils/admin-rbac';
+import { verifyCloudflareAccessJwt } from '../utils/cloudflare-access';
 
 const publicAuthRoutes = new Set([
   '/api/admin/auth/challenge',
@@ -12,14 +13,13 @@ const publicAuthRoutes = new Set([
 export default defineEventHandler(async (event) => {
   if (!event.path.startsWith('/api/admin')) return;
   const path = event.path.split('?')[0];
-  if (publicAuthRoutes.has(path)) return;
-
   const config = useRuntimeConfig(event);
   if (String(config.cloudflareAccessRequired) === 'true') {
-    if (!getHeader(event, 'cf-access-jwt-assertion')) {
+    if (!await verifyCloudflareAccessJwt(event)) {
       throw createError({ statusCode: 401, statusMessage: 'Cloudflare Access authentication required' });
     }
   }
+  if (publicAuthRoutes.has(path)) return;
 
   const session = await getAdminSession(event);
   if (session) {

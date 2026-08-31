@@ -3,6 +3,7 @@ import type { AdminRole, AssignableAdminRole } from '../../shared/admin-rbac';
 import { isAdminRole } from '../../shared/admin-rbac';
 import { adminPasswordIterations, base64UrlToBytes, bytesToBase64Url } from '../../shared/admin-password-proof';
 import { d1All, d1First, d1Run } from './cloudflare-d1';
+import { consumeChallenge, enforceAuthRateLimit, storeChallenge } from './auth-security';
 
 type AdminAccountTier = 'super_admin' | 'admin';
 export type AdminStatus = 'invited' | 'active' | 'disabled';
@@ -185,6 +186,7 @@ const signWithKey = async (value: string, keyBytes: BufferSource) => {
 const sign = (payload: string, secret: string) => signWithKey(payload, encoder.encode(secret));
 
 export const createAdminLoginChallenge = async (event: H3Event, email: string) => {
+  await enforceAuthRateLimit(event, 'admin-challenge', email, { ip: 20, email: 5, windowSeconds: 60, blockSeconds: 120 });
   await ensureSuperAdmin(event);
   const normalizedEmail = email.trim().toLowerCase();
   const account = await findByEmail(event, normalizedEmail);
@@ -194,12 +196,15 @@ export const createAdminLoginChallenge = async (event: H3Event, email: string) =
       protectedVerifier, new Date().toISOString(), account.id, account.password_hash,
     ]);
   }
+  const nonce = randomToken();
+  const expiresAt = Date.now() + 60_000;
   const payload = encodeJson({
     email: normalizedEmail,
-    nonce: randomToken(),
-    expiresAt: Date.now() + 60_000,
+    nonce,
+    expiresAt,
   } satisfies AdminLoginChallengePayload);
   const signature = await sign(payload, String(useRuntimeConfig(event).adminSessionSecret));
+  await storeChallenge(event, { nonce, email: normalizedEmail, purpose: 'login', expiresAt });
   return {
     challenge: `${payload}.${signature}`,
     salt: account?.password_salt || randomToken(),
@@ -209,25 +214,28 @@ export const createAdminLoginChallenge = async (event: H3Event, email: string) =
 
 const verifyAdminLoginChallenge = async (event: H3Event, challenge: string, email: string) => {
   const [payload, signature, extra] = challenge.split('.');
-  if (!payload || !signature || extra) return false;
+  if (!payload || !signature || extra) return null;
   const expected = await sign(payload, String(useRuntimeConfig(event).adminSessionSecret));
-  if (!constantTimeEqual(signature, expected)) return false;
+  if (!constantTimeEqual(signature, expected)) return null;
   try {
     const value = decodeJson<AdminLoginChallengePayload>(payload);
-    return value.email === email && Boolean(value.nonce) && value.expiresAt > Date.now();
+    return value.email === email && Boolean(value.nonce) && value.expiresAt > Date.now() ? value : null;
   } catch {
-    return false;
+    return null;
   }
 };
 
 export const authenticateAdminProof = async (event: H3Event, email: string, challenge: string, proof: string) => {
+  await enforceAuthRateLimit(event, 'admin-login', email, { ip: 15, email: 6, windowSeconds: 600, blockSeconds: 900 });
   await ensureSuperAdmin(event);
   const normalizedEmail = email.trim().toLowerCase();
   const account = await findByEmail(event, normalizedEmail);
   if (!account || account.status === 'disabled') return null;
-  if (!await verifyAdminLoginChallenge(event, challenge, normalizedEmail)) return null;
+  const challengePayload = await verifyAdminLoginChallenge(event, challenge, normalizedEmail);
+  if (!challengePayload) return null;
   const expectedProof = await signWithKey(challenge, base64UrlToBytes(await readPasswordVerifier(event, account.password_hash)));
   if (!constantTimeEqual(proof, expectedProof)) return null;
+  if (!await consumeChallenge(event, challengePayload.nonce, normalizedEmail, 'login')) return null;
   const loggedInAt = new Date().toISOString();
   await updateLogin(event, account.id, loggedInAt);
   return { ...toAccount(account), status: 'active' as const, lastLoginAt: loggedInAt };

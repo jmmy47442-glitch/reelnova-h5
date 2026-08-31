@@ -7,6 +7,7 @@ import {
 } from '../../shared/user-password-proof';
 import { d1First, d1Run, getRequestCountry } from './cloudflare-d1';
 import { summarizeDevice } from './user-profile';
+import { consumeChallenge, enforceAuthRateLimit, storeChallenge } from './auth-security';
 
 interface UserAccountRow {
   user_id: string;
@@ -122,18 +123,26 @@ export const createUserAccount = async (event: H3Event, input: {
 interface UserLoginChallengePayload {
   email: string;
   nonce: string;
+  purpose: 'login' | 'reset';
   expiresAt: number;
 }
 
-export const createUserLoginChallenge = async (event: H3Event, email: string) => {
+export const createUserLoginChallenge = async (event: H3Event, email: string, purpose: 'login' | 'reset' = 'login') => {
+  await enforceAuthRateLimit(event, purpose === 'reset' ? 'user-reset-challenge' : 'user-challenge', email, purpose === 'reset'
+    ? { ip: 10, email: 4, windowSeconds: 600, blockSeconds: 900 }
+    : { ip: 20, email: 8, windowSeconds: 60, blockSeconds: 120 });
   const normalizedEmail = email.trim().toLowerCase();
   const account = await findByEmail(event, normalizedEmail);
+  const nonce = randomToken();
+  const expiresAt = Date.now() + 60_000;
   const payload = encodeJson({
     email: normalizedEmail,
-    nonce: randomToken(),
-    expiresAt: Date.now() + 60_000,
+    nonce,
+    purpose,
+    expiresAt,
   } satisfies UserLoginChallengePayload);
   const signature = await sign(payload, String(useRuntimeConfig(event).userSessionSecret));
+  await storeChallenge(event, { nonce, email: normalizedEmail, purpose, expiresAt });
   return {
     challenge: `${payload}.${signature}`,
     salt: account?.password_salt || randomToken(),
@@ -141,26 +150,29 @@ export const createUserLoginChallenge = async (event: H3Event, email: string) =>
   };
 };
 
-const verifyUserLoginChallenge = async (event: H3Event, challenge: string, email: string) => {
+const verifyUserLoginChallenge = async (event: H3Event, challenge: string, email: string, purpose: 'login' | 'reset') => {
   const [payload, signature, extra] = challenge.split('.');
-  if (!payload || !signature || extra) return false;
+  if (!payload || !signature || extra) return null;
   const expected = await sign(payload, String(useRuntimeConfig(event).userSessionSecret));
-  if (!constantTimeEqual(signature, expected)) return false;
+  if (!constantTimeEqual(signature, expected)) return null;
   try {
     const value = decodeJson<UserLoginChallengePayload>(payload);
-    return value.email === email && Boolean(value.nonce) && value.expiresAt > Date.now();
+    return value.email === email && value.purpose === purpose && Boolean(value.nonce) && value.expiresAt > Date.now() ? value : null;
   } catch {
-    return false;
+    return null;
   }
 };
 
 export const authenticateUserProof = async (event: H3Event, email: string, challenge: string, proof: string) => {
+  await enforceAuthRateLimit(event, 'user-login', email, { ip: 15, email: 6, windowSeconds: 600, blockSeconds: 900 });
   const normalizedEmail = email.trim().toLowerCase();
   const account = await findByEmail(event, normalizedEmail);
   if (!account || account.status !== 'active') return null;
-  if (!await verifyUserLoginChallenge(event, challenge, normalizedEmail)) return null;
+  const challengePayload = await verifyUserLoginChallenge(event, challenge, normalizedEmail, 'login');
+  if (!challengePayload) return null;
   const expectedProof = await signWithKey(challenge, userBase64UrlToBytes(account.password_hash));
   if (!constantTimeEqual(proof, expectedProof)) return null;
+  if (!await consumeChallenge(event, challengePayload.nonce, normalizedEmail, 'login')) return null;
   const loggedInAt = new Date().toISOString();
   await d1Run(event, 'UPDATE users SET last_login_at = ?, updated_at = ? WHERE user_id = ?', [loggedInAt, loggedInAt, account.user_id]);
   return { ...toAccount(account), lastLoginAt: loggedInAt };
@@ -171,12 +183,20 @@ export const resetUserPassword = async (
   email: string,
   passwordSalt: string,
   passwordHash: string,
+  challenge: string,
+  proof: string,
 ) => {
+  await enforceAuthRateLimit(event, 'user-reset', email, { ip: 10, email: 4, windowSeconds: 600, blockSeconds: 900 });
   const account = await findByEmail(event, email.trim().toLowerCase());
   if (!account) return null;
   if (account.status !== 'active') {
     throw createError({ statusCode: 403, statusMessage: 'This account cannot reset its password' });
   }
+  const normalizedEmail = email.trim().toLowerCase();
+  const challengePayload = await verifyUserLoginChallenge(event, challenge, normalizedEmail, 'reset');
+  if (!challengePayload) return null;
+  const expectedProof = await signWithKey(challenge, userBase64UrlToBytes(passwordHash));
+  if (!constantTimeEqual(proof, expectedProof) || !await consumeChallenge(event, challengePayload.nonce, normalizedEmail, 'reset')) return null;
   const updatedAt = new Date().toISOString();
   await d1Run(event, 'UPDATE users SET password_salt = ?, password_hash = ?, updated_at = ? WHERE user_id = ?', [
     passwordSalt,

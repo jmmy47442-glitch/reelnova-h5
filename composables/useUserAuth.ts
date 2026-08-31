@@ -76,11 +76,17 @@ export const useUserAuth = () => {
   const resetPassword = async (input: UserPasswordResetInput) => {
     const passwordSalt = createUserPasswordSalt();
     const passwordHash = await deriveUserPasswordHash(input.password, passwordSalt);
+    const challengeResponse = await $fetch<ApiEnvelope<{ challenge: string }>>('/auth/challenge', {
+      baseURL,
+      method: 'POST',
+      body: { email: input.email, purpose: 'reset' },
+    });
+    const proof = await deriveUserPasswordProof(input.password, passwordSalt, challengeResponse.data.challenge);
     const response = await $fetch<ApiEnvelope<{ email: string }>>('/auth/password-reset', {
       baseURL,
       credentials: 'include',
       method: 'POST',
-      body: { ...input, passwordSalt, passwordHash },
+      body: { ...input, passwordSalt, passwordHash, challenge: challengeResponse.data.challenge, proof },
     });
     return response.data;
   };

@@ -1,4 +1,5 @@
 import { createUserAccount, setUserSession } from '../../utils/user-auth';
+import { enforceAuthRateLimit } from '../../utils/auth-security';
 import { ok } from '../../utils/response';
 
 export default defineEventHandler(async (event) => {
@@ -15,6 +16,7 @@ export default defineEventHandler(async (event) => {
   const password = body.password || '';
   if (name.length < 2 || name.length > 40) throw createError({ statusCode: 400, statusMessage: 'Name must be between 2 and 40 characters' });
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw createError({ statusCode: 400, statusMessage: 'Enter a valid email address' });
+  await enforceAuthRateLimit(event, 'user-register', email, { ip: 5, email: 3, windowSeconds: 3600, blockSeconds: 3600 });
   if (password.length < 8 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
     throw createError({ statusCode: 400, statusMessage: 'Password must contain at least 8 characters, including a letter and number' });
   }

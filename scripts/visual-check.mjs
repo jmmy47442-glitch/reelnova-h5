@@ -12,6 +12,9 @@ const browser = await chromium.launch({ executablePath, headless: true });
 const bytesToBase64Url = (bytes) => Buffer.from(bytes).toString('base64url');
 const base64UrlToBytes = (value) => Buffer.from(value, 'base64url');
 
+const adminEmail = process.env.VISUAL_ADMIN_EMAIL || process.env.SUPER_ADMIN_EMAIL || (process.env.NODE_ENV === 'production' ? '' : 'admin@reelnova.com');
+const adminPassword = process.env.VISUAL_ADMIN_PASSWORD || process.env.SUPER_ADMIN_PASSWORD || (process.env.NODE_ENV === 'production' ? '' : 'ReelNova@2026');
+
 const createAdminProof = async (password, { challenge, salt, iterations }) => {
   const passwordKey = await crypto.subtle.importKey('raw', Buffer.from(password), 'PBKDF2', false, ['deriveBits']);
   const passwordHash = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: base64UrlToBytes(salt), iterations }, passwordKey, 256);
@@ -20,14 +23,15 @@ const createAdminProof = async (password, { challenge, salt, iterations }) => {
 };
 
 const addAdminSession = async (page) => {
+  if (!adminEmail || !adminPassword) throw new Error('Set VISUAL_ADMIN_EMAIL and VISUAL_ADMIN_PASSWORD before running visual-check');
   const challengeResponse = await page.request.post(`${baseURL}/api/admin/auth/challenge`, {
-    data: { email: 'admin@reelnova.com' },
+    data: { email: adminEmail },
   });
   if (!challengeResponse.ok()) throw new Error(`Admin challenge failed: ${challengeResponse.status()} ${await challengeResponse.text()}`);
   const challenge = (await challengeResponse.json()).data;
-  const proof = await createAdminProof('ReelNova@2026', challenge);
+  const proof = await createAdminProof(adminPassword, challenge);
   const response = await page.request.post(`${baseURL}/api/admin/auth/login`, {
-    data: { email: 'admin@reelnova.com', challenge: challenge.challenge, proof, remember: true },
+    data: { email: adminEmail, challenge: challenge.challenge, proof, remember: true },
   });
   if (!response.ok()) throw new Error(`Admin login failed: ${response.status()} ${await response.text()}`);
 };
@@ -38,8 +42,13 @@ const userCookies = [];
 
 const addUserSession = async (page) => {
   if (!userCookies.length) {
+    const challengeResponse = await page.request.post(`${baseURL}/api/auth/challenge`, {
+      data: { email: userEmail },
+    });
+    const challenge = (await challengeResponse.json()).data;
+    const proof = await createAdminProof(userPassword, challenge);
     let response = await page.request.post(`${baseURL}/api/auth/login`, {
-      data: { email: userEmail, password: userPassword, remember: true },
+      data: { email: userEmail, challenge: challenge.challenge, proof, remember: true },
     });
     if (response.status() === 401) {
       response = await page.request.post(`${baseURL}/api/auth/register`, {
@@ -152,8 +161,8 @@ const authPage = await browser.newPage({ viewport: { width: 1280, height: 800 },
 await authPage.goto(`${baseURL}/admin/system`, { waitUntil: 'networkidle' });
 const protectedRouteRedirected = authPage.url().includes('/admin/login?redirect=/admin/system');
 const protectedShellHidden = await authPage.locator('.admin-app').count() === 0;
-await authPage.locator('input[type="email"]').fill('admin@reelnova.com');
-await authPage.locator('input[type="password"]').fill('ReelNova@2026');
+await authPage.locator('input[type="email"]').fill(adminEmail);
+await authPage.locator('input[type="password"]').fill(adminPassword);
 await authPage.getByRole('button', { name: '登录工作台' }).click();
 await authPage.waitForURL(`${baseURL}/admin/system`);
 const loginRestoredRoute = authPage.url().endsWith('/admin/system');

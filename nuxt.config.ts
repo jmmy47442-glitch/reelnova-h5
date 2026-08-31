@@ -63,6 +63,8 @@ export default defineNuxtConfig({
     adminCredentialSecret: process.env.ADMIN_CREDENTIAL_SECRET || process.env.ADMIN_SESSION_SECRET || process.env.SUPER_ADMIN_PASSWORD || 'reelnova-development-credential-secret',
     userSessionSecret: process.env.USER_SESSION_SECRET || process.env.ADMIN_SESSION_SECRET || 'reelnova-development-user-session-secret',
     cloudflareAccessRequired: process.env.CLOUDFLARE_ACCESS_REQUIRED || 'false',
+    cloudflareAccessTeamDomain: process.env.CLOUDFLARE_ACCESS_TEAM_DOMAIN || '',
+    cloudflareAccessAudience: process.env.CLOUDFLARE_ACCESS_AUDIENCE || '',
     public: {
       apiBase: process.env.NUXT_PUBLIC_API_BASE || '/api',
       paypalClientId: process.env.NUXT_PUBLIC_PAYPAL_CLIENT_ID || '',
