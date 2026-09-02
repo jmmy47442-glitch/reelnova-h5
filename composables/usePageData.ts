@@ -54,6 +54,17 @@ export const clearPageDataCache = () => {
   }
 };
 
+/** Remove selected page-data snapshots after a server-side state change. */
+export const invalidatePageDataCache = (...keys: string[]) => {
+  if (!import.meta.client) return;
+  try {
+    keys.forEach((key) => localStorage.removeItem(storageKey(key)));
+  } catch {
+    // Ignore disabled storage.
+  }
+  clearNuxtData(keys);
+};
+
 /**
  * Loads page data from localStorage first. The API is only called when no
  * snapshot exists, or when the caller explicitly invokes refresh().
@@ -87,7 +98,7 @@ export const usePageData = <DataT>(
       if (revalidateOnMount) await refresh();
       return;
     }
-    if (asyncData.status.value === 'idle') await refresh();
+    if (asyncData.status.value === 'idle' || revalidateOnMount) await refresh();
   });
 
   return { ...asyncData, status: computed(() => loading.value ? 'pending' : asyncData.status.value), refresh, hydratedFromCache };

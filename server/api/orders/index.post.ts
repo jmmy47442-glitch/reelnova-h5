@@ -64,8 +64,9 @@ const initializePayPal = async (event: Parameters<typeof d1First>[0], row: Order
   if (row.paypal_order_id && row.approval_url) return toOrder(row);
   await requirePayPalConfiguration(event, row.paypal_environment || undefined);
   const origin = getRequestURL(event).origin;
+  let paypal: Awaited<ReturnType<typeof createPayPalOrder>>;
   try {
-    const paypal = await createPayPalOrder(event, {
+    paypal = await createPayPalOrder(event, {
       orderNo: row.order_no,
       seriesTitle: row.series_title,
       amount: (Number(row.amount_cents) / 100).toFixed(2),
@@ -73,24 +74,24 @@ const initializePayPal = async (event: Parameters<typeof d1First>[0], row: Order
       cancelUrl: `${origin}/api/paypal/cancel?orderNo=${encodeURIComponent(row.order_no)}`,
       environment: row.paypal_environment || undefined,
     });
-    const updatedAt = new Date().toISOString();
-    await d1Run(event, `UPDATE orders SET paypal_order_id = ?, approval_url = ?, status = 'processing', updated_at = ?
-      WHERE order_no = ? AND paypal_order_id IS NULL AND status IN ('pending', 'failed')`,
-    [paypal.paypalOrderId, paypal.approvalUrl, updatedAt, row.order_no]);
-    const current = await d1First<OrderRow>(event, `SELECT order_no, series_id, series_slug, series_title, user_id,
-      amount_cents, currency, status, created_at, paypal_order_id, approval_url, paypal_environment FROM orders WHERE order_no = ?`, [row.order_no]);
-    if (!current?.paypal_order_id || !current.approval_url) {
-      throw createError({ statusCode: 409, statusMessage: 'Checkout initialization is still in progress', data: { code: 'CHECKOUT_INITIALIZING' } });
-    }
-    return toOrder(current);
   } catch (error) {
-    // Keep the claim resumable. Releasing it here could let another request
-    // create a second order while a concurrent PayPal call is still finishing.
-    await d1Run(event, `UPDATE orders SET note = ?, updated_at = ?
+    // The provider request uses this order number as its idempotency key, so a
+    // retry can safely release and reinitialize the same local checkout.
+    await d1Run(event, `UPDATE orders SET status = 'failed', note = ?, updated_at = ?
       WHERE order_no = ? AND status = 'pending' AND paypal_order_id IS NULL`,
     [error instanceof Error ? error.message : 'PayPal order creation failed', new Date().toISOString(), row.order_no]);
     throw error;
   }
+  const updatedAt = new Date().toISOString();
+  await d1Run(event, `UPDATE orders SET paypal_order_id = ?, approval_url = ?, status = 'processing', updated_at = ?
+    WHERE order_no = ? AND paypal_order_id IS NULL AND status IN ('pending', 'failed')`,
+  [paypal.paypalOrderId, paypal.approvalUrl, updatedAt, row.order_no]);
+  const current = await d1First<OrderRow>(event, `SELECT order_no, series_id, series_slug, series_title, user_id,
+    amount_cents, currency, status, created_at, paypal_order_id, approval_url, paypal_environment FROM orders WHERE order_no = ?`, [row.order_no]);
+  if (!current?.paypal_order_id || !current.approval_url) {
+    throw createError({ statusCode: 409, statusMessage: 'Checkout initialization is still in progress', data: { code: 'CHECKOUT_INITIALIZING' } });
+  }
+  return toOrder(current);
 };
 
 export default defineEventHandler(async (event) => {

@@ -3,7 +3,7 @@ import { ArrowLeft, Captions, ChevronRight, Gauge, History, Loader2, LockKeyhole
 import Hls from 'hls.js';
 import { useSafeBack } from '~/composables/useSafeBack';
 import { useAnalytics } from '~/composables/useAnalytics';
-import { usePageData } from '~/composables/usePageData';
+import { invalidatePageDataCache, usePageData } from '~/composables/usePageData';
 
 definePageMeta({ layout: false });
 const route = useRoute();
@@ -114,7 +114,7 @@ const sampleNativeMediaTimings = (entries: PerformanceEntry[]) => {
 
 // Revalidate the series snapshot on mount so checkout prices stay in sync
 // with backend changes while preserving the cached data during the request.
-const { data: series, status } = usePageData(
+const { data: series, status, refresh } = usePageData(
   `watch-${String(route.params.slug)}`,
   () => api.getSeries(String(route.params.slug)),
   { revalidateOnMount: true },
@@ -539,11 +539,16 @@ const chooseResume = (choice: 'resume' | 'restart') => {
 };
 const persistOnExit = () => { if (started.value && !video.value?.ended) void record('heartbeat', true); };
 const persistWhenHidden = () => { if (document.visibilityState === 'hidden') persistOnExit(); };
-const handleUnlocked = () => {
+const handleUnlocked = async () => {
   locallyUnlocked.value = true;
   showUnlock.value = false;
+  const slug = String(route.params.slug);
+  invalidatePageDataCache(`series-${slug}`, `watch-${slug}`);
+  initialGrantRequested.value = false;
+  await refresh();
   // The video element is created by v-if after the unlock event.
-  void nextTick(requestInitialGrant);
+  await nextTick();
+  requestInitialGrant();
 };
 
 onMounted(() => {

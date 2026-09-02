@@ -240,7 +240,7 @@ watch(paypalContainer, () => { void renderPayPal(); });
             <div class="paypal-slot">
               <template v-if="purchasable && paypalAvailable">
                 <div v-if="!sdkFailed" ref="paypalContainer" class="paypal-buttons" aria-label="PayPal checkout" />
-                <button v-if="!paypalReady" class="button button--primary button--wide" type="button" @click="checkout">Continue to PayPal</button>
+                <button v-if="sdkFailed" class="button button--primary button--wide" type="button" @click="checkout">Continue to PayPal</button>
               </template>
               <div v-else-if="!purchasable" class="payment-unavailable" role="status"><CircleAlert :size="19" /><div><strong>Purchase unavailable</strong><span>A checkout price has not been set for this series.</span></div></div>
               <div v-else class="payment-unavailable" role="status"><Clock3 :size="19" /><div><strong>Checkout coming soon</strong><span>PayPal payments are not available yet.</span></div></div>

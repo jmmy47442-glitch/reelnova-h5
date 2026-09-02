@@ -41,6 +41,18 @@ const decodeJson = <T>(value: string) => JSON.parse(new TextDecoder().decode(use
 
 const randomToken = (size = 18) => userBytesToBase64Url(crypto.getRandomValues(new Uint8Array(size)));
 
+const userSessionCookieOptions = (event: H3Event, maxAge: number) => ({
+  httpOnly: true,
+  // PayPal returns through a cross-site top-level navigation. Lax keeps that
+  // return signed in while still withholding the cookie from cross-site XHR.
+  sameSite: 'lax' as const,
+  // Respect the actual request protocol so HTTP previews do not receive a
+  // Secure cookie that the browser will silently reject.
+  secure: getRequestURL(event).protocol === 'https:',
+  maxAge,
+  path: '/',
+});
+
 const signWithKey = async (value: string, keyBytes: BufferSource) => {
   const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   const signed = await crypto.subtle.sign('HMAC', key, encoder.encode(value));
@@ -235,16 +247,7 @@ export const setUserSession = async (event: H3Event, account: UserAccount, remem
   };
   const payload = encodeJson(session);
   const signature = await sign(payload, String(useRuntimeConfig(event).userSessionSecret));
-  const cookieOptions = {
-    httpOnly: true,
-    sameSite: 'strict' as const,
-    // Respect the actual request protocol so HTTP previews do not receive a
-    // Secure cookie that the browser will silently reject.
-    secure: getRequestURL(event).protocol === 'https:',
-    maxAge,
-    path: '/',
-  };
-  setCookie(event, sessionCookie, `${payload}.${signature}`, cookieOptions);
+  setCookie(event, sessionCookie, `${payload}.${signature}`, userSessionCookieOptions(event, maxAge));
   return session;
 };
 
@@ -273,6 +276,9 @@ export const getUserSession = async (event: H3Event): Promise<UserSession | null
       if (!session.userId || !session.email || Date.parse(session.expiresAt) <= Date.now()) return null;
       const account = await findById(event, session.userId);
       if (!account || account.status !== 'active' || account.user_id !== session.userId || account.email !== session.email) return null;
+      // Reissue valid legacy Strict cookies as Lax before checkout redirects.
+      const remainingMaxAge = Math.max(1, Math.floor((Date.parse(session.expiresAt) - Date.now()) / 1000));
+      setCookie(event, sessionCookie, token, userSessionCookieOptions(event, remainingMaxAge));
       return { ...session, name: account.display_name };
     } catch {
       return null;

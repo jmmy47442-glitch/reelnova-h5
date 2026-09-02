@@ -2,7 +2,7 @@
 import { ArrowLeft, ChevronDown, Clock3, Eye, LockKeyhole, Play, Share2, Star } from 'lucide-vue-next';
 import { useSafeBack } from '~/composables/useSafeBack';
 import { useAnalytics } from '~/composables/useAnalytics';
-import { usePageData } from '~/composables/usePageData';
+import { invalidatePageDataCache, usePageData } from '~/composables/usePageData';
 
 definePageMeta({ hideBottomNav: true, keepalive: true });
 const route = useRoute();
@@ -29,7 +29,12 @@ onMounted(async () => {
   if (!orderNo || !['success', 'processing'].includes(String(route.query.payment))) return;
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const order = await api.getOrder(orderNo).catch(() => null);
-    if (order?.status === 'paid') { locallyUnlocked.value = true; await refresh(); break; }
+    if (order?.status === 'paid') {
+      locallyUnlocked.value = true;
+      invalidatePageDataCache(`watch-${String(route.params.slug)}`);
+      await refresh();
+      break;
+    }
     if (order && ['failed', 'cancelled', 'risk_review'].includes(order.status)) break;
     await new Promise((resolve) => window.setTimeout(resolve, 1500));
   }
@@ -53,9 +58,11 @@ const share = async () => {
   await navigator.clipboard?.writeText(window.location.href).catch(() => undefined);
 };
 
-const unlockComplete = () => {
+const unlockComplete = async () => {
   locallyUnlocked.value = true;
   showUnlock.value = false;
+  invalidatePageDataCache(`watch-${String(route.params.slug)}`);
+  await refresh();
 };
 </script>
 
