@@ -51,6 +51,7 @@ export const useAdminApi = () => {
       retryStatusCodes: [408, 429, 500, 502, 503, 504],
     }),
     createEpisode: (seriesId: string, title: string) => request<AdminEpisode>(`/admin/series/${encodeURIComponent(seriesId)}/episodes`, { method: 'POST', body: { title } }),
+    updateEpisodeAccess: (seriesId: string, episodeId: string, isFree: boolean) => request<AdminEpisode>(`/admin/series/${encodeURIComponent(seriesId)}/episodes/${encodeURIComponent(episodeId)}`, { method: 'PATCH', body: { isFree } }),
     reorderEpisodes: (seriesId: string, episodeIds: string[]) => request<{ items: AdminEpisode[] }>(`/admin/series/${encodeURIComponent(seriesId)}/episodes/order`, { method: 'PUT', body: { episodeIds } }),
     deleteEpisode: (seriesId: string, episodeId: string) => request<{ id: string; episodeNo: number; title: string; items: AdminEpisode[] }>(`/admin/series/${encodeURIComponent(seriesId)}/episodes/${encodeURIComponent(episodeId)}`, { method: 'DELETE' }),
     createEpisodeUpload: (seriesId: string, input: { idempotencyKey: string; episodeNo: number; title: string; fileName: string; contentType: string; fileSizeBytes: number; durationSeconds: number; width: number; height: number; hasVideo: true; hasAudio: true }) =>

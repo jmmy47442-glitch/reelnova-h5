@@ -4,6 +4,8 @@ import { useAccountSettings } from '~/composables/useAccountSettings';
 export default defineNuxtRouteMiddleware(async (to) => {
   if (to.path.startsWith('/admin')) return;
 
+  if (to.path === '/terms') return;
+
   const isEntryRoute = to.path === '/login' || to.path === '/register';
   const { isAuthenticated, fetchSession } = useUserAuth();
   const accountSettings = useAccountSettings();

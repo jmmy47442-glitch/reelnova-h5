@@ -97,6 +97,9 @@ export const listNormalizedSeries = async (event: H3Event): Promise<ManagedSerie
     const progress = episodes.length
       ? Math.round(episodes.reduce((sum, episode) => sum + (episode.video_status === 'ready' ? 100 : Number(episode.progress || 0)), 0) / episodes.length)
       : 0;
+    const freeEpisodeCount = episodes.length
+      ? episodes.filter((episode) => Boolean(episode.is_free)).length
+      : row.free_episode_count;
     return {
       id: row.id,
       slug: row.slug,
@@ -114,7 +117,7 @@ export const listNormalizedSeries = async (event: H3Event): Promise<ManagedSerie
       views: 0,
       rating: 0,
       episodeCount: episodes.length,
-      freeEpisodeCount: row.free_episode_count,
+      freeEpisodeCount,
       price: row.price_cents / 100,
       originalPrice: row.original_price_cents == null ? undefined : row.original_price_cents / 100,
       currency: row.currency,
@@ -214,7 +217,6 @@ export const updateNormalizedSeries = async (event: H3Event, id: string, input: 
   await d1Run(event, `UPDATE series SET title = ?, description = ?, target_region = ?, free_episode_count = ?,
     price_cents = ?, updated_at = ? WHERE id = ?`, [input.title, input.description, input.targetRegion, input.freeEpisodeCount, Math.round(input.price * 100), now, id]);
   await replaceCategories(event, id, input.genres);
-  await d1Run(event, 'UPDATE episodes SET is_free = CASE WHEN episode_no <= ? THEN 1 ELSE 0 END, updated_at = ? WHERE series_id = ?', [input.freeEpisodeCount, now, id]);
   await snapshotVersion(event, id, 'draft');
   return (await listNormalizedSeries(event)).find((item) => item.id === id)!;
 };

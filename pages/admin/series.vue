@@ -48,6 +48,7 @@ const episodeError = ref('');
 const deletingEpisodeIds = ref<string[]>([]);
 const episodeListElement = ref<HTMLElement | null>(null);
 const episodeOrderSaving = ref(false);
+const episodeAccessSavingIds = ref<string[]>([]);
 const episodeOrderAnnouncement = ref('');
 const previewVisible = ref(false);
 const previewVideo = ref<HTMLVideoElement | null>(null);
@@ -122,12 +123,15 @@ const saveSeries = async () => {
     return;
   }
   const current = editingId.value ? state.value.series.find((item) => item.id === editingId.value) : undefined;
-  if (current && current.episodeCount > form.freeEpisodeCount && form.price <= 0) {
+  const freeEpisodeCount = editingId.value && !episodesLoading.value && !episodeError.value
+    ? episodes.value.filter((episode) => episode.isFree).length
+    : form.freeEpisodeCount;
+  if (current && current.episodeCount > freeEpisodeCount && form.price <= 0) {
     ElMessage.warning('仍有付费分集时，解锁价格必须大于 0 美元');
     return;
   }
   saving.value = true;
-  const input = { ...form, title: form.title.trim(), description: form.description.trim(), genres: [...form.genres] };
+  const input = { ...form, freeEpisodeCount, title: form.title.trim(), description: form.description.trim(), genres: [...form.genres] };
   try {
     if (editingId.value) {
       const updated = await api.updateSeries(editingId.value, input);
@@ -235,10 +239,12 @@ const loadEpisodes = async (showLoading = true) => {
     const row = state.value.series.find((item) => item.id === seriesId);
     if (row) {
       row.episodeCount = episodes.value.length;
+      row.freeEpisodeCount = episodes.value.filter((episode) => episode.isFree).length;
       row.transcodeProgress = episodes.value.length
         ? Math.round(episodes.value.reduce((sum, episode) => sum + episode.transcodeProgress, 0) / episodes.value.length)
         : 0;
       selectedSeries.value = row;
+      form.freeEpisodeCount = row.freeEpisodeCount;
     }
   } catch (reason: any) {
     if (requestId === episodeLoadRequestId && selectedSeries.value?.id === seriesId) {
@@ -250,16 +256,40 @@ const loadEpisodes = async (showLoading = true) => {
 };
 
 const syncEpisodeSummary = () => {
-  const seriesId = editingId.value || selectedSeries.value?.id;
+  const seriesId = selectedSeries.value?.id;
   const row = state.value.series.find((item) => item.id === seriesId);
   if (!row) return;
   row.episodeCount = episodes.value.length;
+  row.freeEpisodeCount = episodes.value.filter((episode) => episode.isFree).length;
   row.transcodeProgress = episodes.value.length
     ? Math.round(episodes.value.reduce((sum, episode) => sum + episode.transcodeProgress, 0) / episodes.value.length)
     : 0;
   if (row.publishStatus !== '版权冻结') row.publishStatus = '草稿';
   row.publishAt = new Date().toISOString().slice(0, 10);
   selectedSeries.value = row;
+  form.freeEpisodeCount = row.freeEpisodeCount;
+};
+
+const toggleEpisodeAccess = async (episode: AdminEpisode, isFree: boolean) => {
+  const seriesId = selectedSeries.value?.id;
+  if (!seriesId || episodeAccessSavingIds.value.includes(episode.id) || episode.isFree === isFree) return;
+  const previous = episode.isFree;
+  episode.isFree = isFree;
+  syncEpisodeSummary();
+  episodeAccessSavingIds.value = [...episodeAccessSavingIds.value, episode.id];
+  try {
+    const updated = await api.updateEpisodeAccess(seriesId, episode.id, isFree);
+    const index = episodes.value.findIndex((item) => item.id === updated.id);
+    if (index >= 0) episodes.value[index] = updated;
+    syncEpisodeSummary();
+    ElMessage.success(`第 ${updated.episodeNo} 集已设为${isFree ? '试看' : '收费'}`);
+  } catch (reason: any) {
+    episode.isFree = previous;
+    syncEpisodeSummary();
+    ElMessage.error(reason?.data?.statusMessage || '剧集试看设置保存失败');
+  } finally {
+    episodeAccessSavingIds.value = episodeAccessSavingIds.value.filter((id) => id !== episode.id);
+  }
 };
 
 const clientOrderedEpisodes = (items: AdminEpisode[]) => items.map((episode, index) => {
@@ -268,7 +298,7 @@ const clientOrderedEpisodes = (items: AdminEpisode[]) => items.map((episode, ind
     ...episode,
     episodeNo,
     title: episode.title === `Episode ${episode.episodeNo}` ? `Episode ${episodeNo}` : episode.title,
-    isFree: episodeNo <= form.freeEpisodeCount,
+    isFree: episode.isFree,
   };
 });
 
@@ -338,7 +368,7 @@ const resequenceEpisodesForEditor = (items: AdminEpisode[]) => items
       ...item,
       episodeNo,
       title: /^Episode \d+$/i.test(item.title) ? `Episode ${episodeNo}` : item.title,
-      isFree: episodeNo <= form.freeEpisodeCount,
+      isFree: item.isFree,
     };
   });
 
@@ -814,7 +844,7 @@ const exportSeries = () => {
       <el-form label-position="top">
         <el-form-item label="英文剧名" required><el-input v-model="form.title" maxlength="80" show-word-limit placeholder="例如 Vows & Vengeance" /></el-form-item>
         <div class="form-grid"><el-form-item label="分类" required><el-select v-model="form.genres" multiple style="width: 100%" placeholder="选择分类"><el-option v-for="item in categories" :key="item" :label="item" :value="item" /></el-select></el-form-item><el-form-item label="目标地区"><el-select v-model="form.targetRegion" style="width: 100%"><el-option label="United States" value="United States" /><el-option label="Global" value="Global" /><el-option label="Canada" value="Canada" /></el-select></el-form-item></div>
-        <div class="form-grid"><el-form-item label="试看集数"><el-input-number v-model="form.freeEpisodeCount" :min="0" :max="10" /></el-form-item><el-form-item label="解锁价格（USD）"><el-input-number v-model="form.price" :min="0" :precision="2" :step="1" /></el-form-item></div>
+        <div class="form-grid"><el-form-item label="试看集数（统计）"><el-input-number v-model="form.freeEpisodeCount" :min="0" :max="10000" :disabled="Boolean(editingId)" /><small v-if="editingId" class="series-editor-form-hint">请在下方逐集设置试看或收费</small></el-form-item><el-form-item label="解锁价格（USD）"><el-input-number v-model="form.price" :min="0" :precision="2" :step="1" /></el-form-item></div>
         <el-form-item label="短剧简介"><el-input v-model="form.description" type="textarea" :rows="4" maxlength="500" show-word-limit /></el-form-item>
       </el-form>
       <section v-if="editingId" class="series-editor-episodes" aria-labelledby="series-editor-episodes-title">
@@ -839,7 +869,8 @@ const exportSeries = () => {
               <strong>{{ episode.title }}</strong>
               <span>{{ episode.sourceFileName || '未上传视频' }}<template v-if="episode.durationSeconds"> · {{ formatDuration(episode.durationSeconds) }}</template></span>
             </div>
-            <el-tag v-if="episode.isFree" size="small" effect="plain" type="success">试看</el-tag>
+            <el-tag size="small" effect="plain" :type="episode.isFree ? 'success' : 'danger'">{{ episode.isFree ? '试看' : '收费' }}</el-tag>
+            <el-switch :model-value="episode.isFree" inline-prompt active-text="试看" inactive-text="收费" :loading="episodeAccessSavingIds.includes(episode.id)" :disabled="episodeOrderSaving || deletingEpisodeIds.length > 0" :aria-label="`设置第 ${episode.episodeNo} 集为${episode.isFree ? '收费' : '试看'}`" @change="(value) => toggleEpisodeAccess(episode, Boolean(value))" />
             <el-tag size="small" :type="mediaStatus(episode)[1] as any" effect="light">{{ mediaStatus(episode)[0] }}</el-tag>
             <el-tooltip :content="episode.previewUrl ? `预览第 ${episode.episodeNo} 集视频` : '视频就绪后可预览'" placement="top">
               <span><el-button class="series-editor-episode-preview" circle text :disabled="!episode.previewUrl" :aria-label="`预览第 ${episode.episodeNo} 集视频`" @click="openPreview(episode)"><Eye :size="16" /></el-button></span>
@@ -854,7 +885,7 @@ const exportSeries = () => {
         </div>
         <span class="sr-only" aria-live="polite">{{ episodeOrderAnnouncement }}</span>
       </section>
-      <template #footer><el-button :disabled="episodeOrderSaving || deletingEpisodeIds.length > 0" @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" :disabled="episodeOrderSaving || deletingEpisodeIds.length > 0" @click="saveSeries">{{ editingId ? '保存修改' : '创建草稿' }}</el-button></template>
+      <template #footer><el-button :disabled="episodeOrderSaving || deletingEpisodeIds.length > 0 || episodeAccessSavingIds.length > 0" @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" :disabled="episodeOrderSaving || deletingEpisodeIds.length > 0 || episodeAccessSavingIds.length > 0" @click="saveSeries">{{ editingId ? '保存修改' : '创建草稿' }}</el-button></template>
     </el-dialog>
 
     <el-drawer v-model="episodeDrawer" class="admin-episode-drawer" :title="`${selectedSeries?.title || ''} · 分集管理`" size="min(620px, 92vw)" append-to-body>
@@ -895,6 +926,7 @@ const exportSeries = () => {
             <span class="episode-index">{{ String(episode.episodeNo).padStart(2, '0') }}</span>
             <div><strong>{{ episode.title }}</strong><span>{{ episode.sourceFileName || '尚无媒体文件' }} · {{ formatBytes(episode.sourceSizeBytes) }}<template v-if="episode.durationSeconds"> · {{ formatDuration(episode.durationSeconds) }}</template></span><small v-if="episode.errorMessage" role="alert">{{ mediaErrorMessage(episode.errorMessage) }}</small></div>
             <el-button v-if="episode.videoStatus === 'uploading' && episode.uploadId && !(uploadFinalizing && episode.uploadId === activeUploadSessionId)" class="episode-cancel-upload" text type="danger" size="small" :loading="cancellingUploadIds.includes(episode.uploadId)" :disabled="cancellingUploadIds.includes(episode.uploadId)" aria-label="取消该视频上传" @click="cancelEpisode(episode)"><X :size="14" />{{ cancellingUploadIds.includes(episode.uploadId) ? '取消中' : '取消' }}</el-button>
+            <el-switch :model-value="episode.isFree" inline-prompt active-text="试看" inactive-text="收费" :loading="episodeAccessSavingIds.includes(episode.id)" :aria-label="`设置第 ${episode.episodeNo} 集为${episode.isFree ? '收费' : '试看'}`" @change="(value) => toggleEpisodeAccess(episode, Boolean(value))" />
             <el-tag :type="mediaStatus(episode)[1] as any" effect="light">{{ mediaStatus(episode)[0] }}</el-tag>
             <el-tooltip v-if="episode.previewUrl" content="发布前预览" placement="top"><el-button circle text aria-label="发布前预览" @click="openPreview(episode)"><Eye :size="16" /></el-button></el-tooltip>
             <el-tooltip v-if="episode.videoStatus === 'failed' || (episode.videoStatus === 'validating' && episode.errorMessage)" content="重试转码" placement="top"><el-button circle text aria-label="重试转码" @click="retryTranscode(episode)"><RefreshCw :size="16" /></el-button></el-tooltip>

@@ -12,7 +12,13 @@ const { formatPrice, formatViews } = useFormatters();
 const showFullDescription = ref(false);
 const showUnlock = ref(false);
 const locallyUnlocked = ref(false);
-const { data: series, status, error, refresh } = usePageData(`series-${String(route.params.slug)}`, () => api.getSeries(String(route.params.slug)));
+// Keep the cached snapshot for instant paint, then revalidate so admin price
+// changes are reflected after a browser refresh or a fresh page mount.
+const { data: series, status, error, refresh } = usePageData(
+  `series-${String(route.params.slug)}`,
+  () => api.getSeries(String(route.params.slug)),
+  { revalidateOnMount: true },
+);
 const { track } = useAnalytics();
 watch(series, (value) => {
   if (value) void track('detail_open', { seriesId: value.id, seriesTitle: value.title });
@@ -80,7 +86,7 @@ const unlockComplete = () => {
             </button>
           </div>
         </section>
-        <section class="purchase-note"><LockKeyhole :size="19" /><div><h2>One pass. The whole story.</h2><p>Unlock episodes {{ series.freeEpisodeCount + 1 }}–{{ series.episodeCount }} and future updates for {{ formatPrice(series.price) }} USD.</p></div></section>
+        <section class="purchase-note"><LockKeyhole :size="19" /><div><h2>One pass. The whole story.</h2><p>Unlock all paid episodes and future updates for {{ formatPrice(series.price) }} USD.</p></div></section>
       </div>
       <UnlockSheet :series="series" :open="showUnlock" @close="showUnlock = false" @unlocked="unlockComplete" />
     </template>

@@ -9,6 +9,7 @@ import { useAccountSettings } from '~/composables/useAccountSettings';
 import { useLocale } from '~/composables/useLocale';
 import { useUserAuth } from '~/composables/useUserAuth';
 import { usePageData } from '~/composables/usePageData';
+import { termsOfService } from '~/data/legal';
 
 definePageMeta({ hideBottomNav: true, keepalive: true });
 const route = useRoute();
@@ -24,7 +25,7 @@ const pageConfig = {
   history: { eyebrow: 'RECENTLY WATCHED', title: 'Watch history', description: 'Pick up where you stopped or revisit a recent story.', icon: History },
   language: { eyebrow: 'APP PREFERENCES', title: 'Language', description: 'Choose the language used for navigation and account screens.', icon: Globe2 },
   privacy: { eyebrow: 'YOUR DATA', title: 'Privacy', description: 'Control how ReelNova uses your activity and account information.', icon: Shield },
-  terms: { eyebrow: 'POLICIES', title: 'Terms & refunds', description: 'The essentials about purchases, access, and refund requests.', icon: FileText },
+  terms: { eyebrow: 'POLICIES', title: 'Terms of Service', description: 'The rules for using ReelNova, purchasing access, and resolving issues.', icon: FileText },
   help: { eyebrow: 'SUPPORT', title: 'Help center', description: 'Quick answers for watching, purchases, and your account.', icon: CircleHelp },
 } as const;
 
@@ -107,12 +108,7 @@ const faqs = [
   { question: 'Where can I find my order number?', answer: 'Order numbers begin with RN- and appear in Orders & payments and in your PayPal receipt.' },
 ];
 
-const terms = [
-  { title: 'Access to purchased stories', body: 'A purchase grants personal, non-transferable streaming access to the listed story while the ReelNova service and your account remain available. It does not transfer ownership of the video files.' },
-  { title: 'Payments and renewals', body: 'Story passes are one-time purchases shown in USD. ReelNova does not start a recurring subscription unless a recurring plan is clearly presented and accepted at checkout.' },
-  { title: 'Refund requests', body: 'You may request a review within 14 days of purchase. Eligibility can be limited after substantial playback or completion. Approved refunds return to the original payment method.' },
-  { title: 'Account responsibilities', body: 'Keep your sign-in details secure and do not share, resell, record, or redistribute ReelNova content. Access may be limited when automated abuse or payment fraud is detected.' },
-];
+const terms = termsOfService;
 
 const filteredFaqs = computed(() => {
   const query = faqQuery.value.trim().toLowerCase();
@@ -301,7 +297,7 @@ onBeforeUnmount(() => { if (noticeTimer.value) clearTimeout(noticeTimer.value); 
       </template>
 
       <template v-else-if="section === 'terms'">
-        <aside class="policy-summary"><span><FileText :size="21" /></span><div><strong>Policy summary</strong><p>Effective August 10, 2026. This summary highlights common questions and does not replace the complete terms.</p></div></aside>
+        <aside class="policy-summary"><span><FileText :size="21" /></span><div><strong>Terms of Service</strong><p>Effective August 10, 2026. These sections explain the rules that apply when you use ReelNova or purchase digital access.</p></div></aside>
         <div class="policy-list">
           <article v-for="(item, index) in terms" :key="item.title" :class="{ 'is-open': openTerm === index }">
             <button type="button" @click="openTerm = openTerm === index ? -1 : index"><span>{{ item.title }}</span><ChevronDown :size="18" /></button>

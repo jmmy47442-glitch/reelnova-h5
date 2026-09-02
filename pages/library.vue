@@ -8,7 +8,11 @@ const api = useContentApi();
 const { session } = useUserAuth();
 const activeTab = ref('Continue watching');
 const libraryKey = `library-${session.value?.userId || 'current'}`;
-const { data, status, error, refresh } = usePageData(libraryKey, () => api.getLibrary());
+const { data, status, error, refresh } = usePageData(
+  libraryKey,
+  () => api.getLibrary(),
+  { revalidateOnMount: true },
+);
 </script>
 
 <template>

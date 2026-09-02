@@ -112,7 +112,13 @@ const sampleNativeMediaTimings = (entries: PerformanceEntry[]) => {
   });
 };
 
-const { data: series, status } = usePageData(`watch-${String(route.params.slug)}`, () => api.getSeries(String(route.params.slug)));
+// Revalidate the series snapshot on mount so checkout prices stay in sync
+// with backend changes while preserving the cached data during the request.
+const { data: series, status } = usePageData(
+  `watch-${String(route.params.slug)}`,
+  () => api.getSeries(String(route.params.slug)),
+  { revalidateOnMount: true },
+);
 const currentEpisode = computed(() => series.value?.episodes.find((episode) => episode.episodeNo === episodeNo.value));
 const canPlay = computed(() => Boolean(currentEpisode.value?.isUnlocked || currentEpisode.value?.isFree || locallyUnlocked.value));
 

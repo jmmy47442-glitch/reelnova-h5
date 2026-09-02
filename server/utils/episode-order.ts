@@ -5,7 +5,7 @@ export interface EpisodeOrderItem {
   isFree: boolean;
 }
 
-export const orderEpisodesByIds = <T extends EpisodeOrderItem>(episodes: T[], episodeIds: string[], freeEpisodeCount: number): T[] => {
+export const orderEpisodesByIds = <T extends EpisodeOrderItem>(episodes: T[], episodeIds: string[]): T[] => {
   if (episodeIds.length !== episodes.length || new Set(episodeIds).size !== episodeIds.length) {
     throw new Error('Episode order must contain every episode exactly once');
   }
@@ -18,7 +18,8 @@ export const orderEpisodesByIds = <T extends EpisodeOrderItem>(episodes: T[], ep
       ...episode,
       episodeNo,
       title: episode.title === `Episode ${episode.episodeNo}` ? `Episode ${episodeNo}` : episode.title,
-      isFree: episodeNo <= freeEpisodeCount,
+      // Access mode belongs to the episode itself and must survive reordering.
+      isFree: episode.isFree,
     };
   });
 };

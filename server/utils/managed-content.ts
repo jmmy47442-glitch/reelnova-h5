@@ -50,6 +50,8 @@ const cloneSeries = (items: ManagedSeries[]) => items.map((item) => ({
   genres: [...item.genres],
   cast: [...item.cast],
   episodes: item.episodes.map((episode) => ({ ...episode })),
+  // Keep the legacy series-level count accurate once episodes exist.
+  freeEpisodeCount: item.episodes.length ? item.episodes.filter((episode) => episode.isFree).length : item.freeEpisodeCount,
 }));
 const cloneItems = <T extends object>(items: T[]) => items.map((item) => ({ ...item }));
 const invalidateNormalizedSeriesCache = () => { normalizedSeriesCache = undefined; };
@@ -132,7 +134,7 @@ export const updateManagedSeriesRecord = async (event: H3Event, id: string, inpu
   if (!item) throw createError({ statusCode: 404, statusMessage: 'Series not found' });
   const now = new Date().toISOString();
   Object.assign(item, input, { genres: [...input.genres], publishAt: now.slice(0, 10), updatedAt: now });
-  item.episodes = item.episodes.map((episode) => ({ ...episode, isFree: episode.episodeNo <= item.freeEpisodeCount }));
+  if (item.episodes.length) item.freeEpisodeCount = item.episodes.filter((episode) => episode.isFree).length;
   await saveManagedSeries(event, items);
   return item;
 };
@@ -250,7 +252,7 @@ const moveDeletedEpisodesPastActiveRange = (seriesId: string, deletedIds: string
   }];
 };
 
-const resequenceEpisodeStatements = (seriesId: string, episodeIds: string[], freeEpisodeCount: number, tempBase: number, now: string): D1BatchStatement[] => {
+const resequenceEpisodeStatements = (seriesId: string, episodeIds: string[], tempBase: number, now: string): D1BatchStatement[] => {
   if (!episodeIds.length) return [];
   const numberCase = episodeNumberCase(episodeIds);
   return [
@@ -265,10 +267,9 @@ const resequenceEpisodeStatements = (seriesId: string, episodeIds: string[], fre
       params: [tempBase, ...numberCase.params, now, seriesId],
     },
     {
-      sql: `UPDATE episodes SET episode_no = (${numberCase.sql}),
-        is_free = CASE WHEN (${numberCase.sql}) <= ? THEN 1 ELSE 0 END, updated_at = ?
+      sql: `UPDATE episodes SET episode_no = (${numberCase.sql}), updated_at = ?
         WHERE series_id = ? AND deleted_at IS NULL`,
-      params: [...numberCase.params, ...numberCase.params, freeEpisodeCount, now, seriesId],
+      params: [...numberCase.params, now, seriesId],
     },
   ];
 };
@@ -276,15 +277,15 @@ const resequenceEpisodeStatements = (seriesId: string, episodeIds: string[], fre
 export const reorderManagedEpisodeRecords = async (event: H3Event, seriesId: string, episodeIds: string[]) => {
   if (hasD1Connection(event)) {
     invalidateNormalizedSeriesCache();
-    const series = await d1First<{ id: string; title: string; free_episode_count: number }>(event,
-      'SELECT id, title, free_episode_count FROM series WHERE id = ? AND deleted_at IS NULL', [seriesId]);
+    const series = await d1First<{ id: string; title: string }>(event,
+      'SELECT id, title FROM series WHERE id = ? AND deleted_at IS NULL', [seriesId]);
     if (!series) throw createError({ statusCode: 404, statusMessage: 'Series not found' });
     const current = await d1All<{ id: string; episode_no: number; title: string; is_free: number }>(event,
       'SELECT id, episode_no, title, is_free FROM episodes WHERE series_id = ? AND deleted_at IS NULL ORDER BY episode_no', [seriesId]);
     try {
       orderEpisodesByIds(current.map((episode) => ({
         id: episode.id, episodeNo: episode.episode_no, title: episode.title, isFree: Boolean(episode.is_free),
-      })), episodeIds, series.free_episode_count);
+      })), episodeIds);
     } catch (error) {
       throw createError({ statusCode: 400, statusMessage: error instanceof Error ? error.message : 'Invalid episode order' });
     }
@@ -300,7 +301,7 @@ export const reorderManagedEpisodeRecords = async (event: H3Event, seriesId: str
     const now = new Date().toISOString();
     await d1Batch(event, [
       ...moveDeletedEpisodesPastActiveRange(seriesId, deleted.map((item) => item.id), base, now),
-      ...resequenceEpisodeStatements(seriesId, episodeIds, series.free_episode_count, base + deleted.length + episodeIds.length + 1, now),
+      ...resequenceEpisodeStatements(seriesId, episodeIds, base + deleted.length + episodeIds.length + 1, now),
       {
         sql: `UPDATE series SET status = CASE WHEN status = 'rights_frozen' THEN status ELSE 'draft' END, updated_at = ? WHERE id = ?`,
         params: [now, seriesId],
@@ -314,7 +315,7 @@ export const reorderManagedEpisodeRecords = async (event: H3Event, seriesId: str
   const series = items.find((item) => item.id === seriesId);
   if (!series) throw createError({ statusCode: 404, statusMessage: 'Series not found' });
   try {
-    series.episodes = orderEpisodesByIds(series.episodes, episodeIds, series.freeEpisodeCount);
+    series.episodes = orderEpisodesByIds(series.episodes, episodeIds);
   } catch (error) {
     throw createError({ statusCode: 400, statusMessage: error instanceof Error ? error.message : 'Invalid episode order' });
   }
@@ -380,7 +381,6 @@ export const deleteManagedEpisodeRecord = async (event: H3Event, seriesId: strin
       episodeResult,
       activeUploadResult,
       remainingResult,
-      seriesResult,
       maximumResult,
       previouslyDeletedResult,
     ] = await d1Batch(event, [
@@ -401,10 +401,6 @@ export const deleteManagedEpisodeRecord = async (event: H3Event, seriesId: strin
         params: [seriesId, episodeId],
       },
       {
-        sql: 'SELECT free_episode_count FROM series WHERE id = ?',
-        params: [seriesId],
-      },
-      {
         sql: 'SELECT COALESCE(MAX(episode_no), 0) AS episode_no FROM episodes WHERE series_id = ?',
         params: [seriesId],
       },
@@ -420,7 +416,6 @@ export const deleteManagedEpisodeRecord = async (event: H3Event, seriesId: strin
       throw createError({ statusCode: 409, statusMessage: 'Cancel the active upload before deleting this episode' });
     }
     const remaining = (remainingResult?.results || []) as Array<{ id: string }>;
-    const series = seriesResult?.results?.[0] as { free_episode_count: number } | undefined;
     const maximum = maximumResult?.results?.[0] as { episode_no: number } | undefined;
     const previouslyDeleted = (previouslyDeletedResult?.results || []) as Array<{ id: string }>;
     const remainingIds = remaining.map((item) => item.id);
@@ -443,10 +438,11 @@ export const deleteManagedEpisodeRecord = async (event: H3Event, seriesId: strin
         sql: 'UPDATE episodes SET episode_no = ?, deleted_at = ?, updated_at = ? WHERE id = ?',
         params: [tombstoneNo, now, now, episodeId],
       },
-      ...resequenceEpisodeStatements(seriesId, remainingIds, Number(series?.free_episode_count || 0), tombstoneNo + remainingIds.length + 1, now),
+      ...resequenceEpisodeStatements(seriesId, remainingIds, tombstoneNo + remainingIds.length + 1, now),
       {
-        sql: `UPDATE series SET status = CASE WHEN status = 'rights_frozen' THEN status ELSE 'draft' END, updated_at = ? WHERE id = ?`,
-        params: [now, seriesId],
+        sql: `UPDATE series SET free_episode_count = (SELECT COUNT(*) FROM episodes WHERE series_id = ? AND deleted_at IS NULL AND is_free = 1),
+          status = CASE WHEN status = 'rights_frozen' THEN status ELSE 'draft' END, updated_at = ? WHERE id = ?`,
+        params: [seriesId, now, seriesId],
       },
     ]);
     invalidateNormalizedSeriesCache();
@@ -462,14 +458,48 @@ export const deleteManagedEpisodeRecord = async (event: H3Event, seriesId: strin
   series.episodes = orderEpisodesByIds(
     series.episodes,
     series.episodes.sort((left, right) => left.episodeNo - right.episodeNo).map((item) => item.id),
-    series.freeEpisodeCount,
   );
   series.episodeCount = series.episodes.length;
+  series.freeEpisodeCount = series.episodes.filter((item) => item.isFree).length;
   series.updatedLabel = `${series.episodeCount} EP`;
   if (series.publishStatus !== '版权冻结') series.publishStatus = '草稿';
   series.publishAt = new Date().toISOString().slice(0, 10);
   await saveManagedSeries(event, items);
   return { id: episode!.id, episodeNo: episode!.episodeNo, title: episode!.title, seriesTitle: series.title, items: series.episodes.map(memoryEpisodeToAdmin) };
+};
+
+export const updateManagedEpisodeAccess = async (event: H3Event, seriesId: string, episodeId: string, isFree: boolean) => {
+  if (hasD1Connection(event)) {
+    invalidateNormalizedSeriesCache();
+    const episode = await d1First<{ id: string; title: string; episode_no: number; series_title: string }>(event,
+      `SELECT e.id, e.title, e.episode_no, s.title AS series_title
+       FROM episodes e JOIN series s ON s.id = e.series_id
+       WHERE e.id = ? AND e.series_id = ? AND e.deleted_at IS NULL AND s.deleted_at IS NULL`, [episodeId, seriesId]);
+    if (!episode) throw createError({ statusCode: 404, statusMessage: 'Episode not found' });
+    const now = new Date().toISOString();
+    await d1Batch(event, [
+      { sql: 'UPDATE episodes SET is_free = ?, updated_at = ? WHERE id = ?', params: [isFree ? 1 : 0, now, episodeId] },
+      { sql: `UPDATE series SET free_episode_count = (SELECT COUNT(*) FROM episodes WHERE series_id = ? AND deleted_at IS NULL AND is_free = 1),
+        status = CASE WHEN status = 'rights_frozen' THEN status ELSE 'draft' END, updated_at = ? WHERE id = ?`, params: [seriesId, now, seriesId] },
+    ]);
+    const updated = (await getManagedEpisodes(event, seriesId, false)).find((item) => item.id === episodeId);
+    if (!updated) throw createError({ statusCode: 404, statusMessage: 'Episode not found' });
+    invalidateNormalizedSeriesCache();
+    return { episode: updated, seriesTitle: episode.series_title };
+  }
+  const items = await getManagedSeries(event);
+  const series = items.find((item) => item.id === seriesId);
+  const episode = series?.episodes.find((item) => item.id === episodeId);
+  if (!series || !episode) throw createError({ statusCode: 404, statusMessage: 'Episode not found' });
+  episode.isFree = isFree;
+  episode.isUnlocked = isFree;
+  series.freeEpisodeCount = series.episodes.filter((item) => item.isFree).length;
+  if (series.publishStatus !== '版权冻结') series.publishStatus = '草稿';
+  const now = new Date().toISOString();
+  series.publishAt = now.slice(0, 10);
+  series.updatedAt = now;
+  await saveManagedSeries(event, items);
+  return { episode: memoryEpisodeToAdmin(episode), seriesTitle: series.title };
 };
 
 export const getPublicSeries = async (event: H3Event) => {

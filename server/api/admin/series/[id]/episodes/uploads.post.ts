@@ -93,8 +93,8 @@ export default defineEventHandler(async (event) => {
     // The new asset becomes active only after its Stream job is submitted.
     await d1Run(event, `UPDATE media_assets SET status = 'superseded', deleted_at = COALESCE(deleted_at, ?), updated_at = ?
       WHERE episode_id = ? AND deleted_at IS NULL AND status <> 'superseded'`, [now, now, episodeId]);
-    await d1Run(event, `UPDATE episodes SET title = ?, is_free = ?, video_status = 'uploading', active_media_asset_id = NULL,
-      updated_at = ? WHERE id = ?`, [title, episodeNo <= series.free_episode_count ? 1 : 0, now, episodeId]);
+    await d1Run(event, `UPDATE episodes SET title = ?, video_status = 'uploading', active_media_asset_id = NULL,
+      updated_at = ? WHERE id = ?`, [title, now, episodeId]);
   } else {
     await d1Run(event, `INSERT INTO episodes
       (id, series_id, episode_no, title, duration_seconds, is_free, video_status, created_at, updated_at)

@@ -10,7 +10,7 @@ export const parseSeriesInput = (value: Partial<SeriesMutationInput> | null | un
   const freeEpisodeCount = Number(value?.freeEpisodeCount);
   const price = Number(value?.price);
   if (!title || title.length > 80 || description.length > 500 || !genres.length || genres.length > 10
-    || !targetRegion || !Number.isInteger(freeEpisodeCount) || freeEpisodeCount < 0 || freeEpisodeCount > 10
+    || !targetRegion || !Number.isInteger(freeEpisodeCount) || freeEpisodeCount < 0 || freeEpisodeCount > 10000
     || !Number.isFinite(price) || price < 0 || price > 999.99) {
     throw createError({ statusCode: 400, statusMessage: 'Invalid series data' });
   }

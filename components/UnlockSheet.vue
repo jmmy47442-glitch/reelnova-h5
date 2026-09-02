@@ -232,7 +232,7 @@ watch(paypalContainer, () => { void renderPayPal(); });
               <span class="save-pill" v-if="purchasable && series.originalPrice">Save {{ Math.round((1 - series.price / series.originalPrice) * 100) }}%</span>
             </div>
             <ul class="unlock-list">
-              <li><Check :size="17" /> Episodes {{ series.freeEpisodeCount + 1 }}–{{ series.episodeCount }}</li>
+              <li><Check :size="17" /> All paid episodes and future updates</li>
               <li><Check :size="17" /> Keep access on restored devices</li>
               <li v-if="purchasable"><Check :size="17" /> Secure checkout through PayPal</li>
             </ul>
@@ -245,7 +245,7 @@ watch(paypalContainer, () => { void renderPayPal(); });
               <div v-else-if="!purchasable" class="payment-unavailable" role="status"><CircleAlert :size="19" /><div><strong>Purchase unavailable</strong><span>A checkout price has not been set for this series.</span></div></div>
               <div v-else class="payment-unavailable" role="status"><Clock3 :size="19" /><div><strong>Checkout coming soon</strong><span>PayPal payments are not available yet.</span></div></div>
             </div>
-            <p class="legal-copy">By continuing, you agree to our Terms and Refund Policy. Final access is granted after server confirmation.</p>
+            <p class="legal-copy">By continuing, you agree to our <NuxtLink to="/terms">Terms of Service</NuxtLink> and refund terms. Final access is granted after server confirmation.</p>
           </template>
 
           <div v-else-if="status === 'processing'" class="payment-state">
