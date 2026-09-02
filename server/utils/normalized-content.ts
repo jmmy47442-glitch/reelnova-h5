@@ -134,6 +134,7 @@ export const listNormalizedSeries = async (event: H3Event): Promise<ManagedSerie
       publishAt: (row.published_at || row.scheduled_at || row.updated_at).slice(0, 10),
       transcodeProgress: progress,
       targetRegion: row.target_region,
+      updatedAt: row.updated_at,
     };
   });
 };

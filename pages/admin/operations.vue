@@ -47,7 +47,7 @@ const openEditor = (section?: HomeSectionConfig) => {
 };
 
 const saveSection = async () => {
-  if (!form.title.trim() || !form.itemIds.length) return ElMessage.warning('请填写标题并至少选择一部短剧');
+  if (!form.title.trim() || (form.source === '手动推荐 + 热度排序' && !form.itemIds.length)) return ElMessage.warning('请填写标题，并为手动推荐分区至少选择一部短剧');
   const previous = sections.value.map((section) => ({ ...section, itemIds: [...section.itemIds] }));
   if (editingId.value) {
     const section = sections.value.find((item) => item.id === editingId.value);
@@ -143,7 +143,7 @@ const openPreview = () => window.open('/', '_blank', 'noopener,noreferrer');
     </div>
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑首页分区' : '新增首页分区'" width="min(640px, 92vw)">
-      <el-form label-position="top"><div class="form-grid"><el-form-item label="分区标题" required><el-input v-model="form.title" placeholder="例如 Popular now" /></el-form-item><el-form-item label="副标题"><el-input v-model="form.subtitle" placeholder="例如 Most watched this week" /></el-form-item></div><div class="form-grid"><el-form-item label="内容来源"><el-select v-model="form.source" style="width: 100%"><el-option label="手动推荐 + 热度排序" value="手动推荐 + 热度排序" /><el-option label="按更新时间自动排序" value="按更新时间自动排序" /><el-option label="按收入自动排序" value="按收入自动排序" /></el-select></el-form-item><el-form-item label="展示数量"><el-input-number v-model="form.count" :min="3" :max="12" /></el-form-item></div><el-form-item label="选择短剧" required><el-select v-model="form.itemIds" multiple filterable style="width: 100%" placeholder="选择要展示的短剧"><el-option v-for="item in state.series" :key="item.id" :label="item.title" :value="item.id" /></el-select></el-form-item></el-form>
+      <el-form label-position="top"><div class="form-grid"><el-form-item label="分区标题" required><el-input v-model="form.title" placeholder="例如 Popular now" /></el-form-item><el-form-item label="副标题"><el-input v-model="form.subtitle" placeholder="例如 Most watched this week" /></el-form-item></div><div class="form-grid"><el-form-item label="内容来源"><el-select v-model="form.source" style="width: 100%"><el-option label="手动推荐 + 热度排序" value="手动推荐 + 热度排序" /><el-option label="按更新时间自动排序" value="按更新时间自动排序" /><el-option label="按收入自动排序" value="按收入自动排序" /></el-select></el-form-item><el-form-item label="展示数量"><el-input-number v-model="form.count" :min="3" :max="12" /></el-form-item></div><el-form-item v-if="form.source === '手动推荐 + 热度排序'" label="选择短剧" required><el-select v-model="form.itemIds" multiple filterable style="width: 100%" placeholder="选择要展示的短剧"><el-option v-for="item in state.series" :key="item.id" :label="item.title" :value="item.id" /></el-select></el-form-item></el-form>
       <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" @click="saveSection">保存分区</el-button></template>
     </el-dialog>
   </div>

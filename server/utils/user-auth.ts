@@ -5,7 +5,7 @@ import {
   userBytesToBase64Url,
   userPasswordIterations,
 } from '../../shared/user-password-proof';
-import { d1First, d1Run, getRequestCountry } from './cloudflare-d1';
+import { d1First, d1Run, getRequestCountry, hasD1Connection } from './cloudflare-d1';
 import { summarizeDevice } from './user-profile';
 import { consumeChallenge, enforceAuthRateLimit, storeChallenge } from './auth-security';
 
@@ -33,6 +33,8 @@ const sessionCookie = 'reelnova-user-session';
 const standardSessionMaxAge = 60 * 60 * 2;
 const rememberedSessionMaxAge = 60 * 60 * 24 * 7;
 const encoder = new TextEncoder();
+const memoryAccounts = new Map<string, UserAccountRow>();
+const canUseMemoryAuth = (event: H3Event) => process.env.NODE_ENV === 'development' && !hasD1Connection(event);
 
 const encodeJson = (value: unknown) => userBytesToBase64Url(encoder.encode(JSON.stringify(value)));
 const decodeJson = <T>(value: string) => JSON.parse(new TextDecoder().decode(userBase64UrlToBytes(value))) as T;
@@ -72,17 +74,17 @@ const accountSelect = `SELECT user_id, email, display_name, password_salt, passw
   FROM users
   WHERE password_hash IS NOT NULL`;
 
-const findByEmail = (event: H3Event, email: string) => d1First<UserAccountRow>(
-  event,
-  `${accountSelect} AND email = ? COLLATE NOCASE LIMIT 1`,
-  [email],
-);
+const findByEmail = (event: H3Event, email: string) => {
+  if (canUseMemoryAuth(event)) return Promise.resolve(memoryAccounts.get(email.toLowerCase()) || null);
+  return d1First<UserAccountRow>(event, `${accountSelect} AND email = ? COLLATE NOCASE LIMIT 1`, [email]);
+};
 
-const findById = (event: H3Event, userId: string) => d1First<UserAccountRow>(
-  event,
-  `${accountSelect} AND user_id = ? LIMIT 1`,
-  [userId],
-);
+const findById = (event: H3Event, userId: string) => {
+  if (canUseMemoryAuth(event)) {
+    return Promise.resolve([...memoryAccounts.values()].find((account) => account.user_id === userId) || null);
+  }
+  return d1First<UserAccountRow>(event, `${accountSelect} AND user_id = ? LIMIT 1`, [userId]);
+};
 
 export const createUserAccount = async (event: H3Event, input: {
   name: string;
@@ -109,14 +111,18 @@ export const createUserAccount = async (event: H3Event, input: {
     last_login_at: now,
     created_at: now,
   };
-  await d1Run(event, `INSERT INTO users
-    (user_id, email, display_name, password_salt, password_hash, last_login_at,
-     country, device, status, created_at, last_seen_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`, [
-    row.user_id, row.email, row.display_name, row.password_salt, row.password_hash,
-    row.last_login_at, getRequestCountry(event), summarizeDevice(getHeader(event, 'user-agent')),
-    row.created_at, row.created_at, now,
-  ]);
+  if (canUseMemoryAuth(event)) {
+    memoryAccounts.set(row.email, row);
+  } else {
+    await d1Run(event, `INSERT INTO users
+      (user_id, email, display_name, password_salt, password_hash, last_login_at,
+       country, device, status, created_at, last_seen_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`, [
+      row.user_id, row.email, row.display_name, row.password_salt, row.password_hash,
+      row.last_login_at, getRequestCountry(event), summarizeDevice(getHeader(event, 'user-agent')),
+      row.created_at, row.created_at, now,
+    ]);
+  }
   return toAccount(row);
 };
 
@@ -174,7 +180,12 @@ export const authenticateUserProof = async (event: H3Event, email: string, chall
   if (!constantTimeEqual(proof, expectedProof)) return null;
   if (!await consumeChallenge(event, challengePayload.nonce, normalizedEmail, 'login')) return null;
   const loggedInAt = new Date().toISOString();
-  await d1Run(event, 'UPDATE users SET last_login_at = ?, updated_at = ? WHERE user_id = ?', [loggedInAt, loggedInAt, account.user_id]);
+  if (canUseMemoryAuth(event)) {
+    const stored = memoryAccounts.get(account.email);
+    if (stored) memoryAccounts.set(account.email, { ...stored, last_login_at: loggedInAt });
+  } else {
+    await d1Run(event, 'UPDATE users SET last_login_at = ?, updated_at = ? WHERE user_id = ?', [loggedInAt, loggedInAt, account.user_id]);
+  }
   return { ...toAccount(account), lastLoginAt: loggedInAt };
 };
 
@@ -198,12 +209,17 @@ export const resetUserPassword = async (
   const expectedProof = await signWithKey(challenge, userBase64UrlToBytes(passwordHash));
   if (!constantTimeEqual(proof, expectedProof) || !await consumeChallenge(event, challengePayload.nonce, normalizedEmail, 'reset')) return null;
   const updatedAt = new Date().toISOString();
-  await d1Run(event, 'UPDATE users SET password_salt = ?, password_hash = ?, updated_at = ? WHERE user_id = ?', [
-    passwordSalt,
-    passwordHash,
-    updatedAt,
-    account.user_id,
-  ]);
+  if (canUseMemoryAuth(event)) {
+    const stored = memoryAccounts.get(account.email);
+    if (stored) memoryAccounts.set(account.email, { ...stored, password_salt: passwordSalt, password_hash: passwordHash });
+  } else {
+    await d1Run(event, 'UPDATE users SET password_salt = ?, password_hash = ?, updated_at = ? WHERE user_id = ?', [
+      passwordSalt,
+      passwordHash,
+      updatedAt,
+      account.user_id,
+    ]);
+  }
   return toAccount({ ...account, password_salt: passwordSalt, password_hash: passwordHash });
 };
 

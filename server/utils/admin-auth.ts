@@ -2,7 +2,7 @@ import { getRequestURL, type H3Event } from 'h3';
 import type { AdminRole, AssignableAdminRole } from '../../shared/admin-rbac';
 import { isAdminRole } from '../../shared/admin-rbac';
 import { adminPasswordIterations, base64UrlToBytes, bytesToBase64Url } from '../../shared/admin-password-proof';
-import { d1All, d1First, d1Run } from './cloudflare-d1';
+import { d1All, d1First, d1Run, hasD1Connection } from './cloudflare-d1';
 import { consumeChallenge, enforceAuthRateLimit, storeChallenge } from './auth-security';
 
 type AdminAccountTier = 'super_admin' | 'admin';
@@ -48,6 +48,8 @@ export interface AdminAccount {
 const sessionCookie = 'reelnova-admin-session';
 const protectedVerifierPrefix = 'v1';
 const encoder = new TextEncoder();
+const memoryAccounts = new Map<string, AdminAccountRow>();
+const canUseMemoryAuth = (event: H3Event) => process.env.NODE_ENV === 'development' && !hasD1Connection(event);
 
 const encodeJson = (value: unknown) => bytesToBase64Url(encoder.encode(JSON.stringify(value)));
 const decodeJson = <T>(value: string) => JSON.parse(new TextDecoder().decode(base64UrlToBytes(value))) as T;
@@ -112,19 +114,21 @@ const toAccount = (row: AdminAccountRow): AdminAccount => ({
   createdAt: row.created_at,
 });
 
-const findByEmail = async (event: H3Event, email: string) => d1First<AdminAccountRow>(
-  event,
-  'SELECT * FROM admin_accounts WHERE email = ? COLLATE NOCASE LIMIT 1',
-  [email],
-);
+const findByEmail = async (event: H3Event, email: string) => {
+  if (canUseMemoryAuth(event)) return memoryAccounts.get(email.toLowerCase()) || null;
+  return d1First<AdminAccountRow>(event, 'SELECT * FROM admin_accounts WHERE email = ? COLLATE NOCASE LIMIT 1', [email]);
+};
 
-const findById = async (event: H3Event, id: string) => d1First<AdminAccountRow>(
-  event,
-  'SELECT * FROM admin_accounts WHERE id = ? LIMIT 1',
-  [id],
-);
+const findById = async (event: H3Event, id: string) => {
+  if (canUseMemoryAuth(event)) return [...memoryAccounts.values()].find((account) => account.id === id) || null;
+  return d1First<AdminAccountRow>(event, 'SELECT * FROM admin_accounts WHERE id = ? LIMIT 1', [id]);
+};
 
 const insertAccount = async (event: H3Event, row: AdminAccountRow) => {
+  if (canUseMemoryAuth(event)) {
+    memoryAccounts.set(row.email, row);
+    return;
+  }
   await d1Run(event, `INSERT INTO admin_accounts
     (id, email, name, role, permission_role, status, password_salt, password_hash, invited_by, invited_at, last_login_at, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
@@ -134,6 +138,11 @@ const insertAccount = async (event: H3Event, row: AdminAccountRow) => {
 };
 
 const updateLogin = async (event: H3Event, id: string, loggedInAt: string) => {
+  if (canUseMemoryAuth(event)) {
+    const account = [...memoryAccounts.values()].find((item) => item.id === id);
+    if (account) memoryAccounts.set(account.email, { ...account, status: account.status === 'invited' ? 'active' : account.status, last_login_at: loggedInAt, updated_at: loggedInAt });
+    return;
+  }
   await d1Run(event, `UPDATE admin_accounts
     SET status = CASE WHEN status = 'invited' THEN 'active' ELSE status END, last_login_at = ?, updated_at = ? WHERE id = ?`,
   [loggedInAt, loggedInAt, id]);
@@ -294,7 +303,9 @@ export const requireSuperAdmin = (event: H3Event) => {
 
 export const listAdminAccounts = async (event: H3Event) => {
   await ensureSuperAdmin(event);
-  const rows = await d1All<AdminAccountRow>(event, 'SELECT * FROM admin_accounts ORDER BY created_at DESC');
+  const rows = canUseMemoryAuth(event)
+    ? [...memoryAccounts.values()].sort((left, right) => right.created_at.localeCompare(left.created_at))
+    : await d1All<AdminAccountRow>(event, 'SELECT * FROM admin_accounts ORDER BY created_at DESC');
   return rows.map(toAccount);
 };
 

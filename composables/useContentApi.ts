@@ -1,4 +1,4 @@
-import type { AnalyticsEventInput, ApiEnvelope, HomeResponse, LibraryResponse, Order, PlaybackEventInput, Series, WatchHistoryItem } from '~/types/content';
+import type { AnalyticsEventInput, ApiEnvelope, ExploreResponse, HomeResponse, LibraryResponse, Order, PlaybackEventInput, Series, WatchHistoryItem } from '~/types/content';
 
 export const useContentApi = () => {
   const config = useRuntimeConfig();
@@ -10,7 +10,7 @@ export const useContentApi = () => {
 
   return {
     getHome: () => request<HomeResponse>('/home'),
-    getExplore: (params?: Record<string, string>) => request<Series[]>('/explore', { query: params }),
+    getExplore: (params?: Record<string, string>) => request<ExploreResponse>('/explore', { query: params }),
     getSeries: (slug: string) => request<Series>(`/series/${slug}`),
     getLibrary: () => request<LibraryResponse>('/me/library'),
     getPlayback: (seriesId: string, episodeNo: number, sessionId: string) =>

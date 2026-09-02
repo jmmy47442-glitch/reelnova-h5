@@ -1,5 +1,5 @@
 import { authenticateAdminProof, setAdminSession } from '../../../utils/admin-auth';
-import { d1Run } from '../../../utils/cloudflare-d1';
+import { d1Run, hasD1Connection } from '../../../utils/cloudflare-d1';
 import { ok } from '../../../utils/response';
 
 export default defineEventHandler(async (event) => {
@@ -15,9 +15,11 @@ export default defineEventHandler(async (event) => {
   if (!account) throw createError({ statusCode: 401, statusMessage: 'Invalid administrator credentials' });
   const session = await setAdminSession(event, account, body.remember !== false);
   const ip = getHeader(event, 'cf-connecting-ip') || getHeader(event, 'x-forwarded-for')?.split(',')[0]?.trim() || getHeader(event, 'x-real-ip') || null;
-  await d1Run(event, `INSERT INTO admin_audit_logs (id, actor, actor_id, module, action, target, detail, risk, ip, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
-    `login-${crypto.randomUUID()}`, session.email, session.id, '管理员账号', '管理员登录', session.email, '登录成功', '普通', ip, session.loggedInAt,
-  ]);
+  if (hasD1Connection(event)) {
+    await d1Run(event, `INSERT INTO admin_audit_logs (id, actor, actor_id, module, action, target, detail, risk, ip, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+      `login-${crypto.randomUUID()}`, session.email, session.id, '管理员账号', '管理员登录', session.email, '登录成功', '普通', ip, session.loggedInAt,
+    ]);
+  }
   return ok(session);
 });

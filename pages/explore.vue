@@ -11,24 +11,19 @@ const query = ref(String(route.query.q || ''));
 const activeGenre = ref(String(route.query.genre || 'All'));
 const sort = ref(String(route.query.sort || 'Popular'));
 const showFilters = ref(false);
-const genres = ['All', 'Romance', 'Revenge', 'Billionaire', 'Young Adult', 'Suspense', 'Comedy'];
 const sortOptions = ['Popular', 'Newest', 'Most Watched', 'Most Purchased'];
-const { data, status, error, refresh } = usePageData('explore', () => api.getExplore(), { revalidateOnMount: true });
+const exploreParams = () => ({
+  ...(query.value.trim() ? { q: query.value.trim() } : {}),
+  ...(activeGenre.value !== 'All' ? { genre: activeGenre.value } : {}),
+  ...(sort.value !== 'Popular' ? { sort: sort.value } : {}),
+});
+const { data, status, error, refresh } = usePageData('explore-v2', () => api.getExplore(exploreParams()), { revalidateOnMount: true });
+const genres = computed(() => ['All', ...(data.value?.genres || [])]);
 const { track } = useAnalytics();
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
 const filtered = computed(() => {
-  const list = [...(data.value || [])];
-  const term = query.value.trim().toLowerCase();
-  const matches = list.filter((series) => {
-    const textMatch = !term || `${series.title} ${series.cast.join(' ')} ${series.genres.join(' ')}`.toLowerCase().includes(term);
-    const genreMatch = activeGenre.value === 'All' || series.genres.some((genre) => genre.toLowerCase().includes(activeGenre.value.toLowerCase()));
-    return textMatch && genreMatch;
-  });
-  if (sort.value === 'Newest') return matches.sort((a, b) => (a.badge === 'New' ? -1 : 1) - (b.badge === 'New' ? -1 : 1));
-  if (sort.value === 'Most Watched') return matches.sort((a, b) => b.views - a.views);
-  if (sort.value === 'Most Purchased') return matches.sort((a, b) => Number(b.purchased) - Number(a.purchased));
-  return matches;
+  return data.value?.items || [];
 });
 
 watch([query, activeGenre, sort], () => {
@@ -39,6 +34,7 @@ watch([query, activeGenre, sort], () => {
   } });
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
+    void refresh();
     if (query.value.trim()) void track('search', { properties: { query: query.value.trim().slice(0, 100), resultCount: filtered.value.length } });
     if (activeGenre.value !== 'All') void track('filter', { properties: { genre: activeGenre.value, sort: sort.value, resultCount: filtered.value.length } });
   }, 400);

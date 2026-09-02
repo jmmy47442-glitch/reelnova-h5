@@ -10,11 +10,12 @@ type ManagedSeries = Series & {
   publishAt: string;
   transcodeProgress: number;
   targetRegion: string;
+  updatedAt: string;
 };
 
 interface ConfigRow { payload: string }
 
-const initialSeries = (): ManagedSeries[] => seriesList.map((series) => ({
+const initialSeries = (): ManagedSeries[] => seriesList.map((series, index) => ({
   ...series,
   genres: [...series.genres],
   cast: [...series.cast],
@@ -23,6 +24,7 @@ const initialSeries = (): ManagedSeries[] => seriesList.map((series) => ({
   publishAt: '2026-08-11',
   transcodeProgress: 100,
   targetRegion: 'United States',
+  updatedAt: `2026-08-${String(11 - (index % 7)).padStart(2, '0')}T00:00:00.000Z`,
 }));
 
 const initialTaxonomy = (): TaxonomyItem[] => [
@@ -128,7 +130,8 @@ export const updateManagedSeriesRecord = async (event: H3Event, id: string, inpu
   const items = await getManagedSeries(event);
   const item = items.find((entry) => entry.id === id);
   if (!item) throw createError({ statusCode: 404, statusMessage: 'Series not found' });
-  Object.assign(item, input, { genres: [...input.genres], publishAt: new Date().toISOString().slice(0, 10) });
+  const now = new Date().toISOString();
+  Object.assign(item, input, { genres: [...input.genres], publishAt: now.slice(0, 10), updatedAt: now });
   item.episodes = item.episodes.map((episode) => ({ ...episode, isFree: episode.episodeNo <= item.freeEpisodeCount }));
   await saveManagedSeries(event, items);
   return item;
@@ -149,7 +152,9 @@ export const updateManagedSeriesStatusRecord = async (event: H3Event, id: string
     throw createError({ statusCode: 409, statusMessage: 'Episodes must finish transcoding before publishing' });
   }
   item.publishStatus = publishStatus;
-  item.publishAt = new Date().toISOString().slice(0, 10);
+  const now = new Date().toISOString();
+  item.publishAt = now.slice(0, 10);
+  item.updatedAt = now;
   await saveManagedSeries(event, items);
   return item;
 };
@@ -475,7 +480,10 @@ export const getPublicSeries = async (event: H3Event) => {
   const mockFallback = !isProduction && String(config.publicMockContentFallback).toLowerCase() === 'true';
   const source = published.length ? published : mockFallback ? initialSeries() : [];
   return source
-  .map(({ publishStatus: _publishStatus, publishAt: _publishAt, transcodeProgress: _transcodeProgress, targetRegion: _targetRegion, ...series }) => series);
+  .map(({ publishStatus: _publishStatus, publishAt, transcodeProgress: _transcodeProgress, targetRegion: _targetRegion, ...series }) => ({
+    ...series,
+    updatedAt: series.updatedAt || publishAt,
+  }));
 };
 
 export const toAdminSeries = (item: ManagedSeries): AdminSeries => ({
@@ -532,6 +540,7 @@ export const createManagedSeries = (items: ManagedSeries[], input: {
     publishAt: today,
     transcodeProgress: 0,
     targetRegion: input.targetRegion,
+    updatedAt: `${today}T00:00:00.000Z`,
   };
 };
 

@@ -38,6 +38,13 @@ export interface Series {
   durationSeconds?: number;
   lastWatchedAt?: string;
   completed?: boolean;
+  /** Internal/public catalogue timestamp used by operational sorting. */
+  updatedAt?: string;
+}
+
+export interface ExploreResponse {
+  items: Series[];
+  genres: string[];
 }
 
 export interface WatchHistoryItem extends Series {
