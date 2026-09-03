@@ -1,5 +1,5 @@
 import type { ApiEnvelope } from '~/types/content';
-import type { AdminAccount, AdminAuditResponse, AdminEpisode, AdminOrdersResponse, AdminPendingItemsResponse, AdminRole, AdminSeries, AdminUserDetail, AdminUsersResponse, DashboardSummary, DomainConfig, MediaUploadPart, MediaUploadSession, PersistedUserStatus, PublishStatus, ReconciliationResponse, TaxonomyItem } from '~/types/admin';
+import type { AdminAccount, AdminAuditResponse, AdminEpisode, AdminMetricDetailResponse, AdminOrdersResponse, AdminPendingItemsResponse, AdminRole, AdminSeries, AdminUserDetail, AdminUsersResponse, DashboardMetricKey, DashboardSummary, DomainConfig, MediaUploadPart, MediaUploadSession, PersistedUserStatus, PublishStatus, ReconciliationResponse, SeriesCoverUploadSession, TaxonomyItem } from '~/types/admin';
 import type { HomeSectionConfig } from '~/composables/useAdminStore';
 
 export const useAdminApi = () => {
@@ -9,6 +9,7 @@ export const useAdminApi = () => {
 
   return {
     getDashboard: () => request<DashboardSummary>('/admin/dashboard'),
+    getMetricDetail: (metric: DashboardMetricKey, query: Record<string, string | number | undefined> = {}) => request<AdminMetricDetailResponse>(`/admin/metrics/${metric}`, { query }),
     getAnalytics: (days = 7) => request<Record<string, unknown>>('/admin/analytics', { query: { days } }),
     getPendingItems: () => request<AdminPendingItemsResponse>('/admin/pending-items'),
     getOrders: (query: Record<string, string | number | undefined> = {}) => request<AdminOrdersResponse>('/admin/orders', { query }),
@@ -42,6 +43,10 @@ export const useAdminApi = () => {
     getSeries: () => request<{ items: AdminSeries[]; generatedAt: string }>('/admin/series'),
     createSeries: (input: Pick<AdminSeries, 'title' | 'description' | 'genres' | 'targetRegion' | 'freeEpisodeCount' | 'price'>) => request<AdminSeries>('/admin/series', { method: 'POST', body: input }),
     updateSeries: (id: string, input: Pick<AdminSeries, 'title' | 'description' | 'genres' | 'targetRegion' | 'freeEpisodeCount' | 'price'>) => request<AdminSeries>(`/admin/series/${encodeURIComponent(id)}`, { method: 'PUT', body: input }),
+    createSeriesCoverUpload: (id: string, input: { fileName: string; contentType: string; fileSizeBytes: number }) =>
+      request<SeriesCoverUploadSession>(`/admin/series/${encodeURIComponent(id)}/cover/uploads`, { method: 'POST', body: input }),
+    completeSeriesCoverUpload: (id: string, objectKey: string) =>
+      request<AdminSeries>(`/admin/series/${encodeURIComponent(id)}/cover/complete`, { method: 'POST', body: { objectKey } }),
     updateSeriesStatus: (id: string, publishStatus: PublishStatus) => request<AdminSeries>(`/admin/series/${encodeURIComponent(id)}/status`, { method: 'PATCH', body: { publishStatus } }),
     duplicateSeries: (id: string) => request<AdminSeries>(`/admin/series/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }),
     deleteSeries: (id: string) => request<{ id: string; title: string; retainedOrderCount: number }>(`/admin/series/${encodeURIComponent(id)}`, { method: 'DELETE' }),

@@ -106,6 +106,7 @@ PAYPAL_PRODUCTION_CLIENT_ID
 PAYPAL_PRODUCTION_SECRET
 PAYPAL_PRODUCTION_WEBHOOK_ID
 NUXT_PUBLIC_PAYPAL_PRODUCTION_CLIENT_ID
+PAYPAL_WEBHOOK_URL=https://iseedrama.com/api/paypal/webhook
 CLOUDFLARE_MEDIA_BASE_URL
 CLOUDFLARE_MEDIA_SIGNING_SECRET
 CLOUDFLARE_MEDIA_WORKER_URL
@@ -121,7 +122,7 @@ ADMIN_CREDENTIAL_SECRET
 ```
 
 `CLOUDFLARE_MEDIA_BASE_URL` is retained for legacy R2 HLS playback. New media uses Stream tokens; `CLOUDFLARE_MEDIA_SIGNING_SECRET` still signs playback tracking authorization.
-`NUXT_PUBLIC_PAYPAL_CLIENT_ID` is intentionally public and must equal `PAYPAL_CLIENT_ID`. Keep both empty until PayPal is available; setting only one leaves checkout disabled or marks the connection incomplete.
+`NUXT_PUBLIC_PAYPAL_CLIENT_ID` is intentionally public and must equal `PAYPAL_CLIENT_ID`. The same rule applies to `NUXT_PUBLIC_PAYPAL_PRODUCTION_CLIENT_ID` and `PAYPAL_PRODUCTION_CLIENT_ID`: these are two deployment variables containing the same Live App Client ID, not two separate credentials. Keep both empty until PayPal is available; setting only one leaves checkout disabled or marks the connection incomplete.
 The legacy `PAYPAL_*` values remain a fallback for the initial `PAYPAL_ENVIRONMENT`. Configure both named Sandbox and Production sets to enable environment switching from `/admin/system`. The selected environment is the only payment configuration stored in D1; Client Secrets remain encrypted deployment secrets. Each order also stores its immutable PayPal environment so later Capture, verification, refunds and Webhooks keep using the correct API after a switch. The first switch attributes pre-0016 orders to the currently active environment. A switch first verifies the target OAuth credentials and is blocked while pending payments, refunds, or risk-review orders exist.
 `SUPER_ADMIN_PASSWORD` initializes the preset super administrator on first use. `ADMIN_SESSION_SECRET` signs the HttpOnly admin session cookie. `ADMIN_CREDENTIAL_SECRET` encrypts the password verifier used by the low-CPU challenge login flow. Both secrets must be separate, stable, high-entropy production secrets; changing `ADMIN_CREDENTIAL_SECRET` requires resetting administrator credentials.
 
@@ -171,7 +172,7 @@ Subscribe at minimum to:
 - `PAYMENT.CAPTURE.REVERSED`
 - `PAYMENT.REFUND.PENDING`, `PAYMENT.REFUND.COMPLETED`, `PAYMENT.REFUND.FAILED` and `PAYMENT.REFUND.CANCELLED` when available for the merchant account
 
-Copy PayPal's Webhook ID to `PAYPAL_WEBHOOK_ID`. The server verifies every webhook with PayPal before updating an order. Duplicate events are recorded once by `event_id`; verified processing failures can be replayed from the admin connection page.
+Copy PayPal's Live Webhook ID to `PAYPAL_PRODUCTION_WEBHOOK_ID` (and to legacy `PAYPAL_WEBHOOK_ID` only when Production is the initial legacy environment). The server verifies every webhook with PayPal before updating an order. Duplicate events are recorded once by `event_id`; verified processing failures can be replayed from the admin connection page. `npm run check:production` uses the Live OAuth credentials to verify that this Webhook ID exists, its URL equals `PAYPAL_WEBHOOK_URL`, and all required capture events are subscribed.
 
 The hourly Worker cron also calls the signed `/api/internal/paypal/reconcile` endpoint. It rechecks open orders after 15 minutes, captures PayPal orders that are already approved, applies completed or denied capture facts, and closes orders that still cannot be confirmed after 24 hours. Keep the media Worker cron and `APP_BASE_URL` enabled so missed browser responses or Webhooks cannot leave checkout rows permanently in `processing`.
 

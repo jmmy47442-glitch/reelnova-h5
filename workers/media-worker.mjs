@@ -68,6 +68,112 @@ const readToken = async (token, secret) => {
   }
 };
 
+const imageTypes = new Map([
+  ['image/jpeg', 'jpg'],
+  ['image/png', 'png'],
+  ['image/webp', 'webp'],
+]);
+const maximumImageBytes = 10 * 1024 * 1024;
+
+const validSeriesImageKey = (key, seriesId, contentType) => {
+  const extension = imageTypes.get(contentType);
+  return Boolean(extension && /^[a-z0-9_-]{2,100}$/i.test(seriesId)
+    && key === `posters/${seriesId}/${key.split('/').at(-1)}`
+    && new RegExp(`^posters/${seriesId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/cover-[0-9a-f-]{36}\\.${extension}$`, 'i').test(key));
+};
+
+const publicImageUrl = (env, origin, key) => `${String(env.PUBLIC_BASE_URL || origin).replace(/\/$/, '')}/${key}`;
+
+const matchesImageSignature = (bytes, contentType) => {
+  if (contentType === 'image/jpeg') return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if (contentType === 'image/png') return bytes.length >= 8
+    && [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((value, index) => bytes[index] === value);
+  if (contentType === 'image/webp') return bytes.length >= 12
+    && new TextDecoder().decode(bytes.slice(0, 4)) === 'RIFF'
+    && new TextDecoder().decode(bytes.slice(8, 12)) === 'WEBP';
+  return false;
+};
+
+const createImageUpload = async (env, origin, body) => {
+  const objectKey = String(body.objectKey || '');
+  const seriesId = String(body.seriesId || '');
+  const contentType = String(body.contentType || '').toLowerCase();
+  const fileSizeBytes = Number(body.fileSizeBytes);
+  if (!validSeriesImageKey(objectKey, seriesId, contentType)
+    || !Number.isSafeInteger(fileSizeBytes) || fileSizeBytes <= 0 || fileSizeBytes > maximumImageBytes) {
+    throw new Error('Invalid series cover upload request');
+  }
+  const expires = Math.floor(Date.now() / 1000) + 15 * 60;
+  const uploadToken = await createToken({
+    kind: 'series-cover', key: objectKey, seriesId, contentType, fileSizeBytes, expires,
+  }, env.MEDIA_WORKER_SECRET);
+  return {
+    objectKey,
+    uploadUrl: `${origin}/images/upload`,
+    uploadToken,
+    expiresAt: new Date(expires * 1000).toISOString(),
+  };
+};
+
+const putImage = async (request, env, requestCors) => {
+  const token = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
+  const payload = await readToken(token, env.MEDIA_WORKER_SECRET);
+  const contentType = String(request.headers.get('content-type') || '').toLowerCase().split(';')[0].trim();
+  const declaredSize = Number(request.headers.get('content-length'));
+  if (!payload || payload.kind !== 'series-cover' || contentType !== payload.contentType
+    || !Number.isSafeInteger(declaredSize) || declaredSize !== payload.fileSizeBytes
+    || declaredSize <= 0 || declaredSize > maximumImageBytes) {
+    return json({ error: 'Invalid image upload token or metadata' }, 401, requestCors);
+  }
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (bytes.byteLength !== payload.fileSizeBytes) {
+    return json({ error: 'Uploaded image size does not match the signed request' }, 400, requestCors);
+  }
+  if (!matchesImageSignature(bytes, payload.contentType)) {
+    return json({ error: 'Uploaded file content is not a valid JPG, PNG or WebP image' }, 415, requestCors);
+  }
+  const object = await env.MEDIA_BUCKET.put(payload.key, bytes, {
+    httpMetadata: { contentType: payload.contentType, cacheControl: 'public, max-age=31536000, immutable' },
+    customMetadata: { managedBy: 'reelnova', kind: 'series-cover', seriesId: payload.seriesId },
+  });
+  return json({ objectKey: payload.key, etag: object?.httpEtag || '' }, 200, {
+    ...requestCors,
+    etag: object?.httpEtag || '',
+  });
+};
+
+const verifyImage = async (env, origin, body) => {
+  const objectKey = String(body.objectKey || '');
+  const seriesId = String(body.seriesId || '');
+  const object = await env.MEDIA_BUCKET.head(objectKey);
+  const contentType = String(object?.httpMetadata?.contentType || '').toLowerCase();
+  if (!object || !validSeriesImageKey(objectKey, seriesId, contentType)
+    || object.customMetadata?.managedBy !== 'reelnova'
+    || object.customMetadata?.kind !== 'series-cover'
+    || object.customMetadata?.seriesId !== seriesId
+    || object.size <= 0 || object.size > maximumImageBytes) {
+    throw new Error('Uploaded series cover could not be verified');
+  }
+  return { objectKey, publicUrl: publicImageUrl(env, origin, objectKey), contentType, size: object.size };
+};
+
+const servePublicImage = async (request, env, objectKey) => {
+  if (!/^posters\/[a-z0-9_-]{2,100}\/cover-[0-9a-f-]{36}\.(?:jpg|png|webp)$/i.test(objectKey)) {
+    return new Response('Not found', { status: 404 });
+  }
+  const object = request.method === 'HEAD'
+    ? await env.MEDIA_BUCKET.head(objectKey)
+    : await env.MEDIA_BUCKET.get(objectKey);
+  if (!object || object.customMetadata?.kind !== 'series-cover') return new Response('Not found', { status: 404 });
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set('content-length', String(object.size));
+  headers.set('etag', object.httpEtag);
+  headers.set('cache-control', 'public, max-age=31536000, immutable');
+  headers.set('x-content-type-options', 'nosniff');
+  return new Response(request.method === 'HEAD' ? null : object.body, { status: 200, headers });
+};
+
 const streamApi = async (env, path, options = {}) => {
   const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/stream${path}`, {
     ...options,
@@ -372,6 +478,22 @@ export default {
         return json(await createOrResumeUpload(env, url.origin, body));
       }
 
+      if (request.method === 'POST' && url.pathname === '/images/uploads') {
+        const rawBody = await request.text();
+        if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
+        return json(await createImageUpload(env, url.origin, JSON.parse(rawBody)));
+      }
+
+      if (request.method === 'PUT' && url.pathname === '/images/upload') {
+        return putImage(request, env, requestCors);
+      }
+
+      if (request.method === 'POST' && url.pathname === '/images/verify') {
+        const rawBody = await request.text();
+        if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
+        return json(await verifyImage(env, url.origin, JSON.parse(rawBody)));
+      }
+
       if (request.method === 'POST' && url.pathname === '/stream/token') {
         const rawBody = await request.text();
         const body = JSON.parse(rawBody);
@@ -435,6 +557,10 @@ export default {
       const ingestMatch = url.pathname.match(/^\/ingest\/(.+)$/);
       if (ingestMatch && ['GET', 'HEAD'].includes(request.method)) {
         return serveIngestObject(request, env, ingestMatch[1]);
+      }
+
+      if (url.pathname.startsWith('/posters/') && ['GET', 'HEAD'].includes(request.method)) {
+        return servePublicImage(request, env, decodeURIComponent(url.pathname.slice(1)));
       }
 
       return json({ error: 'Not found' }, 404, requestCors);

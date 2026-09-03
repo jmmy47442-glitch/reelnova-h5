@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { CloudOff, Download, Eye, Film, FileVideo, GripVertical, Plus, RefreshCw, Search, Trash2, Upload, X } from 'lucide-vue-next';
+import { CloudOff, Download, Eye, Film, FileVideo, GripVertical, ImagePlus, Plus, RefreshCw, Search, Trash2, Upload, X } from 'lucide-vue-next';
 import Hls from 'hls.js';
 import { createFile as createMp4File } from 'mp4box';
 import Sortable from 'sortablejs';
 import { ElMessage, ElMessageBox, type UploadFile, type UploadFiles, type UploadInstance } from 'element-plus';
-import type { AdminEpisode, MediaUploadPart, MediaUploadSession } from '~/types/admin';
+import type { AdminEpisode, MediaUploadPart, MediaUploadSession, SeriesCoverUploadSession } from '~/types/admin';
 import type { AdminSeries, PublishStatus } from '~/composables/useAdminStore';
 
 definePageMeta({ layout: 'admin', keepalive: true });
@@ -23,6 +23,14 @@ const uploading = ref(false);
 const loading = ref(true);
 const loadError = ref(false);
 const saving = ref(false);
+const coverFile = ref<File | null>(null);
+const coverPreviewUrl = ref('');
+const coverUploadControl = ref<UploadInstance>();
+const coverUploading = ref(false);
+const coverUploadProgress = ref(0);
+const coverUploadAvailable = ref(false);
+let coverObjectUrl = '';
+let activeCoverRequest: XMLHttpRequest | undefined;
 const selectedFiles = ref<File[]>([]);
 const uploadControl = ref<UploadInstance>();
 const episodeStart = ref(1);
@@ -80,8 +88,14 @@ const loadSeries = async () => {
 
 const loadMediaAvailability = async () => {
   mediaAvailabilityLoading.value = true;
-  try { mediaAvailable.value = (await api.getConnection()).cloudflare.uploadConfigured; }
-  catch { mediaAvailable.value = false; }
+  try {
+    const connection = (await api.getConnection()).cloudflare;
+    mediaAvailable.value = connection.uploadConfigured;
+    coverUploadAvailable.value = connection.database && connection.mediaWorkerConfigured;
+  } catch {
+    mediaAvailable.value = false;
+    coverUploadAvailable.value = false;
+  }
   finally { mediaAvailabilityLoading.value = false; }
 };
 
@@ -98,11 +112,83 @@ const filteredRows = computed(() => state.value.series.filter((row) => {
 const tagType = (status: PublishStatus) => ({ 已上架: 'success', 处理中: 'warning', 草稿: 'info', 待发布: 'primary', 已下架: 'danger', 版权冻结: 'danger' }[status]);
 const resetFilters = () => { keyword.value = ''; statusFilter.value = '全部状态'; categoryFilter.value = '全部分类'; };
 
+const releaseCoverObjectUrl = () => {
+  if (coverObjectUrl) URL.revokeObjectURL(coverObjectUrl);
+  coverObjectUrl = '';
+};
+
+const resetCoverSelection = (fallback = '') => {
+  releaseCoverObjectUrl();
+  coverFile.value = null;
+  coverPreviewUrl.value = fallback;
+  coverUploadProgress.value = 0;
+  coverUploadControl.value?.clearFiles();
+};
+
+const onCoverSelected = (uploadFile: UploadFile) => {
+  const file = uploadFile.raw;
+  if (!file) return;
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size <= 0 || file.size > 10 * 1024 * 1024) {
+    ElMessage.warning('请选择不超过 10 MB 的 JPG、PNG 或 WebP 图片');
+    resetCoverSelection(selectedSeries.value?.coverUrl || '');
+    return;
+  }
+  releaseCoverObjectUrl();
+  coverFile.value = file;
+  coverObjectUrl = URL.createObjectURL(file);
+  coverPreviewUrl.value = coverObjectUrl;
+  coverUploadProgress.value = 0;
+};
+
+const putCoverImage = (session: SeriesCoverUploadSession, file: File) => new Promise<void>((resolve, reject) => {
+  const request = new XMLHttpRequest();
+  activeCoverRequest = request;
+  request.open('PUT', session.uploadUrl);
+  request.setRequestHeader('Authorization', `Bearer ${session.uploadToken}`);
+  request.setRequestHeader('Content-Type', file.type);
+  request.timeout = 120_000;
+  request.upload.onprogress = (event) => {
+    if (event.lengthComputable) coverUploadProgress.value = Math.min(99, Math.round((event.loaded / event.total) * 100));
+  };
+  request.onload = () => {
+    activeCoverRequest = undefined;
+    if (request.status >= 200 && request.status < 300) {
+      coverUploadProgress.value = 100;
+      resolve();
+      return;
+    }
+    let message = `封面上传失败（${request.status}）`;
+    try { message = JSON.parse(request.responseText)?.error || message; } catch { /* Keep the HTTP fallback. */ }
+    reject(new Error(message));
+  };
+  request.onerror = () => { activeCoverRequest = undefined; reject(new Error('封面上传连接中断，请检查网络后重试')); };
+  request.ontimeout = () => { activeCoverRequest = undefined; reject(new Error('封面上传超时，请重试')); };
+  request.onabort = () => { activeCoverRequest = undefined; reject(new Error('封面上传已取消')); };
+  request.send(file);
+});
+
+const uploadSeriesCover = async (seriesId: string, file: File) => {
+  coverUploading.value = true;
+  coverUploadProgress.value = 0;
+  try {
+    const session = await api.createSeriesCoverUpload(seriesId, {
+      fileName: file.name,
+      contentType: file.type,
+      fileSizeBytes: file.size,
+    });
+    await putCoverImage(session, file);
+    return await api.completeSeriesCoverUpload(seriesId, session.objectKey);
+  } finally {
+    coverUploading.value = false;
+  }
+};
+
 const openCreate = () => {
   editingId.value = null;
   selectedSeries.value = null;
   episodes.value = [];
   episodeError.value = '';
+  resetCoverSelection();
   Object.assign(form, { title: '', description: '', genres: [], targetRegion: 'United States', freeEpisodeCount: 3, price: 4.99 });
   dialogVisible.value = true;
 };
@@ -112,6 +198,7 @@ const openEdit = (row: AdminSeries) => {
   selectedSeries.value = row;
   episodes.value = [];
   episodeError.value = '';
+  resetCoverSelection(row.coverUrl);
   Object.assign(form, { title: row.title, description: row.description, genres: [...row.genres], targetRegion: row.targetRegion, freeEpisodeCount: row.freeEpisodeCount, price: row.price });
   dialogVisible.value = true;
   void loadEpisodes();
@@ -132,19 +219,34 @@ const saveSeries = async () => {
   }
   saving.value = true;
   const input = { ...form, freeEpisodeCount, title: form.title.trim(), description: form.description.trim(), genres: [...form.genres] };
+  const isNew = !editingId.value;
   try {
+    let updated: AdminSeries;
     if (editingId.value) {
-      const updated = await api.updateSeries(editingId.value, input);
+      updated = await api.updateSeries(editingId.value, input);
+    } else {
+      updated = await api.createSeries(input);
+      editingId.value = updated.id;
+      selectedSeries.value = updated;
+    }
+    const existingIndex = state.value.series.findIndex((item) => item.id === updated.id);
+    if (existingIndex >= 0) state.value.series[existingIndex] = updated;
+    else state.value.series.unshift(updated);
+
+    if (coverFile.value) {
+      updated = await uploadSeriesCover(updated.id, coverFile.value);
       const index = state.value.series.findIndex((item) => item.id === updated.id);
       if (index >= 0) state.value.series[index] = updated;
-      ElMessage.success('短剧资料已保存并同步到服务端');
-    } else {
-      state.value.series.unshift(await api.createSeries(input));
-      ElMessage.success('短剧草稿已创建');
     }
+    ElMessage.success(isNew
+      ? (coverFile.value ? '短剧草稿和封面已创建' : '短剧草稿已创建')
+      : '短剧资料已保存并同步到服务端');
     dialogVisible.value = false;
   } catch (reason: any) {
-    ElMessage.error(reason?.data?.statusMessage || '短剧资料保存失败');
+    const message = reason?.data?.statusMessage || reason?.message;
+    ElMessage.error(isNew && editingId.value
+      ? `草稿已创建，但封面上传失败：${message || '请重试'}`
+      : message || '短剧资料保存失败');
   } finally {
     saving.value = false;
   }
@@ -782,6 +884,7 @@ watch(episodeDrawer, (open) => {
   }, 5000);
 });
 watch([dialogVisible, episodesLoading, () => episodes.value.length], () => { void initializeEpisodeSorting(); }, { flush: 'post' });
+watch(dialogVisible, (open) => { if (!open) resetCoverSelection(); });
 watch([episodeOrderSaving, () => deletingEpisodeIds.value.length], ([savingOrder, deletingCount]) => {
   episodeSortable?.option('disabled', Boolean(savingOrder || deletingCount));
 });
@@ -799,6 +902,8 @@ onBeforeUnmount(() => {
   if (episodePoll) clearInterval(episodePoll);
   episodeSortable?.destroy();
   previewHls?.destroy();
+  activeCoverRequest?.abort();
+  releaseCoverObjectUrl();
   for (const request of activeUploadRequests) request.abort();
 });
 
@@ -837,15 +942,35 @@ const exportSeries = () => {
         <el-table-column label="价格" width="86"><template #default="scope">${{ scope.row.price.toFixed(2) }}</template></el-table-column>
         <el-table-column label="状态" width="118"><template #default="scope"><div class="status-stack"><el-tag :type="tagType(scope.row.publishStatus) as any" effect="light">{{ scope.row.publishStatus }}</el-tag><small v-if="scope.row.publishStatus === '处理中'">{{ scope.row.transcodeProgress }}%</small></div></template></el-table-column>
         <el-table-column prop="publishAt" label="更新时间" width="112" />
-        <el-table-column label="操作" fixed="right" width="176"><template #default="scope"><div class="series-row-actions"><el-button link type="primary" @click="openEdit(scope.row)">编辑</el-button><el-button link @click="openEpisodes(scope.row)">分集</el-button><el-dropdown @command="(command: string) => command === 'copy' ? duplicate(scope.row) : command === 'delete' ? removeSeries(scope.row) : updateStatus([scope.row], command as PublishStatus)"><el-button link>更多</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item command="已上架">上架</el-dropdown-item><el-dropdown-item command="已下架">下架</el-dropdown-item><el-dropdown-item command="copy" divided>复制短剧</el-dropdown-item><el-dropdown-item command="delete" divided>删除短剧</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div></template></el-table-column>
+        <el-table-column label="操作" fixed="right" width="176"><template #default="scope"><div class="series-row-actions"><el-button link type="primary" @click="openEdit(scope.row as AdminSeries)">编辑</el-button><el-button link @click="openEpisodes(scope.row as AdminSeries)">分集</el-button><el-dropdown @command="(command: string) => command === 'copy' ? duplicate(scope.row as AdminSeries) : command === 'delete' ? removeSeries(scope.row as AdminSeries) : updateStatus([scope.row as AdminSeries], command as PublishStatus)"><el-button link>更多</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item command="已上架">上架</el-dropdown-item><el-dropdown-item command="已下架">下架</el-dropdown-item><el-dropdown-item command="copy" divided>复制短剧</el-dropdown-item><el-dropdown-item command="delete" divided>删除短剧</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div></template></el-table-column>
         <template #empty><div class="table-empty"><Film :size="28" /><span>没有符合条件的短剧</span><el-button link type="primary" @click="resetFilters">清除筛选</el-button></div></template>
       </el-table>
       <div class="admin-pagination"><span>共 {{ filteredRows.length }} 条</span><el-pagination background layout="prev, pager, next" :total="filteredRows.length" :page-size="10" /></div>
     </section>
 
-    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑短剧' : '新建短剧'" width="min(760px, 94vw)" class="series-editor-dialog">
+    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑短剧' : '新建短剧'" width="min(760px, 94vw)" class="series-editor-dialog" :close-on-click-modal="!saving" :close-on-press-escape="!saving" :show-close="!saving">
       <el-form label-position="top">
         <el-form-item label="英文剧名" required><el-input v-model="form.title" maxlength="80" show-word-limit placeholder="例如 Vows & Vengeance" /></el-form-item>
+        <el-form-item label="竖版封面图">
+          <div class="series-cover-field">
+            <div class="series-cover-preview" :class="{ 'is-empty': !coverPreviewUrl }">
+              <img v-if="coverPreviewUrl" :src="coverPreviewUrl" :alt="`${form.title || '短剧'}封面预览`" />
+              <div v-else><ImagePlus :size="24" /><span>2:3</span></div>
+              <span v-if="coverFile" class="series-cover-preview__badge">待上传</span>
+            </div>
+            <div class="series-cover-actions">
+              <div>
+                <el-upload ref="coverUploadControl" :auto-upload="false" :show-file-list="false" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" :disabled="saving || mediaAvailabilityLoading || !coverUploadAvailable" :on-change="onCoverSelected">
+                  <el-button :loading="mediaAvailabilityLoading" :disabled="saving || mediaAvailabilityLoading || !coverUploadAvailable"><ImagePlus :size="15" />{{ coverPreviewUrl ? '更换封面' : '选择封面' }}</el-button>
+                </el-upload>
+                <el-button v-if="coverFile" text :disabled="saving" @click="resetCoverSelection(selectedSeries?.coverUrl || '')">撤销选择</el-button>
+              </div>
+              <span v-if="!mediaAvailabilityLoading && !coverUploadAvailable" class="series-cover-actions__error" role="alert">封面存储未连接，请先检查 D1 和 Media Worker 配置</span>
+              <span v-else>支持 JPG、PNG、WebP，最大 10 MB；建议 600 × 900 px 或更高</span>
+              <el-progress v-if="coverUploading" :percentage="coverUploadProgress" :stroke-width="6" :show-text="true" />
+            </div>
+          </div>
+        </el-form-item>
         <div class="form-grid"><el-form-item label="分类" required><el-select v-model="form.genres" multiple style="width: 100%" placeholder="选择分类"><el-option v-for="item in categories" :key="item" :label="item" :value="item" /></el-select></el-form-item><el-form-item label="目标地区"><el-select v-model="form.targetRegion" style="width: 100%"><el-option label="United States" value="United States" /><el-option label="Global" value="Global" /><el-option label="Canada" value="Canada" /></el-select></el-form-item></div>
         <div class="form-grid"><el-form-item label="试看集数（统计）"><el-input-number v-model="form.freeEpisodeCount" :min="0" :max="10000" :disabled="Boolean(editingId)" /><small v-if="editingId" class="series-editor-form-hint">请在下方逐集设置试看或收费</small></el-form-item><el-form-item label="解锁价格（USD）"><el-input-number v-model="form.price" :min="0" :precision="2" :step="1" /></el-form-item></div>
         <el-form-item label="短剧简介"><el-input v-model="form.description" type="textarea" :rows="4" maxlength="500" show-word-limit /></el-form-item>
@@ -888,7 +1013,7 @@ const exportSeries = () => {
         </div>
         <span class="sr-only" aria-live="polite">{{ episodeOrderAnnouncement }}</span>
       </section>
-      <template #footer><el-button :disabled="episodeOrderSaving || deletingEpisodeIds.length > 0 || episodeAccessSavingIds.length > 0" @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" :disabled="episodeOrderSaving || deletingEpisodeIds.length > 0 || episodeAccessSavingIds.length > 0" @click="saveSeries">{{ editingId ? '保存修改' : '创建草稿' }}</el-button></template>
+      <template #footer><el-button :disabled="saving || episodeOrderSaving || deletingEpisodeIds.length > 0 || episodeAccessSavingIds.length > 0" @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" :disabled="episodeOrderSaving || deletingEpisodeIds.length > 0 || episodeAccessSavingIds.length > 0" @click="saveSeries">{{ coverUploading ? `上传封面 ${coverUploadProgress}%` : editingId ? '保存修改' : '创建草稿' }}</el-button></template>
     </el-dialog>
 
     <el-drawer v-model="episodeDrawer" class="admin-episode-drawer" :title="`${selectedSeries?.title || ''} · 分集管理`" size="min(620px, 92vw)" append-to-body>

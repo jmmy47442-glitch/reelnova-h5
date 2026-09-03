@@ -66,6 +66,54 @@ export interface DashboardSummary {
   };
 }
 
+export type DashboardMetricKey = 'plays' | 'orders' | 'revenue' | 'exceptions';
+
+export interface AdminMetricPlaybackItem {
+  eventId: string;
+  sessionId: string;
+  userId: string;
+  email: string | null;
+  seriesId: string;
+  seriesTitle: string;
+  episodeNo: number;
+  country: string | null;
+  positionSeconds: number;
+  durationSeconds: number;
+  occurredAt: string;
+}
+
+export interface AdminMetricOrderItem {
+  orderNo: string;
+  seriesId: string;
+  seriesTitle: string;
+  email: string | null;
+  country: string | null;
+  amount: number;
+  currency: 'USD';
+  status: PersistedOrderStatus;
+  paypalOrderId: string | null;
+  captureId: string | null;
+  note: string | null;
+  createdAt: string;
+  occurredAt: string;
+}
+
+export interface AdminMetricDetailResponse {
+  connected: true;
+  metric: DashboardMetricKey;
+  kind: 'playback' | 'order';
+  title: string;
+  description: string;
+  value: number;
+  recordCount: number;
+  generatedAt: string;
+  timezone: 'UTC';
+  range: { from: string; to: string; label: string };
+  page: number;
+  pageSize: number;
+  items: Array<AdminMetricPlaybackItem | AdminMetricOrderItem>;
+}
+
 export type PersistedOrderStatus = 'pending' | 'processing' | 'paid' | 'failed' | 'cancelled' | 'refunding' | 'refunded' | 'risk_review';
 export type PersistedRefundStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'rejected' | 'cancelled';
 
@@ -115,6 +163,13 @@ export interface MediaUploadSession {
   uploadUrl: string;
   uploadToken: string;
   partSizeBytes: number;
+  expiresAt: string;
+}
+
+export interface SeriesCoverUploadSession {
+  objectKey: string;
+  uploadUrl: string;
+  uploadToken: string;
   expiresAt: string;
 }
 

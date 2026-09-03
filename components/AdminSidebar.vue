@@ -52,7 +52,9 @@ const menuGroups = computed(() => ([
   },
 ]).map((group) => ({ ...group, items: group.items.filter((item) => can(item.permission)) })).filter((group) => group.items.length));
 
-const active = (to: string) => to === '/admin' ? route.path === to : route.path.startsWith(to);
+const active = (to: string) => to === '/admin'
+  ? route.path === to || route.path.startsWith('/admin/metrics/')
+  : route.path.startsWith(to);
 const closeMobile = () => emit('update:mobileOpen', false);
 </script>
 

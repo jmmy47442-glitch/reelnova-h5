@@ -139,6 +139,26 @@ export const updateManagedSeriesRecord = async (event: H3Event, id: string, inpu
   return item;
 };
 
+export const updateManagedSeriesCoverRecord = async (event: H3Event, id: string, coverUrl: string) => {
+  if (hasD1Connection(event)) {
+    const existing = await d1First<{ id: string }>(event,
+      'SELECT id FROM series WHERE id = ? AND deleted_at IS NULL', [id]);
+    if (!existing) throw createError({ statusCode: 404, statusMessage: 'Series not found' });
+    await d1Run(event, 'UPDATE series SET cover_url = ?, updated_at = ? WHERE id = ?',
+      [coverUrl, new Date().toISOString(), id]);
+    invalidateNormalizedSeriesCache();
+    return (await getManagedSeries(event)).find((item) => item.id === id)!;
+  }
+  const items = await getManagedSeries(event);
+  const item = items.find((entry) => entry.id === id);
+  if (!item) throw createError({ statusCode: 404, statusMessage: 'Series not found' });
+  item.coverUrl = coverUrl;
+  item.updatedAt = new Date().toISOString();
+  item.publishAt = item.updatedAt.slice(0, 10);
+  await saveManagedSeries(event, items);
+  return item;
+};
+
 export const updateManagedSeriesStatusRecord = async (event: H3Event, id: string, publishStatus: PublishStatus) => {
   if (hasD1Connection(event)) {
     invalidateNormalizedSeriesCache();

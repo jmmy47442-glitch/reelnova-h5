@@ -16,7 +16,10 @@ const labels: Record<string, string> = {
   '/admin/audit': '审计日志',
   '/admin/administrators': '管理员账号',
 };
-const currentLabel = computed(() => labels[route.path] || '管理页面');
+const metricLabels: Record<string, string> = { plays: '今日播放量', orders: '今日订单', revenue: '已确认收入', exceptions: '异常订单' };
+const currentLabel = computed(() => route.path.startsWith('/admin/metrics/')
+  ? metricLabels[String(route.params.metric)] || '指标明细'
+  : labels[route.path] || '管理页面');
 const refresh = () => window.location.reload();
 </script>
 

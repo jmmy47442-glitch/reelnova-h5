@@ -12,6 +12,13 @@ const parseEnv = (file) => {
 
 const env = { ...parseEnv('.env'), ...process.env };
 const expectedWebhookUrl = env.CLOUDFLARE_STREAM_WEBHOOK_URL || 'https://iseedrama.com/api/media/stream-webhook';
+const expectedPayPalWebhookUrl = env.PAYPAL_WEBHOOK_URL || 'https://iseedrama.com/api/paypal/webhook';
+const requiredPayPalWebhookEvents = [
+  'PAYMENT.CAPTURE.COMPLETED',
+  'PAYMENT.CAPTURE.DENIED',
+  'PAYMENT.CAPTURE.REFUNDED',
+  'PAYMENT.CAPTURE.REVERSED',
+];
 const required = (keys) => keys.filter((key) => !String(env[key] || '').trim());
 const report = (label, ok, detail = '') => console.log(`${ok ? 'PASS' : 'BLOCK'} ${label}${detail ? `: ${detail}` : ''}`);
 let blocked = false;
@@ -39,8 +46,32 @@ if (!missingPayPal.length) {
     });
     report('PayPal Production OAuth', response.ok, `HTTP ${response.status}`);
     blocked ||= !response.ok;
+    if (response.ok) {
+      const tokenPayload = await response.json();
+      const webhookResponse = await fetch(
+        `https://api-m.paypal.com/v1/notifications/webhooks/${encodeURIComponent(env.PAYPAL_PRODUCTION_WEBHOOK_ID)}`,
+        { headers: { Authorization: `Bearer ${tokenPayload.access_token}` } },
+      );
+      const webhook = await webhookResponse.json().catch(() => ({}));
+      const webhookExists = webhookResponse.ok && webhook?.id === env.PAYPAL_PRODUCTION_WEBHOOK_ID;
+      report('PayPal Production Webhook ID', webhookExists, `HTTP ${webhookResponse.status}`);
+      blocked ||= !webhookExists;
+      if (webhookExists) {
+        const configuredUrl = String(webhook.url || '').replace(/\/$/, '');
+        const webhookUrlMatches = configuredUrl === expectedPayPalWebhookUrl.replace(/\/$/, '');
+        report('PayPal Production Webhook callback URL', webhookUrlMatches,
+          configuredUrl ? `configured=${configuredUrl}` : 'callback URL missing');
+        blocked ||= !webhookUrlMatches;
+
+        const subscribedEvents = new Set((webhook.event_types || []).map((eventType) => eventType.name));
+        const missingEvents = requiredPayPalWebhookEvents.filter((eventType) => !subscribedEvents.has(eventType));
+        report('PayPal Production Webhook event subscriptions', missingEvents.length === 0,
+          missingEvents.length ? `missing ${missingEvents.join(', ')}` : 'required capture events present');
+        blocked ||= missingEvents.length > 0;
+      }
+    }
   } catch (error) {
-    report('PayPal Production OAuth', false, error instanceof Error ? error.message : 'request failed');
+    report('PayPal Production API validation', false, error instanceof Error ? error.message : 'request failed');
     blocked = true;
   }
 }

@@ -39,6 +39,7 @@ export const getAdminLandingPath = (role: AdminRole | null | undefined) =>
 
 export const getAdminPagePermission = (path: string): AdminPermission => {
   if (path === '/admin') return 'dashboard.read';
+  if (/^\/admin\/metrics(?:\/|$)/.test(path)) return 'dashboard.read';
   if (/^\/admin\/(?:series|operations|taxonomy)(?:\/|$)/.test(path)) return 'content.read';
   if (/^\/admin\/(?:orders|users|reconciliation)(?:\/|$)/.test(path)) return 'finance.read';
   if (/^\/admin\/administrators(?:\/|$)/.test(path)) return 'administrators.manage';
@@ -55,6 +56,7 @@ interface ApiPermissionRule {
 
 const apiPermissionRules: ApiPermissionRule[] = [
   { pattern: /^\/api\/admin\/dashboard$/, read: 'dashboard.read' },
+  { pattern: /^\/api\/admin\/metrics(?:\/|$)/, read: 'dashboard.read' },
   { pattern: /^\/api\/admin\/pending-items$/, read: 'dashboard.read' },
   { pattern: /^\/api\/admin\/(?:series|media|home-config|taxonomy)(?:\/|$)/, read: 'content.read', write: 'content.manage' },
   { pattern: /^\/api\/admin\/(?:orders|users|reconciliation)(?:\/|$)/, read: 'finance.read', write: 'finance.manage' },

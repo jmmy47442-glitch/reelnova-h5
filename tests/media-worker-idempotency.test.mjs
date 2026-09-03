@@ -225,6 +225,76 @@ test('private ingest supports metadata probes and byte ranges', async () => {
   assert.equal(invalid.headers.get('content-range'), 'bytes */10');
 });
 
+test('series cover uploads require a signed grant and become immutable public images', async () => {
+  const bucket = createBucket();
+  const env = {
+    MEDIA_BUCKET: bucket,
+    MEDIA_WORKER_SECRET: secret,
+    PUBLIC_BASE_URL: 'https://media.example.test',
+    APP_ORIGINS: 'https://admin.example.test',
+  };
+  const imageBytes = Uint8Array.from([255, 216, 255, 224, 1, 2, 3, 4]);
+  const creation = {
+    objectKey: 'posters/sr-cover-test/cover-11111111-1111-4111-8111-111111111111.jpg',
+    seriesId: 'sr-cover-test',
+    contentType: 'image/jpeg',
+    fileSizeBytes: imageBytes.byteLength,
+  };
+  const createdResponse = await worker.fetch(await signedRequest('/images/uploads', creation), env);
+  assert.equal(createdResponse.status, 200);
+  const created = await createdResponse.json();
+  assert.equal(created.uploadUrl, 'https://media.example.test/images/upload');
+
+  const forged = await worker.fetch(new Request(created.uploadUrl, {
+    method: 'PUT',
+    headers: { 'content-type': 'image/jpeg', 'content-length': String(imageBytes.byteLength) },
+    body: imageBytes,
+  }), env);
+  assert.equal(forged.status, 401);
+
+  const disguisedFile = await worker.fetch(new Request(created.uploadUrl, {
+    method: 'PUT',
+    headers: {
+      authorization: `Bearer ${created.uploadToken}`,
+      'content-type': 'image/jpeg',
+      'content-length': String(imageBytes.byteLength),
+    },
+    body: Uint8Array.from({ length: imageBytes.byteLength }, () => 65),
+  }), env);
+  assert.equal(disguisedFile.status, 415);
+
+  const uploaded = await worker.fetch(new Request(created.uploadUrl, {
+    method: 'PUT',
+    headers: {
+      authorization: `Bearer ${created.uploadToken}`,
+      'content-type': 'image/jpeg',
+      'content-length': String(imageBytes.byteLength),
+      origin: 'https://admin.example.test',
+    },
+    body: imageBytes,
+  }), env);
+  assert.equal(uploaded.status, 200);
+  assert.equal(uploaded.headers.get('access-control-allow-origin'), 'https://admin.example.test');
+
+  const verification = await worker.fetch(await signedRequest('/images/verify', {
+    objectKey: creation.objectKey,
+    seriesId: creation.seriesId,
+  }), env);
+  assert.equal(verification.status, 200);
+  assert.deepEqual(await verification.json(), {
+    objectKey: creation.objectKey,
+    publicUrl: `https://media.example.test/${creation.objectKey}`,
+    contentType: 'image/jpeg',
+    size: imageBytes.byteLength,
+  });
+
+  const publicImage = await worker.fetch(new Request(`https://media.example.test/${creation.objectKey}`), env);
+  assert.equal(publicImage.status, 200);
+  assert.equal(publicImage.headers.get('content-type'), 'image/jpeg');
+  assert.equal(publicImage.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+  assert.deepEqual([...new Uint8Array(await publicImage.arrayBuffer())], [...imageBytes]);
+});
+
 test('signed server requests can mint short-lived Stream tokens', async () => {
   const originalFetch = globalThis.fetch;
   let tokenRequest;
