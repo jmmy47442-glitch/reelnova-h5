@@ -144,8 +144,10 @@ export const updateManagedSeriesCoverRecord = async (event: H3Event, id: string,
     const existing = await d1First<{ id: string }>(event,
       'SELECT id FROM series WHERE id = ? AND deleted_at IS NULL', [id]);
     if (!existing) throw createError({ statusCode: 404, statusMessage: 'Series not found' });
-    await d1Run(event, 'UPDATE series SET cover_url = ?, updated_at = ? WHERE id = ?',
-      [coverUrl, new Date().toISOString(), id]);
+    // A series has one editorial artwork in the admin workflow. Keep both
+    // placements in sync so the portrait cover also updates Hero backgrounds.
+    await d1Run(event, 'UPDATE series SET cover_url = ?, backdrop_url = ?, updated_at = ? WHERE id = ?',
+      [coverUrl, coverUrl, new Date().toISOString(), id]);
     invalidateNormalizedSeriesCache();
     return (await getManagedSeries(event)).find((item) => item.id === id)!;
   }
@@ -153,6 +155,7 @@ export const updateManagedSeriesCoverRecord = async (event: H3Event, id: string,
   const item = items.find((entry) => entry.id === id);
   if (!item) throw createError({ statusCode: 404, statusMessage: 'Series not found' });
   item.coverUrl = coverUrl;
+  item.backdropUrl = coverUrl;
   item.updatedAt = new Date().toISOString();
   item.publishAt = item.updatedAt.slice(0, 10);
   await saveManagedSeries(event, items);
