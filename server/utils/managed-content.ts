@@ -480,7 +480,7 @@ export const updateManagedEpisodeAccess = async (event: H3Event, seriesId: strin
     await d1Batch(event, [
       { sql: 'UPDATE episodes SET is_free = ?, updated_at = ? WHERE id = ?', params: [isFree ? 1 : 0, now, episodeId] },
       { sql: `UPDATE series SET free_episode_count = (SELECT COUNT(*) FROM episodes WHERE series_id = ? AND deleted_at IS NULL AND is_free = 1),
-        status = CASE WHEN status = 'rights_frozen' THEN status ELSE 'draft' END, updated_at = ? WHERE id = ?`, params: [seriesId, now, seriesId] },
+        updated_at = ? WHERE id = ?`, params: [seriesId, now, seriesId] },
     ]);
     const updated = (await getManagedEpisodes(event, seriesId, false)).find((item) => item.id === episodeId);
     if (!updated) throw createError({ statusCode: 404, statusMessage: 'Episode not found' });
@@ -494,9 +494,7 @@ export const updateManagedEpisodeAccess = async (event: H3Event, seriesId: strin
   episode.isFree = isFree;
   episode.isUnlocked = isFree;
   series.freeEpisodeCount = series.episodes.filter((item) => item.isFree).length;
-  if (series.publishStatus !== '版权冻结') series.publishStatus = '草稿';
   const now = new Date().toISOString();
-  series.publishAt = now.slice(0, 10);
   series.updatedAt = now;
   await saveManagedSeries(event, items);
   return { episode: memoryEpisodeToAdmin(episode), seriesTitle: series.title };

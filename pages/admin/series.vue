@@ -255,7 +255,7 @@ const loadEpisodes = async (showLoading = true) => {
   }
 };
 
-const syncEpisodeSummary = () => {
+const syncEpisodeSummary = (markDraft = true) => {
   const seriesId = selectedSeries.value?.id;
   const row = state.value.series.find((item) => item.id === seriesId);
   if (!row) return;
@@ -264,8 +264,10 @@ const syncEpisodeSummary = () => {
   row.transcodeProgress = episodes.value.length
     ? Math.round(episodes.value.reduce((sum, episode) => sum + episode.transcodeProgress, 0) / episodes.value.length)
     : 0;
-  if (row.publishStatus !== '版权冻结') row.publishStatus = '草稿';
-  row.publishAt = new Date().toISOString().slice(0, 10);
+  if (markDraft) {
+    if (row.publishStatus !== '版权冻结') row.publishStatus = '草稿';
+    row.publishAt = new Date().toISOString().slice(0, 10);
+  }
   selectedSeries.value = row;
   form.freeEpisodeCount = row.freeEpisodeCount;
 };
@@ -275,17 +277,18 @@ const toggleEpisodeAccess = async (episode: AdminEpisode, isFree: boolean) => {
   if (!seriesId || episodeAccessSavingIds.value.includes(episode.id) || episode.isFree === isFree) return;
   const previous = episode.isFree;
   episode.isFree = isFree;
-  syncEpisodeSummary();
+  // Access changes are live content settings and must not unpublish the series.
+  syncEpisodeSummary(false);
   episodeAccessSavingIds.value = [...episodeAccessSavingIds.value, episode.id];
   try {
     const updated = await api.updateEpisodeAccess(seriesId, episode.id, isFree);
     const index = episodes.value.findIndex((item) => item.id === updated.id);
     if (index >= 0) episodes.value[index] = updated;
-    syncEpisodeSummary();
+    syncEpisodeSummary(false);
     ElMessage.success(`第 ${updated.episodeNo} 集已设为${isFree ? '试看' : '收费'}`);
   } catch (reason: any) {
     episode.isFree = previous;
-    syncEpisodeSummary();
+    syncEpisodeSummary(false);
     ElMessage.error(reason?.data?.statusMessage || '剧集试看设置保存失败');
   } finally {
     episodeAccessSavingIds.value = episodeAccessSavingIds.value.filter((id) => id !== episode.id);

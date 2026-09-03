@@ -12,8 +12,8 @@ const { formatPrice, formatViews } = useFormatters();
 const showFullDescription = ref(false);
 const showUnlock = ref(false);
 const locallyUnlocked = ref(false);
-// Keep the cached snapshot for instant paint, then revalidate so admin price
-// changes are reflected after a browser refresh or a fresh page mount.
+// Paint the local snapshot immediately, then revalidate so admin access changes
+// are reflected when the detail page is opened again.
 const { data: series, status, error, refresh } = usePageData(
   `series-${String(route.params.slug)}`,
   () => api.getSeries(String(route.params.slug)),
@@ -31,7 +31,7 @@ onMounted(async () => {
     const order = await api.getOrder(orderNo).catch(() => null);
     if (order?.status === 'paid') {
       locallyUnlocked.value = true;
-      invalidatePageDataCache(`watch-${String(route.params.slug)}`);
+      invalidatePageDataCache(`series-${String(route.params.slug)}`);
       await refresh();
       break;
     }
@@ -61,7 +61,7 @@ const share = async () => {
 const unlockComplete = async () => {
   locallyUnlocked.value = true;
   showUnlock.value = false;
-  invalidatePageDataCache(`watch-${String(route.params.slug)}`);
+  invalidatePageDataCache(`series-${String(route.params.slug)}`);
   await refresh();
 };
 </script>
@@ -87,9 +87,10 @@ const unlockComplete = async () => {
         <section class="episode-section">
           <SectionHeader :title="`${series.episodeCount} episodes`" :subtitle="`${series.freeEpisodeCount} free · ${series.updatedLabel}`" />
           <div class="episode-grid">
-            <button v-for="episode in series.episodes" :key="episode.id" type="button" :class="{ 'is-locked': !episode.isUnlocked && !locallyUnlocked }" @click="handleEpisode(episode.episodeNo, Boolean(episode.isUnlocked))">
+            <button v-for="episode in series.episodes" :key="episode.id" type="button" :class="{ 'is-locked': !episode.isUnlocked && !locallyUnlocked }" :aria-label="`Episode ${episode.episodeNo}: ${episode.isUnlocked || locallyUnlocked ? (episode.isFree ? 'Free preview' : 'Unlocked') : 'Paid'}`" @click="handleEpisode(episode.episodeNo, Boolean(episode.isUnlocked))">
               <strong>{{ episode.episodeNo }}</strong>
               <span v-if="episode.isUnlocked || locallyUnlocked"><Play :size="13" fill="currentColor" /></span><span v-else><LockKeyhole :size="13" /></span>
+              <small>{{ episode.isUnlocked || locallyUnlocked ? (episode.isFree ? 'Free' : 'Unlocked') : 'Paid' }}</small>
             </button>
           </div>
         </section>

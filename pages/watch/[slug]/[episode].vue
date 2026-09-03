@@ -112,10 +112,12 @@ const sampleNativeMediaTimings = (entries: PerformanceEntry[]) => {
   });
 };
 
-// Revalidate the series snapshot on mount so checkout prices stay in sync
-// with backend changes while preserving the cached data during the request.
+// Reuse the cached series snapshot for an immediate paint, then revalidate so
+// access changes are reflected when opening a playback route directly.
 const { data: series, status, refresh } = usePageData(
-  `watch-${String(route.params.slug)}`,
+  // Share the detail snapshot with the series page so returning from playback
+  // never triggers a second series request.
+  `series-${String(route.params.slug)}`,
   () => api.getSeries(String(route.params.slug)),
   { revalidateOnMount: true },
 );
@@ -543,7 +545,7 @@ const handleUnlocked = async () => {
   locallyUnlocked.value = true;
   showUnlock.value = false;
   const slug = String(route.params.slug);
-  invalidatePageDataCache(`series-${slug}`, `watch-${slug}`);
+  invalidatePageDataCache(`series-${slug}`);
   initialGrantRequested.value = false;
   await refresh();
   // The video element is created by v-if after the unlock event.
