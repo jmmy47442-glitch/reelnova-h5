@@ -109,27 +109,24 @@ export const consumePlaybackRateLimit = async (event: H3Event, input: {
   const windowMs = input.windowSeconds * 1000;
   const windowStartedAt = Math.floor(now / windowMs) * windowMs;
   const updatedAt = new Date(now).toISOString();
-  await d1Run(event, `INSERT INTO playback_rate_limits
+  const nextBlockedUntil = now + (input.blockSeconds || input.windowSeconds) * 1000;
+  const row = await d1First<{ request_count: number; blocked_until: number | null }>(event, `INSERT INTO playback_rate_limits
     (bucket_key, window_started_at, request_count, blocked_until, updated_at)
     VALUES (?, ?, 1, NULL, ?)
     ON CONFLICT(bucket_key) DO UPDATE SET
       window_started_at = excluded.window_started_at,
       request_count = CASE WHEN playback_rate_limits.window_started_at = excluded.window_started_at
         THEN playback_rate_limits.request_count + 1 ELSE 1 END,
-      blocked_until = CASE WHEN playback_rate_limits.window_started_at = excluded.window_started_at
-        THEN playback_rate_limits.blocked_until ELSE NULL END,
-      updated_at = excluded.updated_at`, [bucketKey, windowStartedAt, updatedAt]);
-  const row = await d1First<{ request_count: number; blocked_until: number | null }>(event,
-    'SELECT request_count, blocked_until FROM playback_rate_limits WHERE bucket_key = ?', [bucketKey]);
+      blocked_until = CASE
+        WHEN playback_rate_limits.window_started_at != excluded.window_started_at THEN NULL
+        WHEN COALESCE(playback_rate_limits.blocked_until, 0) > ? THEN playback_rate_limits.blocked_until
+        WHEN playback_rate_limits.request_count + 1 > ? THEN ?
+        ELSE NULL
+      END,
+      updated_at = excluded.updated_at
+    RETURNING request_count, blocked_until`, [bucketKey, windowStartedAt, updatedAt, now, input.limit, nextBlockedUntil]);
   const blockedUntil = Number(row?.blocked_until || 0);
   if (blockedUntil > now) return { allowed: false, retryAfterSeconds: Math.ceil((blockedUntil - now) / 1000) };
-  if (Number(row?.request_count || 0) > input.limit) {
-    const retryAfterSeconds = input.blockSeconds || input.windowSeconds;
-    const nextBlockedUntil = now + retryAfterSeconds * 1000;
-    await d1Run(event, `UPDATE playback_rate_limits SET blocked_until = ?, updated_at = ?
-      WHERE bucket_key = ? AND (blocked_until IS NULL OR blocked_until <= ?)`, [nextBlockedUntil, updatedAt, bucketKey, now]);
-    return { allowed: false, retryAfterSeconds };
-  }
   return { allowed: true, retryAfterSeconds: 0 };
 };
 
@@ -139,24 +136,19 @@ export const enforcePlaybackRateLimits = async (event: H3Event, context: Playbac
     { key: `user:${userId}`, limit: 30, windowSeconds: 60, blockSeconds: 120 },
     ...(sessionId ? [{ key: `session:${sessionId}`, limit: 20, windowSeconds: 60, blockSeconds: 180 }] : []),
   ];
-  for (const check of checks) {
-    const result = await consumePlaybackRateLimit(event, check);
-    if (!result.allowed) {
-      await recordPlaybackSecurityEvent(event, {
-        eventType: 'rate_limit_block', userId, sessionId, deviceHash: context.deviceHash, ipHash: context.ipHash,
-        detail: { scope: check.key.split(':')[0], retryAfterSeconds: result.retryAfterSeconds },
-      }).catch(() => undefined);
-      setHeader(event, 'retry-after', result.retryAfterSeconds);
-      throw createError({ statusCode: 429, statusMessage: 'Too many playback requests', data: { code: 'PLAYBACK_RATE_LIMITED' } });
-    }
+  const results = await Promise.all(checks.map(async (check) => ({
+    check,
+    result: await consumePlaybackRateLimit(event, check),
+  })));
+  const blocked = results.find(({ result }) => !result.allowed);
+  if (blocked) {
+    await recordPlaybackSecurityEvent(event, {
+      eventType: 'rate_limit_block', userId, sessionId, deviceHash: context.deviceHash, ipHash: context.ipHash,
+      detail: { scope: blocked.check.key.split(':')[0], retryAfterSeconds: blocked.result.retryAfterSeconds },
+    }).catch(() => undefined);
+    setHeader(event, 'retry-after', blocked.result.retryAfterSeconds);
+    throw createError({ statusCode: 429, statusMessage: 'Too many playback requests', data: { code: 'PLAYBACK_RATE_LIMITED' } });
   }
-};
-
-const expireStaleSessions = (event: H3Event, now: Date) => {
-  const nowIso = now.toISOString();
-  const staleBefore = new Date(now.getTime() - activeSessionIdleSeconds * 1000).toISOString();
-  return d1Run(event, `UPDATE playback_sessions SET status = 'expired'
-    WHERE status = 'active' AND (expires_at <= ? OR last_seen_at <= ?)`, [nowIso, staleBefore]);
 };
 
 export const establishPlaybackSession = async (event: H3Event, input: {
@@ -169,14 +161,33 @@ export const establishPlaybackSession = async (event: H3Event, input: {
   if (!uuidPattern.test(input.sessionId)) throw createError({ statusCode: 400, statusMessage: 'Invalid playback session' });
   const now = new Date();
   const nowIso = now.toISOString();
-  await expireStaleSessions(event, now);
+  const expiresAt = new Date(now.getTime() + sessionMaxAgeSeconds * 1000).toISOString();
+  const staleBefore = new Date(now.getTime() - activeSessionIdleSeconds * 1000).toISOString();
+  const created = await d1First<PlaybackSessionRow>(event, `INSERT INTO playback_sessions
+    (session_id, user_id, series_id, episode_no, device_hash, ip_hash, user_agent_hash, status,
+     token_count, event_count, created_at, last_seen_at, expires_at, last_token_at)
+    SELECT ?, ?, ?, ?, ?, ?, ?, 'active', 1, 0, ?, ?, ?, ?
+    WHERE EXISTS (SELECT 1 FROM users WHERE user_id = ?)
+      AND (EXISTS (SELECT 1 FROM playback_sessions
+        WHERE user_id = ? AND device_hash = ? AND status = 'active' AND last_seen_at > ? AND expires_at > ?)
+        OR (SELECT COUNT(DISTINCT device_hash) FROM playback_sessions
+          WHERE user_id = ? AND status = 'active' AND last_seen_at > ? AND expires_at > ?) < ?)
+    ON CONFLICT(session_id) DO NOTHING
+    RETURNING *`, [
+    input.sessionId, input.userId, input.seriesId, input.episodeNo, input.context.deviceHash, input.context.ipHash,
+    input.context.userAgentHash, nowIso, nowIso, expiresAt, nowIso, input.userId,
+    input.userId, input.context.deviceHash, staleBefore, nowIso,
+    input.userId, staleBefore, nowIso, maxActiveDevices,
+  ]);
+  if (created) return created;
+
   const existing = await d1First<PlaybackSessionRow>(event, 'SELECT * FROM playback_sessions WHERE session_id = ? LIMIT 1', [input.sessionId]);
   if (existing) {
     if (existing.user_id !== input.userId || existing.series_id !== input.seriesId || existing.episode_no !== input.episodeNo) {
       await recordPlaybackSecurityEvent(event, { eventType: 'session_scope_mismatch', userId: input.userId, sessionId: input.sessionId, deviceHash: input.context.deviceHash, ipHash: input.context.ipHash });
       throw createError({ statusCode: 401, statusMessage: 'Playback session is invalid' });
     }
-    if (existing.status !== 'active' || Date.parse(existing.expires_at) <= now.getTime()) {
+    if (existing.status !== 'active' || Date.parse(existing.expires_at) <= now.getTime() || existing.last_seen_at <= staleBefore) {
       throw createError({ statusCode: 403, statusMessage: 'Playback session has expired' });
     }
     if (existing.device_hash !== input.context.deviceHash) {
@@ -191,34 +202,12 @@ export const establishPlaybackSession = async (event: H3Event, input: {
     return { ...existing, ip_hash: input.context.ipHash, user_agent_hash: input.context.userAgentHash, last_seen_at: nowIso };
   }
 
-  const expiresAt = new Date(now.getTime() + sessionMaxAgeSeconds * 1000).toISOString();
-  const staleBefore = new Date(now.getTime() - activeSessionIdleSeconds * 1000).toISOString();
-  const result = await d1Run(event, `INSERT INTO playback_sessions
-    (session_id, user_id, series_id, episode_no, device_hash, ip_hash, user_agent_hash, status,
-     token_count, event_count, created_at, last_seen_at, expires_at, last_token_at)
-    SELECT ?, ?, ?, ?, ?, ?, ?, 'active', 1, 0, ?, ?, ?, ?
-    WHERE EXISTS (SELECT 1 FROM users WHERE user_id = ?)
-      AND (EXISTS (SELECT 1 FROM playback_sessions WHERE user_id = ? AND device_hash = ? AND status = 'active')
-        OR (SELECT COUNT(DISTINCT device_hash) FROM playback_sessions
-          WHERE user_id = ? AND status = 'active' AND last_seen_at > ?) < ?)`, [
-    input.sessionId, input.userId, input.seriesId, input.episodeNo, input.context.deviceHash, input.context.ipHash,
-    input.context.userAgentHash, nowIso, nowIso, expiresAt, nowIso, input.userId, input.userId, input.context.deviceHash,
-    input.userId, staleBefore, maxActiveDevices,
-  ]);
-  if (Number(result?.meta?.changes || 0) !== 1) {
-    await recordPlaybackSecurityEvent(event, {
-      eventType: 'concurrent_device_limit', userId: input.userId, sessionId: input.sessionId, seriesId: input.seriesId,
-      episodeNo: input.episodeNo, deviceHash: input.context.deviceHash, ipHash: input.context.ipHash,
-      detail: { maxActiveDevices },
-    });
-    throw createError({ statusCode: 429, statusMessage: 'Playback is already active on too many devices', data: { code: 'PLAYBACK_DEVICE_LIMIT' } });
-  }
-  return {
-    session_id: input.sessionId, user_id: input.userId, series_id: input.seriesId, episode_no: input.episodeNo,
-    device_hash: input.context.deviceHash, ip_hash: input.context.ipHash, user_agent_hash: input.context.userAgentHash,
-    status: 'active' as const, blocked_reason: null, token_count: 1, event_count: 0, created_at: nowIso,
-    last_seen_at: nowIso, expires_at: expiresAt, last_token_at: nowIso,
-  } satisfies PlaybackSessionRow;
+  await recordPlaybackSecurityEvent(event, {
+    eventType: 'concurrent_device_limit', userId: input.userId, sessionId: input.sessionId, seriesId: input.seriesId,
+    episodeNo: input.episodeNo, deviceHash: input.context.deviceHash, ipHash: input.context.ipHash,
+    detail: { maxActiveDevices },
+  });
+  throw createError({ statusCode: 429, statusMessage: 'Playback is already active on too many devices', data: { code: 'PLAYBACK_DEVICE_LIMIT' } });
 };
 
 export const verifyPlaybackEventSession = async (event: H3Event, input: {

@@ -6,13 +6,12 @@ const router = useRouter();
 const nuxtApp = useNuxtApp();
 const visible = ref(false);
 const primaryTabRoutes = new Set(['/', '/explore', '/library', '/profile']);
-let suppressNextStart = false;
+let suppressCurrentNavigation = false;
 let startedAt = 0;
 let hideTimer: ReturnType<typeof setTimeout> | undefined;
 
 const start = () => {
-  if (suppressNextStart) {
-    suppressNextStart = false;
+  if (suppressCurrentNavigation) {
     visible.value = false;
     return;
   }
@@ -23,6 +22,11 @@ const start = () => {
 };
 
 const finish = () => {
+  if (suppressCurrentNavigation) {
+    visible.value = false;
+    suppressCurrentNavigation = false;
+    return;
+  }
   const elapsed = performance.now() - startedAt;
   hideTimer = setTimeout(() => {
     visible.value = false;
@@ -30,8 +34,13 @@ const finish = () => {
 };
 
 const removeNavigationGuard = router.beforeEach((to, from) => {
-  suppressNextStart = primaryTabRoutes.has(to.path) && primaryTabRoutes.has(from.path);
-  if (suppressNextStart) {
+  const returnsToCurrentSeries = to.path.startsWith('/series/')
+    && from.path.startsWith('/watch/')
+    && String(to.params.slug || '') === String(from.params.slug || '');
+  // Primary pages are keep-alive surfaces. Returning to one should reveal the
+  // cached view immediately instead of covering it with a route-level loader.
+  suppressCurrentNavigation = (primaryTabRoutes.has(to.path) && to.path !== from.path) || returnsToCurrentSeries;
+  if (suppressCurrentNavigation) {
     if (hideTimer) clearTimeout(hideTimer);
     visible.value = false;
   }

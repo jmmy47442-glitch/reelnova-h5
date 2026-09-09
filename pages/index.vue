@@ -7,10 +7,24 @@ definePageMeta({ keepalive: true });
 const api = useContentApi();
 const { formatViews } = useFormatters();
 const activeTab = ref('Popular');
-const { data, status, error, refresh } = usePageData('home', () => api.getHome(), { revalidateOnMount: true });
+const { data, status, error, refresh } = usePageData('home', () => api.getHome());
 const { track } = useAnalytics();
 const featuredTracked = ref(false);
+const pendingUpdates = ref(0);
+const router = useRouter();
+const primaryTabRoutes = new Set(['/', '/explore', '/library', '/profile']);
 let sectionObserver: IntersectionObserver | undefined;
+
+const refreshHome = async () => {
+  await refresh();
+  if (!error.value) pendingUpdates.value = 0;
+};
+
+const removeNavigationHook = router.afterEach((to, from) => {
+  if (to.path === '/' && from.path && !primaryTabRoutes.has(from.path) && data.value) {
+    pendingUpdates.value = 2;
+  }
+});
 
 let scrollFrame: number | null = null;
 
@@ -51,6 +65,7 @@ const selectTab = (tab: string) => {
 
 onBeforeUnmount(() => {
   if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
+  removeNavigationHook();
 });
 
 watch(data, (value) => {
@@ -76,9 +91,9 @@ onBeforeUnmount(() => sectionObserver?.disconnect());
 
 <template>
   <div>
-    <AppHeader refreshable :refreshing="status === 'pending'" @refresh="refresh" />
+    <AppHeader refreshable :refreshing="status === 'pending'" :pending-updates="pendingUpdates" @refresh="refreshHome" />
     <div v-if="status === 'pending'" class="content-width"><PageSkeleton /></div>
-    <div v-else-if="error" class="content-width page-state"><EmptyState title="We lost the signal" message="The latest shows could not be loaded." action="Try again" @action="refresh" /></div>
+    <div v-else-if="error" class="content-width page-state"><EmptyState title="We lost the signal" message="The latest shows could not be loaded." action="Try again" @action="refreshHome" /></div>
     <template v-else-if="data">
       <section class="featured-strip" :style="{ '--feature-image': `url(${data.featured.backdropUrl})` }">
         <div class="featured-strip__content content-width">

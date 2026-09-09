@@ -46,10 +46,30 @@ delivered a Webhook. Final payment acceptance must use a PayPal Sandbox buyer:
 7. Confirm the refund Webhook marks the order refunded, revokes entitlement,
    and episode 2 again returns `403` after a fresh login.
 
+After completing the flow, deploy the revision containing migration 0022 and the
+updated Webhook handler. Resend both the successful capture event and the refund
+event once from the PayPal Sandbox Webhooks dashboard, then persist a
+machine-readable evidence file:
+
+```bash
+npm run db:migrate -- --apply
+npm run check:acceptance-payment -- --output artifacts/paypal-sandbox-acceptance.json
+```
+
+The checker ignores `RN-ACCEPT-*` fixtures and only passes when D1 contains a
+real Sandbox capture, cancellation, processed duplicate delivery, completed
+refund and refund Webhook, plus the corresponding granted/revoked entitlement
+states. Set `ACCEPTANCE_PAID_ORDER_NO`, `ACCEPTANCE_CANCELLED_ORDER_NO` and
+`ACCEPTANCE_REFUNDED_ORDER_NO` to pin a specific test run; otherwise the newest
+matching records are used. The JSON contains provider/order identifiers but no
+buyer email or credentials and is written with owner-only permissions.
+
 Production builds ignore `REELNOVA_PUBLIC_MOCK_FALLBACK` even when it is set to
 `true`; a missing published D1 catalogue returns `503` instead of prototype data.
 
-Current external blocker: the deployed environment has working PayPal Sandbox
-credentials, but a Sandbox buyer must approve a newly created order before the
-capture/Webhook/refund sequence can be evidenced. Production credentials are not
-configured, so this fixture does not claim a production-money acceptance pass.
+Production release readiness and Sandbox transaction acceptance are separate.
+`npm run check:production` verifies that deployed `APP_BASE_URL` is actively using
+Production checkout. Live secrets remain in the deployment secret store and do
+not need to be duplicated into `.env`; set `PRODUCTION_ENV_FILE` only when a
+release operator needs the additional local OAuth/Webhook registration audit.
+The transaction fixture never claims a production-money or Sandbox payment pass.

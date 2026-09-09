@@ -35,6 +35,10 @@ interface StreamVideo {
 
 const encoder = new TextEncoder();
 const bytesToHex = (bytes: Uint8Array) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+const playbackTokenCache = new Map<string, { token: string; reuseUntil: number }>();
+const playbackTokenRequests = new Map<string, Promise<string>>();
+const playbackTokenReuseMs = 30_000;
+const maxPlaybackTokenCacheEntries = 500;
 
 const signHex = async (value: string, secret: string) => {
   const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -187,7 +191,7 @@ export const listAdminEpisodes = async (event: H3Event, seriesId: string, sync =
   }));
 };
 
-export const createStreamPlaybackToken = async (event: H3Event, uid: string) => {
+const mintStreamPlaybackToken = async (event: H3Event, uid: string) => {
   const exp = Math.floor(Date.now() / 1000) + 10 * 60;
   const config = useRuntimeConfig(event);
   const hasDirectStreamAccess = Boolean(config.cloudflareAccountId && config.cloudflareApiToken);
@@ -218,6 +222,29 @@ export const createStreamPlaybackToken = async (event: H3Event, uid: string) => 
     throw createError({ statusCode: 502, statusMessage: token.error || `Stream token broker failed (${response.status})` });
   }
   return token.token;
+};
+
+export const createStreamPlaybackToken = async (event: H3Event, uid: string) => {
+  const now = Date.now();
+  const cached = playbackTokenCache.get(uid);
+  if (cached && cached.reuseUntil > now) return cached.token;
+  if (cached) playbackTokenCache.delete(uid);
+
+  const pending = playbackTokenRequests.get(uid);
+  if (pending) return pending;
+
+  const request = mintStreamPlaybackToken(event, uid).then((token) => {
+    playbackTokenCache.set(uid, { token, reuseUntil: Date.now() + playbackTokenReuseMs });
+    if (playbackTokenCache.size > maxPlaybackTokenCacheEntries) {
+      const oldestKey = playbackTokenCache.keys().next().value as string | undefined;
+      if (oldestKey) playbackTokenCache.delete(oldestKey);
+    }
+    return token;
+  }).finally(() => {
+    playbackTokenRequests.delete(uid);
+  });
+  playbackTokenRequests.set(uid, request);
+  return request;
 };
 
 export type { StreamVideo };

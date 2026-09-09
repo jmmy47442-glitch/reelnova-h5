@@ -8,6 +8,7 @@ import {
   isCompletedCaptureStatus,
   isMissingPayPalResource,
   isPayPalCheckoutExpired,
+  resolvePayPalRefundReferences,
   isTerminalCaptureFailureStatus,
 } from '~/server/utils/paypal-payment-state';
 
@@ -538,10 +539,11 @@ export const processVerifiedPayPalWebhook = async (event: H3Event, webhook: PayP
   }
 
   if (['PAYMENT.CAPTURE.REFUNDED', 'PAYMENT.CAPTURE.REVERSED'].includes(webhook.event_type)) {
+    const references = resolvePayPalRefundReferences(webhook.event_type, webhook.resource);
     await applyVerifiedRefund(event, {
-      paypalRefundId: relatedIds?.refund_id || null,
-      paypalOrderId,
-      captureId: webhook.resource.id || relatedIds?.capture_id || null,
+      paypalRefundId: references.paypalRefundId,
+      paypalOrderId: references.paypalOrderId,
+      captureId: references.captureId,
       status: webhook.event_type === 'PAYMENT.CAPTURE.REVERSED' ? 'REVERSED' : 'COMPLETED',
       source: 'paypal_webhook',
       actor: 'PayPal Webhook',
@@ -553,10 +555,11 @@ export const processVerifiedPayPalWebhook = async (event: H3Event, webhook: PayP
 
   if (webhook.event_type.startsWith('PAYMENT.REFUND.')) {
     const eventStatus = webhook.event_type.slice('PAYMENT.REFUND.'.length);
+    const references = resolvePayPalRefundReferences(webhook.event_type, webhook.resource);
     await applyVerifiedRefund(event, {
-      paypalRefundId: webhook.resource.id || null,
-      paypalOrderId,
-      captureId: relatedIds?.capture_id || null,
+      paypalRefundId: references.paypalRefundId,
+      paypalOrderId: references.paypalOrderId,
+      captureId: references.captureId,
       status: webhook.resource.status || eventStatus,
       source: 'paypal_webhook',
       actor: 'PayPal Webhook',

@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { ArrowLeft, Captions, ChevronRight, Gauge, History, Loader2, LockKeyhole, Maximize2, MoreHorizontal, Pause, Play, RotateCcw, Share2, SkipForward, Volume2, VolumeX } from 'lucide-vue-next';
+import { ArrowLeft, Captions, ChevronRight, Gauge, History, Loader2, LockKeyhole, Maximize2, MoreHorizontal, Pause, Play, RotateCcw, Share2, SkipForward, Volume2, VolumeX, X } from 'lucide-vue-next';
 import Hls from 'hls.js';
 import { useSafeBack } from '~/composables/useSafeBack';
 import { useAnalytics } from '~/composables/useAnalytics';
 import { invalidatePageDataCache, usePageData } from '~/composables/usePageData';
 
-definePageMeta({ layout: false });
+definePageMeta({ hideBottomNav: true });
 const route = useRoute();
 const api = useContentApi();
+const runtimeConfig = useRuntimeConfig();
 const goBack = useSafeBack(() => `/series/${String(route.params.slug)}`);
 const { track } = useAnalytics();
 const episodeNo = computed(() => Number(route.params.episode || 1));
@@ -28,6 +29,7 @@ const durationSeconds = ref(0);
 const playbackError = ref('');
 const playbackLoading = ref(false);
 const playbackReady = ref(false);
+const firstFrameReady = ref(false);
 const playRequested = ref(false);
 const speed = ref(1);
 const started = ref(false);
@@ -47,6 +49,7 @@ const resumePromptPosition = ref(0);
 const resumePromptDuration = ref(0);
 const resumePromptResolved = ref(false);
 const resumePromptResolving = ref(false);
+const resumeCloseButton = ref<HTMLButtonElement | null>(null);
 const resumeContinueButton = ref<HTMLButtonElement | null>(null);
 const resumeRestartButton = ref<HTMLButtonElement | null>(null);
 const initialGrantRequested = ref(false);
@@ -57,6 +60,7 @@ let hls: Hls | undefined;
 let recordQueue: Promise<void> = Promise.resolve();
 let nativeHlsPlayback = false;
 let networkResourceObserver: PerformanceObserver | undefined;
+let initialGrantPromise: ReturnType<typeof api.getPlaybackBySlug> | undefined;
 let seekTargetSeconds = 0;
 let seekStartedAt = 0;
 let seekShouldResume = false;
@@ -65,13 +69,28 @@ const networkSamples: Array<{ bytes: number; durationMs: number; latencyMs: numb
 const measuredResourceKeys = new Set<string>();
 const resumeFallbackWindowSeconds = 5;
 const seekRecoveryWindowMs = 8_000;
+const streamOrigin = runtimeConfig.public.streamCustomerCode
+  ? `https://customer-${runtimeConfig.public.streamCustomerCode}.cloudflarestream.com`
+  : '';
+
+useHead({
+  link: streamOrigin ? [
+    { rel: 'dns-prefetch', href: streamOrigin },
+    { rel: 'preconnect', href: streamOrigin, crossorigin: 'anonymous' },
+  ] : [],
+});
 
 const networkSpeedLabel = computed(() => {
   if (networkSpeedMbps.value !== null) return `${networkSpeedMbps.value.toFixed(networkSpeedMbps.value >= 10 ? 0 : 1)} Mbps`;
   return 'Measuring connection';
 });
 const networkDetailLabel = computed(() => networkRttMs.value !== null ? `${networkSpeedLabel.value} · ${networkRttMs.value} ms latency` : networkSpeedLabel.value);
-const playbackLoadingLabel = computed(() => signedUrl.value ? (stalled.value ? 'Buffering video' : 'Preparing playback') : 'Connecting to stream');
+const playbackLoadingLabel = computed(() => {
+  if (stalled.value) return 'Buffering video';
+  if (!signedUrl.value) return 'Connecting to stream';
+  if (!firstFrameReady.value) return 'Loading video';
+  return 'Preparing playback';
+});
 const recordNetworkSample = (bytes: number, durationMs: number, latencyMs: number | null = null) => {
   if (!Number.isFinite(bytes) || bytes <= 0 || !Number.isFinite(durationMs) || durationMs <= 0) return;
   networkSamples.push({
@@ -183,7 +202,8 @@ const loadSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
   activeSourceUrl.value = source;
   sourceTransition.value = true;
   playbackReady.value = false;
-  if (shouldPlay) playbackLoading.value = true;
+  firstFrameReady.value = false;
+  if (shouldPlay || !started.value) playbackLoading.value = true;
   if (sourceTransitionTimer) clearTimeout(sourceTransitionTimer);
   sourceTransitionTimer = setTimeout(() => { sourceTransition.value = false; }, 3_000);
   bufferedSegments.value = [];
@@ -257,7 +277,9 @@ const authorize = async (renew = false) => {
   try {
     const oldTime = video.value?.currentTime || currentTime.value;
     const wasPlaying = isPlaying.value;
-    const authorization = await api.getPlayback(series.value.id, currentEpisode.value.episodeNo, session());
+    const prefetchedGrant = !renew ? initialGrantPromise : undefined;
+    initialGrantPromise = undefined;
+    const authorization = await (prefetchedGrant || api.getPlayback(series.value.id, currentEpisode.value.episodeNo, session()));
     if (!authorization.signedUrl) throw new Error('No playable source');
     signedUrl.value = authorization.signedUrl;
     trackingToken.value = authorization.trackingToken;
@@ -280,7 +302,12 @@ const authorize = async (renew = false) => {
       scheduleRenewal();
       return;
     }
-    if (video.value) loadSource(authorization.signedUrl, !renew && !resumePromptResolved.value && resumePosition.value > 0 ? resumePosition.value : oldTime, renew && wasPlaying);
+    if (video.value) {
+      loadSource(authorization.signedUrl, !renew && !resumePromptResolved.value && resumePosition.value > 0 ? resumePosition.value : oldTime, renew && wasPlaying);
+      // Match fast-start players: expose the play control as soon as the grant
+      // arrives while HLS continues pre-buffering its first segments.
+      if (!renew && !playRequested.value) playbackLoading.value = false;
+    }
     playbackError.value = '';
     scheduleRenewal();
   } catch {
@@ -359,7 +386,16 @@ const onTimeUpdate = () => {
   if (isPlaying.value && Date.now() - lastHeartbeat.value > 15_000) { lastHeartbeat.value = Date.now(); void record('heartbeat'); }
 };
 const onLoadedMetadata = () => { snapshotPlayback(); updateBuffered(); };
-const onCanPlay = () => { playbackReady.value = true; void startPlaybackWhenReady(); };
+const onLoadedData = () => {
+  firstFrameReady.value = true;
+  if (!playRequested.value) playbackLoading.value = false;
+};
+const onCanPlay = () => {
+  playbackReady.value = true;
+  firstFrameReady.value = true;
+  if (!playRequested.value) playbackLoading.value = false;
+  void startPlaybackWhenReady();
+};
 const onProgress = () => { updateBuffered(); };
 const onEmptied = () => { bufferedSegments.value = []; };
 const onFirstFrame = () => {
@@ -489,13 +525,21 @@ const nextEpisode = () => {
 };
 const retry = async () => { playbackError.value = ''; resumeFallbackAttempted.value = false; playRequested.value = true; playbackLoading.value = true; await authorize(); await startPlaybackWhenReady(); };
 const share = async () => { void track('share', { seriesId: series.value?.id, seriesTitle: series.value?.title, episodeNo: episodeNo.value, properties: { source: 'watch' } }); await navigator.clipboard?.writeText(window.location.href).catch(() => undefined); };
+const requestRouteGrant = () => {
+  if (initialGrantPromise || initialGrantRequested.value || signedUrl.value) return;
+  initialGrantPromise = api.getPlaybackBySlug(String(route.params.slug), episodeNo.value, session());
+  // Locked or unavailable episodes are rendered from the series response; keep
+  // speculative authorization failures from becoming unhandled rejections.
+  void initialGrantPromise.catch(() => undefined);
+};
 const requestInitialGrant = () => {
   if (initialGrantRequested.value || !series.value || !currentEpisode.value || !canPlay.value) return;
   initialGrantRequested.value = true;
+  playbackLoading.value = true;
   void authorize();
 };
 const trapResumePromptFocus = (event: KeyboardEvent) => {
-  const first = resumeContinueButton.value;
+  const first = resumeCloseButton.value;
   const last = resumeRestartButton.value;
   if (!first || !last) return;
   if (event.shiftKey && document.activeElement === first) {
@@ -505,6 +549,17 @@ const trapResumePromptFocus = (event: KeyboardEvent) => {
     event.preventDefault();
     first.focus();
   }
+};
+const dismissResumePrompt = () => {
+  if (resumePromptResolving.value || !signedUrl.value) return;
+  resumePromptResolved.value = true;
+  showResumePrompt.value = false;
+  resumePosition.value = resumePromptPosition.value;
+  currentTime.value = resumePosition.value;
+  progress.value = resumePromptDuration.value ? Math.min(100, resumePosition.value / resumePromptDuration.value * 100) : 0;
+  playRequested.value = false;
+  loadSource(signedUrl.value, resumePosition.value, false);
+  playbackLoading.value = false;
 };
 const chooseResume = (choice: 'resume' | 'restart') => {
   if (resumePromptResolving.value || !signedUrl.value) return;
@@ -565,6 +620,7 @@ onMounted(() => {
   }
   window.addEventListener('pagehide', persistOnExit);
   document.addEventListener('visibilitychange', persistWhenHidden);
+  requestRouteGrant();
   requestInitialGrant();
 });
 watch([canPlay, currentEpisode], requestInitialGrant, { flush: 'post' });
@@ -589,23 +645,25 @@ onBeforeUnmount(() => {
 <template>
   <main v-if="series && currentEpisode" class="watch-page" @click="showControls = !showControls">
     <div class="watch-visual" :style="{ '--watch-image': `url(${series.backdropUrl})` }" />
-    <video v-if="canPlay" ref="video" class="watch-video" :poster="series.backdropUrl" playsinline preload="auto" @click.stop @play="onPlay" @playing="onPlaying" @canplay="onCanPlay" @waiting="onWaiting" @pause="onPause" @seeking="onSeeking" @seeked="onSeeked" @timeupdate="onTimeUpdate" @loadedmetadata="onLoadedMetadata" @durationchange="onLoadedMetadata" @progress="onProgress" @emptied="onEmptied" @ended="onEnded" @error="onVideoError" />
+    <video v-if="canPlay" ref="video" class="watch-video" :poster="series.backdropUrl" playsinline preload="auto" @click.stop @play="onPlay" @playing="onPlaying" @canplay="onCanPlay" @loadeddata="onLoadedData" @waiting="onWaiting" @pause="onPause" @seeking="onSeeking" @seeked="onSeeked" @timeupdate="onTimeUpdate" @loadedmetadata="onLoadedMetadata" @durationchange="onLoadedMetadata" @progress="onProgress" @emptied="onEmptied" @ended="onEnded" @error="onVideoError" />
     <div class="watch-vignette" />
     <Transition name="fade"><div v-if="showControls" class="watch-top" @click.stop><button type="button" aria-label="Go back" @click="goBack"><ArrowLeft :size="22" /></button><div><strong>{{ series.title }}</strong><span>Episode {{ episodeNo }} · {{ currentEpisode.title }}</span></div><button type="button" aria-label="Share" @click="share"><Share2 :size="20" /></button><button type="button" aria-label="More"><MoreHorizontal :size="21" /></button></div></Transition>
     <div v-if="canPlay && playbackLoading && !playbackError && !showResumePrompt" class="watch-loading-overlay" role="status" aria-live="polite" aria-busy="true" @click.stop>
       <div class="watch-loading-overlay__content">
-        <Loader2 class="watch-loading-overlay__spinner" :size="30" aria-hidden="true" />
+        <Loader2 class="watch-loading-overlay__spinner" :size="34" aria-hidden="true" />
         <strong>{{ playbackLoadingLabel }}</strong>
-        <span>Current network · {{ networkDetailLabel }}</span>
-        <small>Loading securely, please wait</small>
+        <span>{{ networkDetailLabel }}</span>
       </div>
     </div>
     <button v-if="canPlay && signedUrl && !playbackError && !playbackLoading && !showResumePrompt" class="watch-center" type="button" :aria-label="isPlaying ? 'Pause' : 'Play'" @click.stop="togglePlayback"><Pause v-if="isPlaying" :size="32" fill="currentColor" /><Play v-else :size="34" fill="currentColor" /></button>
     <section v-if="!canPlay" class="watch-lock" @click.stop><span><LockKeyhole :size="28" /></span><p>Episode {{ episodeNo }} is locked</p><h1>Keep the story going</h1><button class="button button--primary button--wide" type="button" @click="track('lock_trigger', { seriesId: series.id, seriesTitle: series.title, episodeNo, properties: { source: 'watch_lock' } }); showUnlock = true">Unlock full series</button><button class="watch-lock__secondary" type="button" @click="returnToSeries">Choose another episode</button></section>
     <section v-if="playbackError" class="watch-lock" @click.stop><span><RotateCcw :size="27" /></span><h1>Connection interrupted</h1><p>{{ playbackError }}</p><button class="button button--primary" type="button" @click="retry">Retry playback</button></section>
-    <Transition name="resume-modal"><div v-if="showResumePrompt" class="resume-modal-backdrop" @click.stop><section class="resume-modal" role="dialog" aria-modal="true" aria-labelledby="resume-modal-title" aria-describedby="resume-modal-copy" @click.stop @keydown.tab="trapResumePromptFocus"><div class="resume-modal__icon"><History :size="22" /></div><p class="resume-modal__eyebrow">Welcome back</p><h2 id="resume-modal-title">Continue watching?</h2><p id="resume-modal-copy" class="resume-modal__copy">Pick up {{ series.title }} where you left off, or start this episode again.</p><div class="resume-modal__progress"><span>Episode {{ episodeNo }}</span><strong>{{ formatTime(resumePromptPosition) }} watched</strong></div><div class="resume-modal__actions"><button ref="resumeContinueButton" class="button button--primary button--wide" type="button" @click="chooseResume('resume')"><Play :size="17" fill="currentColor" />Continue from {{ formatTime(resumePromptPosition) }}</button><button ref="resumeRestartButton" class="button button--secondary button--wide" type="button" @click="chooseResume('restart')"><RotateCcw :size="17" />Start from beginning</button></div></section></div></Transition>
+    <Transition name="resume-modal"><div v-if="showResumePrompt" class="resume-modal-backdrop" @click.stop><section class="resume-modal" role="dialog" aria-modal="true" aria-labelledby="resume-modal-title" aria-describedby="resume-modal-copy" @click.stop @keydown.tab="trapResumePromptFocus" @keydown.esc="dismissResumePrompt"><button ref="resumeCloseButton" class="resume-modal__close" type="button" aria-label="Close continue watching dialog" title="Close" @click="dismissResumePrompt"><X :size="20" /></button><div class="resume-modal__icon"><History :size="22" /></div><p class="resume-modal__eyebrow">Welcome back</p><h2 id="resume-modal-title">Continue watching?</h2><p id="resume-modal-copy" class="resume-modal__copy">Pick up {{ series.title }} where you left off, or start this episode again.</p><div class="resume-modal__progress"><span>Episode {{ episodeNo }}</span><strong>{{ formatTime(resumePromptPosition) }} watched</strong></div><div class="resume-modal__actions"><button ref="resumeContinueButton" class="button button--primary button--wide" type="button" @click="chooseResume('resume')"><Play :size="17" fill="currentColor" />Continue from {{ formatTime(resumePromptPosition) }}</button><button ref="resumeRestartButton" class="button button--secondary button--wide" type="button" @click="chooseResume('restart')"><RotateCcw :size="17" />Start from beginning</button></div></section></div></Transition>
     <Transition name="fade"><div v-if="showControls && canPlay && signedUrl && !showResumePrompt" class="watch-bottom" @click.stop><div class="watch-progress" :style="{ '--played-progress': `${progress}%` }"><div class="watch-progress__track" aria-hidden="true"><span v-for="(segment, index) in bufferedSegments" :key="index" class="watch-progress__buffered" :style="{ left: `${segment.left}%`, width: `${segment.width}%` }" /><i class="watch-progress__played" /></div><input class="watch-progress-input" type="range" min="0" max="100" step="0.1" :value="progress" :aria-valuetext="`${formatTime(currentTime)} of ${durationLabel}`" aria-label="Seek" @input="seek" @change="persistSeek" /></div><div class="watch-time"><span>{{ formatTime(currentTime) }}</span><span>{{ durationLabel }}</span></div><div class="watch-controls"><button type="button" :aria-label="muted ? 'Unmute' : 'Mute'" @click="toggleMute"><VolumeX v-if="muted" :size="21" /><Volume2 v-else :size="21" /></button><button type="button" aria-label="Captions"><Captions :size="22" /><span>CC</span></button><button type="button" aria-label="Playback speed" @click="cycleSpeed"><Gauge :size="22" /><span>{{ speed }}×</span></button><button type="button" aria-label="Fullscreen" @click="fullscreen"><Maximize2 :size="21" /></button><button type="button" aria-label="Next episode" @click="nextEpisode"><SkipForward :size="22" /><span>Next</span></button></div><button v-if="episodeNo < series.episodeCount" class="up-next" type="button" @click="nextEpisode"><span>UP NEXT</span><strong>Episode {{ episodeNo + 1 }}</strong><ChevronRight :size="20" /></button></div></Transition>
     <UnlockSheet :series="series" :open="showUnlock" @close="showUnlock = false" @unlocked="handleUnlocked" />
   </main>
-  <main v-else class="watch-page watch-page--loading"><div class="skeleton skeleton--poster" /><span>{{ status === 'pending' ? 'Preparing episode…' : 'Episode unavailable' }}</span></main>
+  <main v-else class="watch-page watch-page--loading" :aria-busy="status === 'pending'">
+    <Loader2 v-if="status === 'pending'" class="watch-loading-overlay__spinner" :size="34" aria-hidden="true" />
+    <span>{{ status === 'pending' ? 'Preparing episode…' : 'Episode unavailable' }}</span>
+  </main>
 </template>

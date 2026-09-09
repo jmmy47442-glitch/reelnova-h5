@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { Globe2, RefreshCw, Search } from 'lucide-vue-next';
 
-withDefaults(defineProps<{ compact?: boolean; refreshable?: boolean; refreshing?: boolean }>(), {
+withDefaults(defineProps<{ compact?: boolean; refreshable?: boolean; refreshing?: boolean; pendingUpdates?: number }>(), {
   compact: false,
   refreshable: false,
   refreshing: false,
+  pendingUpdates: 0,
 });
 defineEmits<{ refresh: [] }>();
 </script>
@@ -17,7 +18,17 @@ defineEmits<{ refresh: [] }>();
     </NuxtLink>
     <div class="app-header__actions">
       <button
-        v-if="refreshable"
+        v-if="refreshable && pendingUpdates > 0 && !refreshing"
+        class="header-update-notice"
+        type="button"
+        aria-label="Refresh updated page data"
+        @click="$emit('refresh')"
+      >
+        <RefreshCw :size="16" aria-hidden="true" />
+        <span>{{ pendingUpdates }} updates · Refresh</span>
+      </button>
+      <button
+        v-if="refreshable && (pendingUpdates <= 0 || refreshing)"
         class="icon-button"
         :class="{ 'is-spinning': refreshing }"
         type="button"

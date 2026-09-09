@@ -76,11 +76,14 @@ export const usePageData = <DataT>(
 ) => {
   const { revalidateOnMount = false, ...asyncDataOptions } = options;
   const asyncData = useAsyncData(key, handler, { ...asyncDataOptions, immediate: false });
-  const loading = ref(true);
+  const hasRenderableData = computed(() => asyncData.data.value !== undefined && asyncData.data.value !== null);
+  const loading = ref(!hasRenderableData.value);
   const hydratedFromCache = ref(false);
 
   const refresh = async () => {
-    loading.value = true;
+    // Revalidation must not replace an already rendered page with a loading
+    // state. Only block when there is no snapshot available yet.
+    loading.value = !hasRenderableData.value;
     try {
       await asyncData.refresh();
       if (!asyncData.error.value && asyncData.data.value !== undefined) writeCache(key, asyncData.data.value as DataT);
@@ -101,5 +104,11 @@ export const usePageData = <DataT>(
     if (asyncData.status.value === 'idle' || revalidateOnMount) await refresh();
   });
 
-  return { ...asyncData, status: computed(() => loading.value ? 'pending' : asyncData.status.value), refresh, hydratedFromCache };
+  const status = computed(() => {
+    if (hasRenderableData.value) return 'success';
+    return loading.value ? 'pending' : asyncData.status.value;
+  });
+  const error = computed(() => hasRenderableData.value ? null : asyncData.error.value);
+
+  return { ...asyncData, status, error, refresh, hydratedFromCache };
 };

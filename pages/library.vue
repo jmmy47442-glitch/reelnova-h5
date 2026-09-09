@@ -11,7 +11,6 @@ const libraryKey = `library-${session.value?.userId || 'current'}`;
 const { data, status, error, refresh } = usePageData(
   libraryKey,
   () => api.getLibrary(),
-  { revalidateOnMount: true },
 );
 </script>
 

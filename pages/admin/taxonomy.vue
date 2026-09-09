@@ -127,8 +127,8 @@ const remove = async (item: TaxonomyItem) => {
         <el-table-column label="类型" width="90"><template #default="scope"><el-tag effect="plain">{{ scope.row.type }}</el-tag></template></el-table-column>
         <el-table-column prop="contentCount" label="关联内容" width="110" />
         <el-table-column label="有效期" min-width="130"><template #default="scope">{{ scope.row.expiresAt }}</template></el-table-column>
-        <el-table-column label="状态" width="100"><template #default="scope"><el-switch v-model="scope.row.enabled" @change="toggle(scope.row)" /></template></el-table-column>
-        <el-table-column label="操作" fixed="right" width="130"><template #default="scope"><el-button link type="primary" @click="openEditor(scope.row)">编辑</el-button><el-button link :icon="Trash2" @click="remove(scope.row)">删除</el-button></template></el-table-column>
+        <el-table-column label="状态" width="100"><template #default="scope"><el-switch v-model="scope.row.enabled" @change="toggle(scope.row as TaxonomyItem)" /></template></el-table-column>
+        <el-table-column label="操作" fixed="right" width="130"><template #default="scope"><el-button link type="primary" @click="openEditor(scope.row as TaxonomyItem)">编辑</el-button><el-button link :icon="Trash2" @click="remove(scope.row as TaxonomyItem)">删除</el-button></template></el-table-column>
       </el-table>
       <div class="admin-pagination"><span>共 {{ rows.length }} 条</span></div>
     </section>

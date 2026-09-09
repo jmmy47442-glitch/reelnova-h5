@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const parseEnv = (file) => {
   const values = {};
@@ -10,7 +10,9 @@ const parseEnv = (file) => {
   return values;
 };
 
-const env = { ...parseEnv('.env'), ...process.env };
+const envFile = process.env.PRODUCTION_ENV_FILE || '.env';
+const env = { ...(existsSync(envFile) ? parseEnv(envFile) : {}), ...process.env };
+const appBaseUrl = String(env.APP_BASE_URL || 'https://iseedrama.com').replace(/\/$/, '');
 const expectedWebhookUrl = env.CLOUDFLARE_STREAM_WEBHOOK_URL || 'https://iseedrama.com/api/media/stream-webhook';
 const expectedPayPalWebhookUrl = env.PAYPAL_WEBHOOK_URL || 'https://iseedrama.com/api/paypal/webhook';
 const requiredPayPalWebhookEvents = [
@@ -21,6 +23,7 @@ const requiredPayPalWebhookEvents = [
 ];
 const required = (keys) => keys.filter((key) => !String(env[key] || '').trim());
 const report = (label, ok, detail = '') => console.log(`${ok ? 'PASS' : 'BLOCK'} ${label}${detail ? `: ${detail}` : ''}`);
+const info = (label, detail) => console.log(`INFO ${label}: ${detail}`);
 let blocked = false;
 
 const paypalKeys = [
@@ -30,13 +33,36 @@ const paypalKeys = [
   'NUXT_PUBLIC_PAYPAL_PRODUCTION_CLIENT_ID',
 ];
 const missingPayPal = required(paypalKeys);
-report('PayPal Production four credentials', missingPayPal.length === 0,
-  missingPayPal.length ? `missing ${missingPayPal.join(', ')}` : 'all present');
-blocked ||= missingPayPal.length > 0;
-if (!missingPayPal.length) {
+let deployedPayPal = null;
+try {
+  const response = await fetch(`${appBaseUrl}/api/paypal/config`, { signal: AbortSignal.timeout(10_000) });
+  const payload = await response.json().catch(() => ({}));
+  deployedPayPal = payload?.data || null;
+  const ready = response.ok && deployedPayPal?.environment === 'production' && deployedPayPal?.available === true
+    && Boolean(String(deployedPayPal?.clientId || '').trim());
+  report('Deployed PayPal Production checkout', ready,
+    response.ok ? `environment=${deployedPayPal?.environment || 'unknown'}, available=${Boolean(deployedPayPal?.available)}` : `HTTP ${response.status}`);
+  blocked ||= !ready;
+} catch (error) {
+  report('Deployed PayPal Production checkout', false, error instanceof Error ? error.message : 'request failed');
+  blocked = true;
+}
+
+const localPayPalConfigured = missingPayPal.length === 0;
+const localPayPalPartiallyConfigured = missingPayPal.length > 0 && missingPayPal.length < paypalKeys.length;
+if (localPayPalPartiallyConfigured) {
+  report('Local PayPal Production credential set', false, `partial set; missing ${missingPayPal.join(', ')}`);
+  blocked = true;
+} else if (!localPayPalConfigured) {
+  info('Local PayPal Production credential audit', `skipped; all four values are absent from ${envFile}`);
+} else {
+  report('Local PayPal Production credential set', true, `all present in ${envFile}`);
   const clientIdsMatch = env.PAYPAL_PRODUCTION_CLIENT_ID === env.NUXT_PUBLIC_PAYPAL_PRODUCTION_CLIENT_ID;
   report('PayPal browser/server Client IDs match', clientIdsMatch);
   blocked ||= !clientIdsMatch;
+  const deployedClientMatches = !deployedPayPal?.clientId || deployedPayPal.clientId === env.PAYPAL_PRODUCTION_CLIENT_ID;
+  report('Local/deployed PayPal Client IDs match', deployedClientMatches);
+  blocked ||= !deployedClientMatches;
   try {
     const basic = Buffer.from(`${env.PAYPAL_PRODUCTION_CLIENT_ID}:${env.PAYPAL_PRODUCTION_SECRET}`).toString('base64');
     const response = await fetch('https://api-m.paypal.com/v1/oauth2/token', {

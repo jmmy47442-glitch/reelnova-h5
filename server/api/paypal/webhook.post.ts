@@ -18,20 +18,23 @@ export default defineEventHandler(async (event) => {
   const body = await readBody<PayPalWebhookEvent>(event);
   if (!body?.id || !body.event_type || !body.resource) throw createError({ statusCode: 400, statusMessage: 'Invalid webhook event' });
   const existing = await d1First<{ processing_status: string }>(event, 'SELECT processing_status FROM paypal_webhook_events WHERE event_id = ?', [body.id]);
-  if (existing?.processing_status === 'processed') return ok({ received: true, duplicate: true });
-
   const environment = await resolvePayPalWebhookEnvironment(event, body);
   const verification = await verifyPayPalWebhook(event, body, environment);
   const paypalOrderId = body.resource.supplementary_data?.related_ids?.order_id || null;
   const now = new Date().toISOString();
+  if (existing) {
+    if (verification !== 'SUCCESS') throw createError({ statusCode: 400, statusMessage: 'PayPal webhook verification failed' });
+    await d1Run(event, 'UPDATE paypal_webhook_events SET delivery_count = delivery_count + 1, last_received_at = ? WHERE event_id = ?', [now, body.id]);
+    if (existing.processing_status === 'processed') return ok({ received: true, duplicate: true });
+  }
   await d1Run(event, `INSERT INTO paypal_webhook_events
-    (event_id, event_type, paypal_order_id, verification_status, processing_status, payload_json, received_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    (event_id, event_type, paypal_order_id, verification_status, processing_status, payload_json, received_at, last_received_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(event_id) DO UPDATE SET event_type = excluded.event_type, paypal_order_id = excluded.paypal_order_id,
       verification_status = excluded.verification_status, processing_status = excluded.processing_status,
       payload_json = excluded.payload_json, error_message = NULL`, [
     body.id, body.event_type, paypalOrderId, verification, verification === 'SUCCESS' ? 'ignored' : 'failed',
-    JSON.stringify(replayablePayload(body)), now,
+    JSON.stringify(replayablePayload(body)), now, now,
   ]);
   if (verification !== 'SUCCESS') throw createError({ statusCode: 400, statusMessage: 'PayPal webhook verification failed' });
 

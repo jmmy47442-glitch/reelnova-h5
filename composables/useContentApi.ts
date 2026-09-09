@@ -1,5 +1,14 @@
 import type { AnalyticsEventInput, ApiEnvelope, ExploreResponse, HomeResponse, LibraryResponse, Order, PlaybackEventInput, Series, WatchHistoryItem } from '~/types/content';
 
+type PlaybackAuthorization = {
+  authorized: boolean;
+  signedUrl?: string;
+  expiresAt?: string;
+  trackingToken: string;
+  resumePositionSeconds?: number;
+  resumeDurationSeconds?: number;
+};
+
 export const useContentApi = () => {
   const config = useRuntimeConfig();
   const baseURL = config.public.apiBase;
@@ -14,8 +23,12 @@ export const useContentApi = () => {
     getSeries: (slug: string) => request<Series>(`/series/${slug}`),
     getLibrary: () => request<LibraryResponse>('/me/library'),
     getPlayback: (seriesId: string, episodeNo: number, sessionId: string) =>
-      request<{ authorized: boolean; signedUrl?: string; expiresAt?: string; trackingToken: string; resumePositionSeconds?: number; resumeDurationSeconds?: number }>('/playback', {
+      request<PlaybackAuthorization>('/playback', {
         query: { seriesId, episodeNo, sessionId },
+      }),
+    getPlaybackBySlug: (seriesSlug: string, episodeNo: number, sessionId: string) =>
+      request<PlaybackAuthorization>('/playback', {
+        query: { seriesSlug, episodeNo, sessionId },
       }),
     recordPlayback: (event: PlaybackEventInput, keepalive = false) => request<{ accepted: true; positionSeconds: number; durationSeconds: number; lastWatchedAt: string }>('/me/watch-history', { method: 'POST', body: event, keepalive }),
     recordAnalytics: (event: AnalyticsEventInput, keepalive = false) => request<{ accepted: true }>('/events', { method: 'POST', body: event, keepalive }),

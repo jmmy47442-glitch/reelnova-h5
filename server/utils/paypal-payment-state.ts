@@ -9,6 +9,19 @@ export const isTerminalCaptureFailureStatus = (status: unknown) =>
 
 export const isCancelledPayPalOrderStatus = (status: unknown) => normalizePayPalStatus(status) === 'VOIDED';
 
+export const resolvePayPalRefundReferences = (eventType: string, resource: {
+  id?: string;
+  supplementary_data?: { related_ids?: { order_id?: string; capture_id?: string; refund_id?: string } };
+}) => {
+  const related = resource.supplementary_data?.related_ids;
+  const refundResource = eventType === 'PAYMENT.CAPTURE.REFUNDED' || eventType.startsWith('PAYMENT.REFUND.');
+  return {
+    paypalOrderId: related?.order_id || null,
+    paypalRefundId: (refundResource ? resource.id : related?.refund_id) || null,
+    captureId: (eventType === 'PAYMENT.CAPTURE.REVERSED' ? resource.id : related?.capture_id) || null,
+  };
+};
+
 export const paypalCheckoutLifetimeMs = 3 * 60 * 60 * 1000;
 
 export const isPayPalCheckoutExpired = (

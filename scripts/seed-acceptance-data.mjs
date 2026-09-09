@@ -35,7 +35,11 @@ const streamRequest = async (path, options = {}) => {
     headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json', ...(options.headers || {}) },
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !payload.success) throw new Error(payload.errors?.[0]?.message || `Stream request failed (${response.status})`);
+  if (!response.ok || !payload.success) {
+    const details = [...(payload.errors || []), ...(payload.messages || [])]
+      .map((item) => item?.message).filter(Boolean).join('; ');
+    throw new Error(details || `Stream request failed (${response.status})`);
+  }
   return payload.result;
 };
 
@@ -58,10 +62,11 @@ const categories = [...new Set(series.flatMap((item) => item.genres))];
 const tags = [...new Set(series.map((item) => item.badge))];
 const episodeTitles = ['Part 1: A quiet morning', 'Part 2: The troublemakers', 'Part 3: Bunny strikes back', 'Part 4', 'Part 5', 'Part 6'];
 const streamFixtures = [
-  { seriesId: 'acc-sintel', creator: 'acc-sintel', fileName: 'Sintel_webm_extract.240p.vp9.webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Sintel_webm_extract.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/transcoded/2/25/Sintel_webm_extract.webm/Sintel_webm_extract.webm.240p.vp9.webm', sourceSize: 7756199 },
-  { seriesId: 'acc-tears-of-steel', creator: 'acc-tears-steel', fileName: 'VP9_low_bitrate_test_ToS.webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:VP9_low_bitrate_test_ToS.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/a/ad/VP9_low_bitrate_test_ToS.webm', sourceSize: 852395 },
-  { seriesId: 'acc-elephants-dream', creator: 'acc-elephants-dream', fileName: 'Elephants_Dream_120p.webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Elephants_Dream_(2006).120p.vp9.opus.multichannel.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/d/d3/Elephants_Dream_%282006%29.120p.vp9.opus.multichannel.webm', sourceSize: 14327747 },
-  { seriesId: 'acc-cosmos-laundromat', creator: 'acc-cosmos-laundromat', fileName: 'Cosmos_Laundromat_240p.webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Cosmos_Laundromat_-_First_Cycle_-_Official_Blender_Foundation_release.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/transcoded/3/36/Cosmos_Laundromat_-_First_Cycle_-_Official_Blender_Foundation_release.webm/Cosmos_Laundromat_-_First_Cycle_-_Official_Blender_Foundation_release.webm.240p.vp9.webm', sourceSize: 594685641 },
+  { seriesId: 'sr-0da51aed', episodeNo: 3, creator: 'acc-big-buck-bunny-part-3-v2', fileName: 'Big_Buck_Bunny_closing_credits.webm', contentType: 'video/webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Big_Buck_Bunny_-_closing_credits.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/e/ec/Big_Buck_Bunny_-_closing_credits.webm', sourceSize: 23016129 },
+  { seriesId: 'acc-sintel', episodeNo: 1, creator: 'acc-sintel', fileName: 'Sintel_webm_extract.240p.vp9.webm', contentType: 'video/webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Sintel_webm_extract.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/transcoded/2/25/Sintel_webm_extract.webm/Sintel_webm_extract.webm.240p.vp9.webm', sourceSize: 7756199 },
+  { seriesId: 'acc-tears-of-steel', episodeNo: 1, creator: 'acc-tears-steel', fileName: 'VP9_low_bitrate_test_ToS.webm', contentType: 'video/webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:VP9_low_bitrate_test_ToS.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/a/ad/VP9_low_bitrate_test_ToS.webm', sourceSize: 852395 },
+  { seriesId: 'acc-elephants-dream', episodeNo: 1, creator: 'acc-elephants-dream', fileName: 'Elephants_Dream_120p.webm', contentType: 'video/webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Elephants_Dream_(2006).120p.vp9.opus.multichannel.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/d/d3/Elephants_Dream_%282006%29.120p.vp9.opus.multichannel.webm', sourceSize: 14327747 },
+  { seriesId: 'acc-cosmos-laundromat', episodeNo: 1, creator: 'acc-cosmos-laundromat', fileName: 'Cosmos_Laundromat_240p.webm', contentType: 'video/webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Cosmos_Laundromat_-_First_Cycle_-_Official_Blender_Foundation_release.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/transcoded/3/36/Cosmos_Laundromat_-_First_Cycle_-_Official_Blender_Foundation_release.webm/Cosmos_Laundromat_-_First_Cycle_-_Official_Blender_Foundation_release.webm.240p.vp9.webm', sourceSize: 594685641 },
 ];
 
 const run = (sql, params = []) => query(sql, params);
@@ -148,21 +153,25 @@ for (const fixture of streamFixtures) {
   }
   const ready = Boolean(video.readyToStream || video.status?.state === 'ready');
   if (!ready) throw new Error(`Timed out waiting for Cloudflare Stream fixture: ${fixture.creator}`);
-  const assetId = `acc-media-${fixture.seriesId.slice(4)}`;
-  const episodeId = `acc-ep-${fixture.seriesId.slice(4)}-1`;
+  const fixtureKey = fixture.seriesId.slice(4);
+  const episodeKey = fixture.episodeNo === 1 ? fixtureKey : `${fixtureKey}-${fixture.episodeNo}`;
+  const assetId = `acc-media-${episodeKey}`;
+  const [episode] = await query('SELECT id FROM episodes WHERE series_id = ? AND episode_no = ?', [fixture.seriesId, fixture.episodeNo]);
+  if (!episode?.id) throw new Error(`Acceptance episode is missing: ${fixture.seriesId} episode ${fixture.episodeNo}`);
+  const episodeId = episode.id;
   await run(`INSERT INTO media_assets (id, episode_id, kind, storage_provider, source_object_key, stream_uid, source_file_name, source_content_type,
     source_size_bytes, width, height, duration_seconds, has_video, has_audio, validation_status, hls_url, dash_url, thumbnail_url, status, created_at, updated_at)
-    VALUES (?, ?, 'video', 'stream', ?, ?, ?, 'video/webm', ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, 'video', 'stream', ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET stream_uid=excluded.stream_uid, width=excluded.width, height=excluded.height, duration_seconds=excluded.duration_seconds,
       validation_status=excluded.validation_status, hls_url=excluded.hls_url, dash_url=excluded.dash_url, thumbnail_url=excluded.thumbnail_url,
       status=excluded.status, updated_at=excluded.updated_at, deleted_at=NULL`,
-  [assetId, episodeId, fixture.sourceUrl, video.uid, fixture.fileName, fixture.sourceSize, Number(video.input?.width || 0) || null,
+  [assetId, episodeId, fixture.sourceUrl, video.uid, fixture.fileName, fixture.contentType, fixture.sourceSize, Number(video.input?.width || 0) || null,
     Number(video.input?.height || 0) || null, Number(video.duration || 0) || null, ready ? 'valid' : 'pending', video.playback?.hls || null,
     video.playback?.dash || null, video.thumbnail || null, ready ? 'ready' : 'processing', now, now]);
   await run(`INSERT INTO transcode_jobs (id, media_asset_id, provider_job_id, attempt, status, progress, started_at, completed_at, created_at, updated_at)
     VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET provider_job_id=excluded.provider_job_id, status=excluded.status,
       progress=excluded.progress, completed_at=excluded.completed_at, updated_at=excluded.updated_at`,
-  [`acc-job-${fixture.seriesId.slice(4)}`, assetId, video.uid, ready ? 'ready' : 'processing', ready ? 100 : 50, now, ready ? now : null, now, now]);
+  [`acc-job-${episodeKey}`, assetId, video.uid, ready ? 'ready' : 'processing', ready ? 100 : 50, now, ready ? now : null, now, now]);
   await run(`UPDATE episodes SET active_media_asset_id = CASE WHEN ? THEN ? ELSE active_media_asset_id END, video_status = ?,
     duration_seconds = CASE WHEN ? > 0 THEN ? ELSE duration_seconds END, thumbnail_url = COALESCE(?, thumbnail_url), updated_at = ? WHERE id = ?`,
   [ready ? 1 : 0, assetId, ready ? 'ready' : 'processing', Number(video.duration || 0), Math.round(Number(video.duration || 0)), video.thumbnail || null, now, episodeId]);

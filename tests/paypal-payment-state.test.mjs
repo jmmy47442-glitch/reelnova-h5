@@ -9,6 +9,7 @@ import {
   isPayPalTimeoutError,
   isTerminalCaptureFailureStatus,
   payPalErrorIssueCodes,
+  resolvePayPalRefundReferences,
 } from '../server/utils/paypal-payment-state.ts';
 
 test('normalizes completed, denied and voided PayPal states', () => {
@@ -46,4 +47,18 @@ test('recognizes PayPal orders that no longer exist', () => {
   assert.equal(isMissingPayPalResource({ response: { _data: { details: [{ issue: 'INVALID_RESOURCE_ID' }] } } }), true);
   assert.equal(isMissingPayPalResource({ statusCode: 502, data: { details: [{ issue: 'RESOURCE_NOT_FOUND' }] } }), true);
   assert.equal(isMissingPayPalResource({ response: { status: 500 } }), false);
+});
+
+test('maps capture-refunded resource IDs to PayPal refund IDs', () => {
+  assert.deepEqual(resolvePayPalRefundReferences('PAYMENT.CAPTURE.REFUNDED', {
+    id: 'REFUND-1',
+    supplementary_data: { related_ids: { order_id: 'ORDER-1', capture_id: 'CAPTURE-1' } },
+  }), { paypalOrderId: 'ORDER-1', paypalRefundId: 'REFUND-1', captureId: 'CAPTURE-1' });
+});
+
+test('maps reversed capture IDs without treating them as refund IDs', () => {
+  assert.deepEqual(resolvePayPalRefundReferences('PAYMENT.CAPTURE.REVERSED', {
+    id: 'CAPTURE-1',
+    supplementary_data: { related_ids: { order_id: 'ORDER-1' } },
+  }), { paypalOrderId: 'ORDER-1', paypalRefundId: null, captureId: 'CAPTURE-1' });
 });
