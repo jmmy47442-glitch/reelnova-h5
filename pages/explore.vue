@@ -17,7 +17,11 @@ const exploreParams = () => ({
   ...(activeGenre.value !== 'All' ? { genre: activeGenre.value } : {}),
   ...(sort.value !== 'Popular' ? { sort: sort.value } : {}),
 });
-const { data, status, error, refresh } = usePageData('explore-v2', () => api.getExplore(exploreParams()));
+const { data, status, error, refresh } = usePageData(
+  'explore-v2',
+  () => api.getExplore(exploreParams()),
+  { revalidateOnMount: true, revalidateOnActivate: true, revalidateOnFocus: true },
+);
 const genres = computed(() => ['All', ...(data.value?.genres || [])]);
 const { track } = useAnalytics();
 let searchTimer: ReturnType<typeof setTimeout> | undefined;

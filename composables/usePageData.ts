@@ -1,7 +1,7 @@
 import type { AsyncDataOptions } from 'nuxt/app';
 
 const STORAGE_PREFIX = 'reelnova:page-data:';
-const STORAGE_VERSION = 1;
+const STORAGE_VERSION = 2;
 
 type CachedPageData<DataT> = {
   version: number;
@@ -11,6 +11,8 @@ type CachedPageData<DataT> = {
 
 type PageDataOptions<DataT> = AsyncDataOptions<DataT> & {
   revalidateOnMount?: boolean;
+  revalidateOnActivate?: boolean;
+  revalidateOnFocus?: boolean;
 };
 
 const storageKey = (key: string) => `${STORAGE_PREFIX}${key}`;
@@ -66,19 +68,28 @@ export const invalidatePageDataCache = (...keys: string[]) => {
 };
 
 /**
- * Loads page data from localStorage first. The API is only called when no
- * snapshot exists, or when the caller explicitly invokes refresh().
+ * Loads page data from localStorage first. Callers can opt into background
+ * revalidation on mount, KeepAlive activation, or browser focus.
  */
 export const usePageData = <DataT>(
   key: string,
   handler: () => Promise<DataT>,
   options: PageDataOptions<DataT> = {},
 ) => {
-  const { revalidateOnMount = false, ...asyncDataOptions } = options;
+  const {
+    revalidateOnMount = false,
+    revalidateOnActivate = false,
+    revalidateOnFocus = false,
+    ...asyncDataOptions
+  } = options;
   const asyncData = useAsyncData(key, handler, { ...asyncDataOptions, immediate: false });
   const hasRenderableData = computed(() => asyncData.data.value !== undefined && asyncData.data.value !== null);
   const loading = ref(!hasRenderableData.value);
   const hydratedFromCache = ref(false);
+  let activationCount = 0;
+  let componentActive = false;
+  let focusRevalidationReady = false;
+  let lastFocusRevalidationAt = 0;
 
   const refresh = async () => {
     // Revalidation must not replace an already rendered page with a loading
@@ -92,16 +103,48 @@ export const usePageData = <DataT>(
     }
   };
 
+  function revalidateAfterFocus() {
+    if (!revalidateOnFocus || !focusRevalidationReady || !componentActive || document.visibilityState !== 'visible') return;
+    const now = Date.now();
+    if (now - lastFocusRevalidationAt < 1_000) return;
+    lastFocusRevalidationAt = now;
+    void refresh();
+  }
+
   onMounted(async () => {
+    componentActive = true;
+    if (revalidateOnFocus) {
+      window.addEventListener('focus', revalidateAfterFocus);
+      document.addEventListener('visibilitychange', revalidateAfterFocus);
+    }
     const cached = readCache<DataT>(key);
     if (cached.found) {
       asyncData.data.value = cached.data as typeof asyncData.data.value;
       hydratedFromCache.value = true;
       loading.value = false;
       if (revalidateOnMount) await refresh();
+      focusRevalidationReady = true;
       return;
     }
     if (asyncData.status.value === 'idle' || revalidateOnMount) await refresh();
+    focusRevalidationReady = true;
+  });
+
+  onActivated(() => {
+    componentActive = true;
+    activationCount += 1;
+    // KeepAlive invokes activated on the initial mount as well; onMounted is
+    // responsible for that first request.
+    if (activationCount > 1 && revalidateOnActivate) void refresh();
+  });
+
+  onDeactivated(() => { componentActive = false; });
+  onBeforeUnmount(() => {
+    componentActive = false;
+    if (revalidateOnFocus) {
+      window.removeEventListener('focus', revalidateAfterFocus);
+      document.removeEventListener('visibilitychange', revalidateAfterFocus);
+    }
   });
 
   const status = computed(() => {

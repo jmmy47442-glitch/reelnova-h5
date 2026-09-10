@@ -4,6 +4,7 @@ import { getPublicSeries, getTaxonomyConfig } from '~/server/utils/managed-conte
 import { getSeriesBusinessMetrics } from '~/server/utils/content-ranking';
 
 export default defineEventHandler(async (event) => {
+  setHeader(event, 'cache-control', 'private, no-store, max-age=0');
   const query = getQuery(event);
   let result = await getPublicSeries(event);
   const taxonomy = await getTaxonomyConfig(event);

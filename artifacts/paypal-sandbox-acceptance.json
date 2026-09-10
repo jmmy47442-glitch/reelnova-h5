@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-09-10T02:55:34.974Z",
+  "environment": "sandbox",
+  "passed": true,
+  "checks": {
+    "sandboxPaymentCompleted": true,
+    "captureWebhookProcessed": true,
+    "entitlementGrantedByPayment": true,
+    "sandboxCancellationRecorded": true,
+    "duplicateWebhookRecorded": true,
+    "sandboxRefundCompleted": true,
+    "refundWebhookProcessed": true,
+    "entitlementRevokedAfterRefund": true
+  },
+  "records": {
+    "successfulPayment": {
+      "order_no": "RN-20260902-1788340349576-b0d415",
+      "paypal_order_id": "4ME13786VG874622P",
+      "capture_id": "6WM091967R910564L",
+      "status": "paid",
+      "created_at": "2026-09-02T09:12:29.576Z",
+      "entitlement_status": "granted",
+      "capture_webhook_event_id": "WH-03U89092SY6809901-7KC35408BG8268107",
+      "capture_webhook_delivery_count": 2
+    },
+    "cancelledPayment": {
+      "order_no": "RN-20260903-1788421737084-38108c",
+      "paypal_order_id": "37N53706P5187994C",
+      "status": "cancelled",
+      "created_at": "2026-09-03T07:48:57.084Z"
+    },
+    "refundedPayment": {
+      "order_no": "RN-20260903-1788422536062-f1d273",
+      "paypal_order_id": "0K313795BT661054A",
+      "capture_id": "8Y0205759T008924W",
+      "status": "refunded",
+      "created_at": "2026-09-03T08:02:16.062Z",
+      "entitlement_status": "revoked",
+      "revoked_at": "2026-09-03T08:52:47.212Z",
+      "refund_request_id": "refund_RN-20260903-1788422536062-f1d273",
+      "paypal_refund_id": "71R22934DC011624D",
+      "refund_status": "completed",
+      "request_source": "paypal_api",
+      "provider_status": "COMPLETED",
+      "entitlement_revoke_status": "revoked",
+      "completed_at": "2026-09-03T08:52:47.212Z"
+    },
+    "refundWebhook": {
+      "event_id": "WH-30W56395KH7812648-2CA64046HJ486894T",
+      "event_type": "PAYMENT.CAPTURE.REFUNDED",
+      "verification_status": "SUCCESS",
+      "processing_status": "processed",
+      "delivery_count": 2,
+      "received_at": "2026-09-03T08:52:58.827Z",
+      "processed_at": "2026-09-10T02:54:54.205Z"
+    },
+    "duplicateWebhook": {
+      "event_id": "WH-03U89092SY6809901-7KC35408BG8268107",
+      "event_type": "PAYMENT.CAPTURE.COMPLETED",
+      "delivery_count": 2,
+      "received_at": "2026-09-02T09:15:08.683Z",
+      "last_received_at": "2026-09-10T02:54:49.984Z"
+    }
+  }
+}

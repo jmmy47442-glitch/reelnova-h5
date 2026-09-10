@@ -19,6 +19,7 @@ const sortConfiguredItems = (section: Awaited<ReturnType<typeof getHomeSections>
 };
 
 export default defineEventHandler(async (event) => {
+  setHeader(event, 'cache-control', 'private, no-store, max-age=0');
   const configuredSections = await getHomeSections(event);
   const seriesList = await getPublicSeries(event);
   const businessMetrics = await getSeriesBusinessMetrics(event);
