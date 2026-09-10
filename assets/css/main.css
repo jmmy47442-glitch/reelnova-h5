@@ -967,8 +967,8 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .consumer-auth__link-action { padding: 0; border: 0; background: transparent; font-family: inherit; cursor: pointer; }
 .consumer-auth__link-action:hover { color: #fff; }
 .consumer-auth__link-action:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
-.consumer-auth__checkbox { display: inline-flex; position: relative; color: #8c8993; align-items: center; gap: 8px; font-size: 9px; cursor: pointer; }
-.consumer-auth__checkbox input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.consumer-auth__checkbox { display: inline-flex; position: relative; min-height: 44px; color: #8c8993; align-items: center; gap: 8px; font-size: 9px; cursor: pointer; }
+.consumer-auth__checkbox input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; clip-path: inset(50%); }
 .consumer-auth__checkbox > span { display: grid; width: 16px; height: 16px; border: 1px solid #46434d; border-radius: 4px; background: var(--auth-field); color: transparent; flex: 0 0 auto; place-items: center; }
 .consumer-auth__checkbox input:checked + span { border-color: var(--signal); background: var(--signal); color: #fff; }
 .consumer-auth__checkbox input:focus-visible + span { outline: 2px solid var(--mint); outline-offset: 2px; }
@@ -1119,6 +1119,7 @@ html[data-theme='light'] .consumer-auth__checkbox,
 html[data-theme='light'] .consumer-auth__terms em { color: #656976; }
 html[data-theme='light'] .consumer-auth__link-action:hover { color: var(--text); }
 html[data-theme='light'] .consumer-auth__checkbox > span { border-color: #c4c8d1; background: #fff; }
+html[data-theme='light'] .consumer-auth__checkbox input:checked + span { border-color: var(--signal); background: var(--signal); color: #fff; }
 html[data-theme='light'] .consumer-auth__submit-error { color: var(--danger); }
 html[data-theme='light'] .consumer-auth__alternate { color: #717582; }
 html[data-theme='light'] .consumer-auth__legal { color: #858995; }

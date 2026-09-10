@@ -178,13 +178,13 @@ const submit = async () => {
           </label>
 
           <div v-if="!isRegister && !isPasswordReset" class="consumer-auth__options">
-            <label class="consumer-auth__checkbox"><input v-model="form.remember" type="checkbox"><span><Check :size="12" /></span>Keep me signed in</label>
+            <label class="consumer-auth__checkbox" for="consumer-auth-remember"><input id="consumer-auth-remember" v-model="form.remember" type="checkbox"><span><Check :size="12" /></span>Keep me signed in</label>
             <button class="consumer-auth__link-action" type="button" @click="openReset">Forgot password?</button>
           </div>
           <div v-else-if="isPasswordReset" class="consumer-auth__options consumer-auth__options--end">
             <button class="consumer-auth__link-action" type="button" @click="closeReset">Back to sign in</button>
           </div>
-          <label v-else class="consumer-auth__checkbox consumer-auth__terms"><input v-model="form.agreement" type="checkbox" @change="errors.agreement = ''"><span><Check :size="12" /></span><em>I agree to the <NuxtLink to="/terms" @click.stop>Terms of Service</NuxtLink> and Privacy Policy.</em></label>
+          <label v-else class="consumer-auth__checkbox consumer-auth__terms" for="consumer-auth-agreement"><input id="consumer-auth-agreement" v-model="form.agreement" type="checkbox" @change="errors.agreement = ''"><span><Check :size="12" /></span><em>I agree to the <NuxtLink to="/terms" @click.stop>Terms of Service</NuxtLink> and Privacy Policy.</em></label>
           <small v-if="errors.agreement" class="consumer-auth__inline-error">{{ errors.agreement }}</small>
           <p v-if="errors.submit" class="consumer-auth__submit-error" role="alert">{{ errors.submit }}</p>
           <button class="consumer-auth__submit" type="submit" :disabled="submitting">
