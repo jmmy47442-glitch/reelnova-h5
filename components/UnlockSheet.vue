@@ -193,7 +193,7 @@ watch(paypalContainer, () => { void renderPayPal(); });
 <template>
   <Teleport to="body">
     <Transition name="sheet">
-      <div v-if="open" class="sheet-backdrop" role="presentation" @click.self="emit('close')">
+      <div v-if="open && purchasable" class="sheet-backdrop" role="presentation" @click.self="emit('close')">
         <section class="unlock-sheet" role="dialog" aria-modal="true" aria-labelledby="unlock-title">
           <div class="sheet-grabber" />
           <button class="icon-button unlock-sheet__close" type="button" aria-label="Close" @click="emit('close')">

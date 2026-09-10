@@ -20,6 +20,7 @@ const { data: series, status, error, refresh } = usePageData(
   { revalidateOnMount: true },
 );
 const { track } = useAnalytics();
+const purchasable = computed(() => Number(series.value?.price) > 0);
 watch(series, (value) => {
   if (value) void track('detail_open', { seriesId: value.id, seriesTitle: value.title });
 }, { immediate: true });
@@ -49,7 +50,7 @@ const watchLabel = computed(() => {
 const handleEpisode = (episodeNo: number, unlocked: boolean) => {
   if (!series.value) return;
   if (unlocked || locallyUnlocked.value) navigateTo(`/watch/${series.value.slug}/${episodeNo}`);
-  else { void track('lock_trigger', { seriesId: series.value.id, seriesTitle: series.value.title, episodeNo }); showUnlock.value = true; }
+  else if (purchasable.value) { void track('lock_trigger', { seriesId: series.value.id, seriesTitle: series.value.title, episodeNo }); showUnlock.value = true; }
 };
 
 const share = async () => {
@@ -78,7 +79,7 @@ const unlockComplete = async () => {
           <h1>{{ series.title }}</h1>
           <p class="detail-tagline">{{ series.tagline }}</p>
           <div class="detail-stats"><span><Star :size="15" fill="currentColor" /> {{ series.rating }}</span><span><Eye :size="15" /> {{ formatViews(series.views) }}</span><span>{{ series.updatedLabel }}</span></div>
-          <div class="detail-actions"><NuxtLink class="button button--primary" :to="`/watch/${series.slug}/${series.currentEpisode || 1}`"><Play :size="18" fill="currentColor" />{{ watchLabel }}</NuxtLink><button v-if="!series.purchased && !locallyUnlocked" class="button button--ghost" type="button" @click="track('lock_trigger', { seriesId: series.id, seriesTitle: series.title, properties: { source: 'detail_cta' } }); showUnlock = true"><LockKeyhole :size="17" />{{ formatPrice(series.price) }}</button></div>
+          <div class="detail-actions"><NuxtLink class="button button--primary" :to="`/watch/${series.slug}/${series.currentEpisode || 1}`"><Play :size="18" fill="currentColor" />{{ watchLabel }}</NuxtLink><button v-if="purchasable && !series.purchased && !locallyUnlocked" class="button button--ghost" type="button" @click="track('lock_trigger', { seriesId: series.id, seriesTitle: series.title, properties: { source: 'detail_cta' } }); showUnlock = true"><LockKeyhole :size="17" />{{ formatPrice(series.price) }}</button></div>
         </div>
       </section>
       <div class="detail-content content-width">
@@ -94,9 +95,9 @@ const unlockComplete = async () => {
             </button>
           </div>
         </section>
-        <section class="purchase-note"><LockKeyhole :size="19" /><div><h2>One pass. The whole story.</h2><p>Unlock all paid episodes and future updates for {{ formatPrice(series.price) }} USD.</p></div></section>
+        <section v-if="purchasable" class="purchase-note"><LockKeyhole :size="19" /><div><h2>One pass. The whole story.</h2><p>Unlock all paid episodes and future updates for {{ formatPrice(series.price) }} USD.</p></div></section>
       </div>
-      <UnlockSheet :series="series" :open="showUnlock" @close="showUnlock = false" @unlocked="unlockComplete" />
+      <UnlockSheet v-if="purchasable" :series="series" :open="showUnlock" @close="showUnlock = false" @unlocked="unlockComplete" />
     </template>
   </div>
 </template>
