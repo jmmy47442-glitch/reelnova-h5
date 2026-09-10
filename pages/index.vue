@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ChevronRight, Flame, Play } from 'lucide-vue-next';
+import { ChevronRight, Flame, Heart, Play, Search, Shield, Sparkles, Trophy, UsersRound, WandSparkles } from 'lucide-vue-next';
+import type { Component } from 'vue';
 import { useAnalytics } from '~/composables/useAnalytics';
 import { usePageData } from '~/composables/usePageData';
 
@@ -13,7 +14,16 @@ const featuredTracked = ref(false);
 const pendingUpdates = ref(0);
 const router = useRouter();
 const primaryTabRoutes = new Set(['/', '/explore', '/library', '/profile']);
-let sectionObserver: IntersectionObserver | undefined;
+const selectedGenre = ref('All');
+
+const curatedCategoryDefinitions: { name: string; description: string; icon: Component; accent: string }[] = [
+  { name: 'Romance', description: 'Slow burns & second chances', icon: Heart, accent: '#ff3d79' },
+  { name: 'Revenge', description: 'Comebacks with consequences', icon: Shield, accent: '#f5c967' },
+  { name: 'Billionaire', description: 'Power, secrets & desire', icon: Sparkles, accent: '#43dbc0' },
+  { name: 'Mystery', description: 'Every clue changes everything', icon: Search, accent: '#668cff' },
+  { name: 'Sports', description: 'Big plays, bigger feelings', icon: Trophy, accent: '#ff8b5c' },
+  { name: 'Family', description: 'The ties that pull tight', icon: UsersRound, accent: '#b88cff' },
+];
 
 const refreshHome = async () => {
   await refresh();
@@ -26,46 +36,60 @@ const removeNavigationHook = router.afterEach((to, from) => {
   }
 });
 
-let scrollFrame: number | null = null;
-
-const scrollToSection = (target: HTMLElement) => {
-  if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
-
-  const startY = window.scrollY;
-  const targetY = target.getBoundingClientRect().top + startY - 56;
-  const distance = targetY - startY;
-
-  if (Math.abs(distance) < 2 || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    window.scrollTo(0, targetY);
-    scrollFrame = null;
-    return;
-  }
-
-  const startedAt = performance.now();
-  const duration = 180;
-  const tick = (now: number) => {
-    const progress = Math.min((now - startedAt) / duration, 1);
-    const eased = 1 - Math.pow(1 - progress, 3);
-    window.scrollTo(0, startY + distance * eased);
-
-    if (progress < 1) scrollFrame = requestAnimationFrame(tick);
-    else scrollFrame = null;
-  };
-
-  scrollFrame = requestAnimationFrame(tick);
-};
-
 const selectTab = (tab: string) => {
   activeTab.value = tab;
+  selectedGenre.value = 'All';
   void track('filter', { properties: { source: 'home_tab', value: tab } });
-  const map: Record<string, string> = { Popular: 'popular', New: 'new', Rankings: 'popular', Categories: 'romance' };
-  const target = document.getElementById(map[tab]);
-  if (target) scrollToSection(target);
+};
+
+const moveTabFocus = async (event: KeyboardEvent, currentIndex: number) => {
+  const tabs = data.value?.tabs || [];
+  if (!tabs.length || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const nextIndex = event.key === 'Home'
+    ? 0
+    : event.key === 'End'
+      ? tabs.length - 1
+      : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  selectTab(tabs[nextIndex]);
+  await nextTick();
+  document.getElementById(`tab-${tabs[nextIndex].toLowerCase()}`)?.focus();
+};
+
+const selectGenre = (genre: string) => {
+  selectedGenre.value = genre;
+  void track('filter', { properties: { source: 'home_category', value: genre } });
 };
 
 onBeforeUnmount(() => {
-  if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
   removeNavigationHook();
+});
+
+const allSeries = computed(() => {
+  if (!data.value) return [];
+  return [...new Map(data.value.sections.flatMap((section) => section.items).map((series) => [series.id, series])).values()];
+});
+const categoryDefinitions = computed(() => {
+  const genres = [...new Set(allSeries.value.flatMap((series) => series.genres))];
+  const curated = curatedCategoryDefinitions.filter((category) => genres.some((genre) => genre.toLowerCase().includes(category.name.toLowerCase())));
+  const extras = genres.filter((genre) => !curated.some((category) => genre.toLowerCase().includes(category.name.toLowerCase()))).map((genre, index) => ({
+    name: genre,
+    description: 'Stories selected for you',
+    icon: [Sparkles, WandSparkles, Heart][index % 3],
+    accent: ['#668cff', '#43dbc0', '#f5c967'][index % 3],
+  }));
+  return [...curated, ...extras];
+});
+const categoryItems = computed(() => {
+  if (selectedGenre.value === 'All') return allSeries.value;
+  return allSeries.value.filter((series) => series.genres.some((genre) => genre.toLowerCase().includes(selectedGenre.value.toLowerCase())));
+});
+const categoryCount = (name: string) => allSeries.value.filter((series) => series.genres.some((genre) => genre.toLowerCase().includes(name.toLowerCase()))).length;
+const tabSections = computed(() => {
+  if (!data.value) return [];
+  if (activeTab.value === 'New') return [data.value.sections.find((section) => section.id === 'new') || data.value.sections[1] || data.value.sections[0]].filter(Boolean);
+  if (activeTab.value === 'Rankings') return [data.value.sections.find((section) => section.id === 'popular') || data.value.sections[0]].filter(Boolean);
+  return data.value.sections.slice(0, activeTab.value === 'Popular' ? 2 : 1);
 });
 
 watch(data, (value) => {
@@ -75,18 +99,9 @@ watch(data, (value) => {
   }
 }, { immediate: true });
 
-onMounted(() => {
-  if (typeof IntersectionObserver === 'undefined') return;
-  sectionObserver = new IntersectionObserver((entries) => {
-    entries.filter((entry) => entry.isIntersecting).forEach((entry) => {
-      const sectionId = (entry.target as HTMLElement).id;
-      if (sectionId) void track('home_section_exposure', { properties: { sectionId } });
-      sectionObserver?.unobserve(entry.target);
-    });
-  }, { threshold: 0.2 });
-  document.querySelectorAll<HTMLElement>('.content-section').forEach((section) => sectionObserver?.observe(section));
+watch(activeTab, (tab) => {
+  void track('home_section_exposure', { properties: { sectionId: tab.toLowerCase() } });
 });
-onBeforeUnmount(() => sectionObserver?.disconnect());
 </script>
 
 <template>
@@ -106,20 +121,41 @@ onBeforeUnmount(() => sectionObserver?.disconnect());
       </section>
 
       <div class="sticky-category-wrap">
-        <nav class="category-tabs content-width" aria-label="Content categories">
-          <button v-for="tab in data.tabs" :key="tab" type="button" :class="{ 'is-active': activeTab === tab }" @click="selectTab(tab)">{{ tab }}</button>
+        <nav class="category-tabs content-width" aria-label="Content categories" role="tablist">
+          <button v-for="(tab, tabIndex) in data.tabs" :id="`tab-${tab.toLowerCase()}`" :key="tab" type="button" role="tab" :tabindex="activeTab === tab ? 0 : -1" :aria-selected="activeTab === tab" :aria-controls="`panel-${tab.toLowerCase()}`" :class="{ 'is-active': activeTab === tab }" @click="selectTab(tab)" @keydown="moveTabFocus($event, tabIndex)">{{ tab }}</button>
         </nav>
       </div>
 
-      <div class="content-width home-sections">
-        <div class="now-playing-line"><span><i /> Now playing</span><strong>2,840 viewers watching</strong></div>
-        <section v-for="(section, sectionIndex) in data.sections" :id="section.id" :key="section.id" class="content-section">
-          <SectionHeader :title="section.title" :subtitle="section.subtitle" :to="`/explore?section=${section.id}`" />
-          <div class="poster-grid">
-            <SeriesCard v-for="(series, index) in section.items" :key="series.id" :series="series" :section-id="section.id" :rank="sectionIndex === 0 ? index + 1 : undefined" />
-          </div>
-          <NuxtLink v-if="sectionIndex === 0" class="section-inline-link" to="/explore">Explore every series <ChevronRight :size="17" /></NuxtLink>
-        </section>
+      <div :id="`panel-${activeTab.toLowerCase()}`" class="content-width home-sections" role="tabpanel" :aria-labelledby="`tab-${activeTab.toLowerCase()}`" :class="{ 'home-sections--categories': activeTab === 'Categories' }">
+        <template v-if="activeTab === 'Categories'">
+          <section class="category-intro" aria-labelledby="category-title">
+            <div class="category-intro__copy"><span class="eyebrow">CURATED FOR YOUR MOOD</span><h2 id="category-title">Find your next world</h2><p>Pick a feeling, then press play. Stories are grouped by the tension, romance and chaos you want tonight.</p></div>
+            <div class="category-intro__mark"><WandSparkles :size="22" /><span>{{ categoryDefinitions.length }}<br />lanes</span></div>
+          </section>
+          <section class="category-browser" aria-labelledby="category-browser-title">
+            <div class="section-heading category-browser__heading"><div><h2 id="category-browser-title">Story lanes</h2><p>Choose a genre to shape your shelf</p></div><span class="category-browser__count">{{ allSeries.length }} series</span></div>
+            <div class="category-tiles">
+              <button type="button" class="category-tile category-tile--all" :aria-pressed="selectedGenre === 'All'" :class="{ 'is-active': selectedGenre === 'All' }" style="--category-accent: #f7f4f6" @click="selectGenre('All')">
+                <span class="category-tile__icon"><WandSparkles :size="18" /></span><span class="category-tile__copy"><strong>All stories</strong><small>Browse the full ReelNova shelf</small></span><span class="category-tile__count">{{ allSeries.length }}</span>
+              </button>
+              <button v-for="category in categoryDefinitions" :key="category.name" type="button" class="category-tile" :aria-pressed="selectedGenre === category.name" :class="{ 'is-active': selectedGenre === category.name }" :style="{ '--category-accent': category.accent }" @click="selectGenre(category.name)">
+                <span class="category-tile__icon"><component :is="category.icon" :size="18" /></span><span class="category-tile__copy"><strong>{{ category.name }}</strong><small>{{ category.description }}</small></span><span class="category-tile__count">{{ categoryCount(category.name) }}</span>
+              </button>
+            </div>
+          </section>
+          <section class="content-section category-results" aria-live="polite">
+            <SectionHeader :title="selectedGenre === 'All' ? 'Every kind of story' : selectedGenre" :subtitle="selectedGenre === 'All' ? 'A little bit of everything, all in one place' : `${categoryItems.length} stories in this lane`" to="/explore" />
+            <div class="poster-grid"><SeriesCard v-for="series in categoryItems" :key="series.id" :series="series" section-id="categories" /></div>
+          </section>
+        </template>
+        <template v-else>
+          <div class="now-playing-line"><span><i /> Now playing</span><strong>2,840 viewers watching</strong></div>
+          <section v-for="(section, sectionIndex) in tabSections" :id="section.id" :key="section.id" class="content-section">
+            <SectionHeader :title="activeTab === 'Rankings' ? 'Top 10 this week' : section.title" :subtitle="activeTab === 'Rankings' ? 'The stories everyone is talking about' : section.subtitle" :to="`/explore?section=${section.id}`" />
+            <div class="poster-grid"><SeriesCard v-for="(series, index) in section.items" :key="series.id" :series="series" :section-id="section.id" :rank="activeTab === 'Rankings' || sectionIndex === 0 ? index + 1 : undefined" /></div>
+            <NuxtLink v-if="sectionIndex === 0" class="section-inline-link" to="/explore">Explore every series <ChevronRight :size="17" /></NuxtLink>
+          </section>
+        </template>
       </div>
     </template>
   </div>
