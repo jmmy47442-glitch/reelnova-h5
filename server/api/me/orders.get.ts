@@ -12,6 +12,7 @@ interface OrderRow {
   status: OrderStatus;
   created_at: string;
   paypal_order_id: string | null;
+  payment_method: 'paypal' | 'card' | 'apple_pay' | null;
   refund_status: Order['refundStatus'] | null;
   entitlement_status: Order['entitlementStatus'] | null;
 }
@@ -21,7 +22,7 @@ export default defineEventHandler(async (event) => {
   if (!userSession) throw createError({ statusCode: 401, statusMessage: 'Login required' });
 
   const rows = await d1All<OrderRow>(event, `
-    SELECT o.order_no, o.series_id, o.series_title, o.amount_cents, o.currency, o.status, o.created_at, o.paypal_order_id,
+    SELECT o.order_no, o.series_id, o.series_title, o.amount_cents, o.currency, o.status, o.created_at, o.paypal_order_id, o.payment_method,
       (SELECT rr.status FROM refund_requests rr WHERE rr.order_no = o.order_no ORDER BY rr.created_at DESC LIMIT 1) AS refund_status,
       (SELECT e.status FROM entitlements e WHERE e.order_no = o.order_no LIMIT 1) AS entitlement_status
     FROM orders o
@@ -40,6 +41,7 @@ export default defineEventHandler(async (event) => {
     entitlementStatus: row.entitlement_status || 'pending',
     createdAt: row.created_at,
     paypalOrderId: row.paypal_order_id || undefined,
+    paymentMethod: row.payment_method || 'paypal',
   }));
 
   return ok(orders);

@@ -176,6 +176,21 @@ Copy PayPal's Live Webhook ID to `PAYPAL_PRODUCTION_WEBHOOK_ID` (and to legacy `
 
 The hourly Worker cron also calls the signed `/api/internal/paypal/reconcile` endpoint. It rechecks open orders after 15 minutes, captures PayPal orders that are already approved, applies completed or denied capture facts, and closes orders that still cannot be confirmed after 24 hours. Keep the media Worker cron and `APP_BASE_URL` enabled so missed browser responses or Webhooks cannot leave checkout rows permanently in `processing`.
 
+### 5.1 Direct cards and Apple Pay
+
+Credit/debit card fields and Apple Pay use PayPal Advanced Checkout. Card details remain inside PayPal Hosted Fields and never pass through the application server. Before enabling Production checkout:
+
+1. In the PayPal Developer Dashboard, open the Live App used by `PAYPAL_PRODUCTION_CLIENT_ID` and request Advanced Credit and Debit Card Payments and Apple Pay. Merchant approval is required; adding the SDK components alone does not grant eligibility.
+2. Configure the complete Live credential/Webhook set, apply all D1 migrations, deploy the application, and switch the PayPal runtime to Production from `/admin/system`.
+3. Confirm `https://iseedrama.com/.well-known/apple-developer-merchantid-domain-association` now returns the Production association file with HTTP 200, no redirect, and `Content-Type: application/octet-stream`. Then add `iseedrama.com` in the Live App Apple Pay settings and complete PayPal's domain verification.
+4. Test Apple Pay in Safari on an eligible Apple device with a supported card in Wallet. Browsers and devices that are not eligible intentionally show card or PayPal as the alternative.
+
+Run the mocked browser checkout regression locally without charging a card:
+
+```bash
+CHECKOUT_TEST_BASE_URL=http://localhost:3100 npm run check:checkout-ui
+```
+
 ## 6. Custom domains and HTTPS
 
 ### 6.1 MVP: ordinary Custom Domains

@@ -1,3 +1,4 @@
+import { buildPayPalOrderRequest } from './paypal-checkout';
 import type { H3Event } from 'h3';
 import { ofetch, type FetchOptions } from 'ofetch';
 import { d1All, d1First, d1Run } from '~/server/utils/cloudflare-d1';
@@ -174,20 +175,16 @@ const accessToken = async (event: H3Event, environment?: PayPalEnvironment): Pro
 
 export const testPayPalConnection = async (event: H3Event, environment?: PayPalEnvironment): Promise<boolean> => Boolean((await accessToken(event, environment)).token);
 
-export const createPayPalOrder = async (event: H3Event, input: { orderNo: string; seriesTitle: string; amount: string; returnUrl: string; cancelUrl: string; environment?: PayPalEnvironment }) => {
+export const createPayPalOrder = async (event: H3Event, input: { orderNo: string; seriesTitle: string; amount: string; returnUrl: string; cancelUrl: string; paymentMethod?: 'paypal' | 'card' | 'apple_pay'; environment?: PayPalEnvironment }) => {
   const { token, baseUrl } = await accessToken(event, input.environment);
   const response = await paypalRequest<PayPalOrderResponse>(`${baseUrl}/v2/checkout/orders`, {
     method: 'POST',
     timeout: paypalRequestTimeoutMs,
     headers: { Authorization: `Bearer ${token}`, 'PayPal-Request-Id': input.orderNo, 'Content-Type': 'application/json' },
-    body: {
-      intent: 'CAPTURE',
-      purchase_units: [{ reference_id: input.orderNo, invoice_id: input.orderNo, description: `ReelNova: ${input.seriesTitle}`, amount: { currency_code: 'USD', value: input.amount } }],
-      payment_source: { paypal: { experience_context: { brand_name: 'ReelNova', user_action: 'PAY_NOW', return_url: input.returnUrl, cancel_url: input.cancelUrl } } },
-    },
+    body: buildPayPalOrderRequest(input),
   }, 'checkout');
   const approvalUrl = response.links?.find((link) => link.rel === 'payer-action' || link.rel === 'approve')?.href;
-  if (!approvalUrl) throw createError({ statusCode: 502, statusMessage: 'PayPal approval URL missing' });
+  if ((input.paymentMethod || 'paypal') === 'paypal' && !approvalUrl) throw createError({ statusCode: 502, statusMessage: 'PayPal approval URL missing' });
   return { paypalOrderId: response.id, approvalUrl };
 };
 
@@ -470,6 +467,41 @@ export const reconcilePayPalOrder = async (event: H3Event, input: {
     }
   }
   return 'processing' as const;
+};
+
+// Both SDK cancellation and PayPal redirect cancellation must preserve payment
+// facts. A stale cancel link is not evidence that a charge was cancelled.
+export const cancelPayPalCheckout = async (event: H3Event, paypalOrderId: string) => {
+  let order = await d1First<OrderSnapshot>(event, 'SELECT * FROM orders WHERE paypal_order_id = ?', [paypalOrderId]);
+  if (!order) throw createError({ statusCode: 404, statusMessage: 'Order not found' });
+  if (['pending', 'processing'].includes(order.status)) {
+    const details = await getPayPalOrderDetails(event, paypalOrderId, order.paypal_environment || undefined);
+    if (details.status === 'APPROVED' || details.status === 'COMPLETED'
+      || details.purchase_units?.some((unit) => unit.payments?.captures?.length)) {
+      const result = await reconcilePayPalOrder(event, {
+        paypalOrderId, environment: order.paypal_environment || undefined, captureApproved: true,
+      });
+      if (result === 'processing') throw createError({
+        statusCode: 409, statusMessage: 'Payment confirmation is pending',
+        data: { code: 'PAYMENT_CAPTURE_UNCONFIRMED', orderNo: order.order_no },
+      });
+    } else {
+      await applyPayPalPaymentTerminalState(event, { paypalOrderId, status: 'cancelled', note: 'Payment cancelled by user' });
+    }
+    order = await d1First<OrderSnapshot>(event, 'SELECT * FROM orders WHERE paypal_order_id = ?', [paypalOrderId]);
+  }
+  if (!order || !['paid', 'cancelled', 'failed'].includes(order.status)) throw createError({
+    statusCode: 409, statusMessage: 'This order cannot be cancelled',
+  });
+  if (order.status === 'paid') {
+    const entitlement = await d1First<{ status: string }>(event,
+      "SELECT status FROM entitlements WHERE order_no = ? AND status = 'granted'", [order.order_no]);
+    if (!entitlement) throw createError({
+      statusCode: 409, statusMessage: 'Payment is awaiting entitlement reconciliation',
+      data: { code: 'ORDER_ENTITLEMENT_MISSING', orderNo: order.order_no },
+    });
+  }
+  return { orderNo: order.order_no, status: order.status === 'paid' ? 'paid' as const : 'cancelled' as const };
 };
 
 export const reconcileStalePayPalOrders = async (event: H3Event) => {

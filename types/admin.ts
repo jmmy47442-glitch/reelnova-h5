@@ -92,6 +92,7 @@ export interface AdminMetricOrderItem {
   currency: 'USD';
   status: PersistedOrderStatus;
   paypalOrderId: string | null;
+  paymentMethod?: 'paypal' | 'card' | 'apple_pay' | null;
   captureId: string | null;
   note: string | null;
   createdAt: string;
@@ -223,6 +224,7 @@ export interface PersistedOrder {
   netAmount: number;
   status: PersistedOrderStatus;
   paypalOrderId: string | null;
+  paymentMethod?: 'paypal' | 'card' | 'apple_pay' | null;
   captureId: string | null;
   createdAt: string;
   callbackAt: string | null;

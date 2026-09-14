@@ -5,6 +5,7 @@ import type { AdminOrdersResponse, PersistedOrder } from '~/types/admin';
 interface OrderRow {
   order_no: string; series_id: string; series_title: string; email: string | null; country: string | null;
   amount_cents: number; fee_cents: number; status: PersistedOrder['status']; paypal_order_id: string | null;
+  payment_method: 'paypal' | 'card' | 'apple_pay' | null;
   capture_id: string | null; created_at: string; callback_at: string | null; note: string | null; entitlement_status: string | null;
   refund_status: PersistedOrder['refund']['status']; paypal_refund_id: string | null; refund_source: PersistedOrder['refund']['source'];
   entitlement_revoke_status: PersistedOrder['refund']['entitlementRevokeStatus']; refund_error_message: string | null; refund_updated_at: string | null;
@@ -16,6 +17,7 @@ const mapOrder = (row: OrderRow): PersistedOrder => ({
   amount: Number(row.amount_cents) / 100, currency: 'USD', fee: Number(row.fee_cents) / 100,
   netAmount: (Number(row.amount_cents) - Number(row.fee_cents)) / 100, status: row.status,
   paypalOrderId: row.paypal_order_id, captureId: row.capture_id, createdAt: row.created_at, callbackAt: row.callback_at,
+  paymentMethod: row.payment_method,
   entitlement: row.entitlement_status === 'granted' ? 'granted' : row.entitlement_status === 'revoked' ? 'revoked' : 'pending',
   refund: {
     status: row.refund_status || null,

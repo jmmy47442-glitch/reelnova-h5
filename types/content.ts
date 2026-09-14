@@ -132,6 +132,7 @@ export interface Order {
   entitlementStatus?: 'pending' | 'granted' | 'revoked';
   createdAt: string;
   paypalOrderId?: string;
+  paymentMethod?: 'paypal' | 'card' | 'apple_pay';
   approvalUrl?: string;
 }
 

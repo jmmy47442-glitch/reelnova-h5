@@ -21,7 +21,12 @@ export default defineEventHandler(async (event) => {
   const order = await d1First<{ order_no: string; status: OrderStatus; paypal_environment: PayPalEnvironment | null }>(event,
     'SELECT order_no, status, paypal_environment FROM orders WHERE paypal_order_id = ? AND user_id = ?', [paypalOrderId, session.userId]);
   if (!order) throw createError({ statusCode: 404, statusMessage: 'Order not found' });
-  if (order.status === 'paid') return ok({ orderNo: order.order_no, status: 'paid' as const });
+  if (order.status === 'paid') {
+    const entitlement = await d1First<{ status: string }>(event,
+      "SELECT status FROM entitlements WHERE order_no = ? AND user_id = ? AND status = 'granted'", [order.order_no, session.userId]);
+    if (!entitlement) throw createError({ statusCode: 409, statusMessage: 'Payment is awaiting entitlement reconciliation', data: { code: 'ORDER_ENTITLEMENT_MISSING', orderNo: order.order_no } });
+    return ok({ orderNo: order.order_no, status: 'paid' as const });
+  }
   if (!['pending', 'processing'].includes(order.status)) throw createError({
     statusCode: 409,
     statusMessage: 'This order can no longer be paid',

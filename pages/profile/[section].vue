@@ -244,14 +244,14 @@ onBeforeUnmount(() => { if (noticeTimer.value) clearTimeout(noticeTimer.value); 
                 <ChevronDown :size="18" />
               </button>
               <div v-if="selectedOrder === order.orderNo" class="order-detail">
-                <dl><div><dt>Payment method</dt><dd>PayPal</dd></div><div><dt>Currency</dt><dd>{{ order.currency }}</dd></div><div><dt>Order reference</dt><dd>{{ order.orderNo }}</dd></div></dl>
+                <dl><div><dt>Payment method</dt><dd>{{ order.paymentMethod === 'card' ? 'Credit or debit card' : order.paymentMethod === 'apple_pay' ? 'Apple Pay' : 'PayPal' }}</dd></div><div><dt>Currency</dt><dd>{{ order.currency }}</dd></div><div><dt>Order reference</dt><dd>{{ order.orderNo }}</dd></div></dl>
                 <NuxtLink :to="{ path: '/explore', query: { q: order.seriesTitle } }">Find purchased story <ChevronRight :size="15" /></NuxtLink>
               </div>
             </article>
           </div>
           <p class="account-footnote"><LockKeyhole :size="14" /> Payment details are handled securely by PayPal.</p>
         </template>
-        <div v-else class="account-empty"><span><ReceiptText :size="25" /></span><h2>No orders yet</h2><p>Completed and pending PayPal orders will be listed here.</p><NuxtLink class="button button--primary" to="/explore">Find a story</NuxtLink></div>
+        <div v-else class="account-empty"><span><ReceiptText :size="25" /></span><h2>No orders yet</h2><p>Completed and pending orders will be listed here.</p><NuxtLink class="button button--primary" to="/explore">Find a story</NuxtLink></div>
       </template>
 
       <template v-else-if="section === 'history'">
