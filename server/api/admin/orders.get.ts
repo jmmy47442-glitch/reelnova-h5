@@ -8,6 +8,7 @@ interface OrderRow {
   payment_method: 'paypal' | 'card' | 'apple_pay' | null;
   capture_id: string | null; created_at: string; callback_at: string | null; note: string | null; entitlement_status: string | null;
   refund_status: PersistedOrder['refund']['status']; paypal_refund_id: string | null; refund_source: PersistedOrder['refund']['source'];
+  refund_amount_cents: number | null;
   entitlement_revoke_status: PersistedOrder['refund']['entitlementRevokeStatus']; refund_error_message: string | null; refund_updated_at: string | null;
 }
 interface CountRow { value: number }
@@ -20,6 +21,7 @@ const mapOrder = (row: OrderRow): PersistedOrder => ({
   paymentMethod: row.payment_method,
   entitlement: row.entitlement_status === 'granted' ? 'granted' : row.entitlement_status === 'revoked' ? 'revoked' : 'pending',
   refund: {
+    amount: row.refund_amount_cents == null ? null : Number(row.refund_amount_cents) / 100,
     status: row.refund_status || null,
     paypalRefundId: row.paypal_refund_id,
     source: row.refund_source || null,
@@ -54,7 +56,7 @@ export default defineEventHandler(async (event) => {
   const todayIso = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())).toISOString();
   const [rows, total, todayOrders, paidAmount, pending, exceptions] = await Promise.all([
     d1All<OrderRow>(event, `SELECT o.*, e.status AS entitlement_status,
-      rr.status AS refund_status, rr.paypal_refund_id, rr.request_source AS refund_source,
+      rr.status AS refund_status, rr.amount_cents AS refund_amount_cents, rr.paypal_refund_id, rr.request_source AS refund_source,
       rr.entitlement_revoke_status, rr.error_message AS refund_error_message, rr.updated_at AS refund_updated_at
       FROM orders o
       LEFT JOIN entitlements e ON e.order_no = o.order_no

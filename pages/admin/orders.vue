@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { CloudOff, Download, RefreshCw, Search } from 'lucide-vue-next';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { parseRefundAmountCents } from '~/shared/refund-amount';
 import type { PersistedOrder, PersistedOrderStatus, PersistedRefundStatus } from '~/types/admin';
 
 definePageMeta({ layout: 'admin', keepalive: true });
@@ -14,6 +15,19 @@ const detailVisible = ref(false);
 const activeOrder = ref<PersistedOrder | null>(null);
 const verifying = ref('');
 const refunding = ref('');
+const refundVisible = ref(false);
+const refundOrder = ref<PersistedOrder | null>(null);
+const refundMethod = ref<'paypal_api' | 'manual'>('paypal_api');
+const refundAmount = ref('');
+const refundReason = ref('');
+const refundSubmitted = ref(false);
+const refundAmountError = computed(() => {
+  const cents = parseRefundAmountCents(refundAmount.value);
+  return cents === null || cents > Math.round((refundOrder.value?.amount || 0) * 100)
+    ? '退款金额须大于 0，最多两位小数，且不超过订单金额' : '';
+});
+const refundReasonError = computed(() => refundReason.value.trim().length < 8 || refundReason.value.trim().length > 500 ? '退款原因需为 8-500 个字符' : '');
+const refundAmountLocked = computed(() => Boolean(refundOrder.value?.refund.status && refundOrder.value.refund.status !== 'rejected'));
 const statusOptions: Array<{ label: string; value: PersistedOrderStatus | '' }> = [
   { label: '全部状态', value: '' }, { label: '已支付', value: 'paid' }, { label: '处理中', value: 'processing' }, { label: '待支付', value: 'pending' },
   { label: '支付失败', value: 'failed' }, { label: '退款中', value: 'refunding' }, { label: '已退款', value: 'refunded' }, { label: '风控审核', value: 'risk_review' },
@@ -42,34 +56,34 @@ const verify = async (order: PersistedOrder) => {
   } catch (reason: any) { ElMessage.error(reason?.data?.statusMessage || 'PayPal 核验失败'); }
   finally { verifying.value = ''; }
 };
-const refund = async (order: PersistedOrder) => {
-  try {
-    const { value } = await ElMessageBox.prompt('退款完成后将立即回收该短剧权益。请输入退款原因以写入审计日志。', `退款 ${order.orderNo}`, {
-      confirmButtonText: '确认全额退款', cancelButtonText: '取消', inputPlaceholder: '至少 8 个字符', inputPattern: /^.{8,500}$/, inputErrorMessage: '退款原因需为 8-500 个字符', type: 'warning',
-    });
-    refunding.value = order.orderNo;
-    const result = await api.refundOrder(order.orderNo, value);
-    await refresh();
-    activeOrder.value = data.value?.items.find((item) => item.orderNo === order.orderNo) || activeOrder.value;
-    ElMessage[result.synchronized ? 'success' : 'info'](result.synchronized ? 'PayPal 退款完成，用户权益已回收' : '退款已提交 PayPal，等待异步确认');
-  } catch (reason: any) {
-    if (reason === 'cancel' || reason === 'close') return;
-    ElMessage.error(reason?.data?.statusMessage || '退款提交失败');
-  } finally { refunding.value = ''; }
+const openRefund = (order: PersistedOrder, method: 'paypal_api' | 'manual') => {
+  refundOrder.value = order;
+  refundMethod.value = method;
+  refundAmount.value = (order.refund.amount ?? order.amount).toFixed(2);
+  refundReason.value = '';
+  refundSubmitted.value = false;
+  refundVisible.value = true;
 };
-const recordManualRefund = async (order: PersistedOrder) => {
+const refund = (order: PersistedOrder) => openRefund(order, 'paypal_api');
+const recordManualRefund = (order: PersistedOrder) => openRefund(order, 'manual');
+const submitRefund = async () => {
+  if (refunding.value) return;
+  refundSubmitted.value = true;
+  const order = refundOrder.value;
+  if (!order || refundAmountError.value || refundReasonError.value) return;
+  const amount = (parseRefundAmountCents(refundAmount.value)! / 100).toFixed(2);
+  refunding.value = order.orderNo;
   try {
-    const { value } = await ElMessageBox.prompt('仅用于已在 PayPal 商户后台完成的退款。确认后将立即回收此订单权益。', `记录人工退款 ${order.orderNo}`, {
-      confirmButtonText: '记录已完成', cancelButtonText: '取消', inputPlaceholder: '退款原因或客服处理说明（至少 8 个字符）', inputPattern: /^.{8,500}$/, inputErrorMessage: '处理说明需为 8-500 个字符', type: 'warning',
+    const result = await api.refundOrder(order.orderNo, refundReason.value.trim(), {
+      amount, method: refundMethod.value,
+      ...(refundMethod.value === 'manual' ? { providerStatus: 'COMPLETED' } : {}),
     });
-    refunding.value = order.orderNo;
-    await api.refundOrder(order.orderNo, value, { method: 'manual', providerStatus: 'COMPLETED' });
+    refundVisible.value = false;
+    ElMessage[result.synchronized ? 'success' : 'info'](result.synchronized ? `退款 ${amount} ${order.currency} 已完成，用户权益已回收` : '退款已提交 PayPal，等待异步确认');
     await refresh();
-    activeOrder.value = data.value?.items.find((item) => item.orderNo === order.orderNo) || activeOrder.value;
-    ElMessage.success('人工退款结果已记录，权益状态已同步');
+    if (activeOrder.value?.orderNo === order.orderNo) activeOrder.value = data.value?.items.find((item) => item.orderNo === order.orderNo) || activeOrder.value;
   } catch (reason: any) {
-    if (reason === 'cancel' || reason === 'close') return;
-    ElMessage.error(reason?.data?.statusMessage || '人工退款记录失败');
+    ElMessage.error(reason?.data?.statusMessage || '退款提交失败');
   } finally { refunding.value = ''; }
 };
 const rejectRefund = async (order: PersistedOrder) => {
@@ -106,6 +120,30 @@ const exportOrders = () => {
       <section class="admin-panel admin-table-panel"><el-table :data="rows" row-key="orderNo"><el-table-column prop="orderNo" label="本地订单号" min-width="176" /><el-table-column label="短剧 / 用户" min-width="220"><template #default="scope"><div class="double-line"><strong>{{ scope.row.seriesTitle }}</strong><span>{{ scope.row.email || '未提供邮箱' }} · {{ scope.row.country || '未知地区' }}</span></div></template></el-table-column><el-table-column label="金额" width="92"><template #default="scope"><strong>${{ scope.row.amount.toFixed(2) }}</strong></template></el-table-column><el-table-column label="支付方式" min-width="135"><template #default="scope">{{ paymentMethodLabel(scope.row.paymentMethod) }}</template></el-table-column><el-table-column label="支付状态" width="106"><template #default="scope"><el-tag :type="type(scope.row.status) as any">{{ labels[scope.row.status as PersistedOrderStatus] }}</el-tag></template></el-table-column><el-table-column label="退款状态" width="106"><template #default="scope"><el-tag v-if="scope.row.refund.status" :type="scope.row.refund.status === 'completed' ? 'success' : scope.row.refund.status === 'failed' ? 'danger' : 'warning'">{{ refundLabels[scope.row.refund.status as PersistedRefundStatus] }}</el-tag><span v-else>—</span></template></el-table-column><el-table-column label="权益" width="92"><template #default="scope"><span :class="{ 'success-text': scope.row.entitlement === 'granted' }">{{ entitlementLabels[scope.row.entitlement as keyof typeof entitlementLabels] }}</span></template></el-table-column><el-table-column prop="paypalOrderId" label="PayPal Order ID" min-width="145" /><el-table-column label="创建时间" min-width="154"><template #default="scope">{{ new Date(scope.row.createdAt).toLocaleString('zh-CN', { hour12: false }) }}</template></el-table-column><el-table-column label="操作" fixed="right" width="250"><template #default="scope"><el-button link type="primary" @click="openDetail(scope.row as PersistedOrder)">详情</el-button><el-button link :loading="verifying === scope.row.orderNo" @click="verify(scope.row as PersistedOrder)">核验</el-button><el-button v-if="scope.row.status === 'paid'" link type="danger" :loading="refunding === scope.row.orderNo" @click="refund(scope.row as PersistedOrder)">退款</el-button><el-button v-if="scope.row.status === 'paid'" link :loading="refunding === scope.row.orderNo" @click="recordManualRefund(scope.row as PersistedOrder)">人工记录</el-button></template></el-table-column><template #empty><div class="table-empty"><Search :size="28" /><span>Cloudflare D1 中没有符合条件的订单</span></div></template></el-table><div class="admin-pagination"><span>共 {{ data.total }} 条</span></div></section>
     </template>
 
-    <el-drawer v-model="detailVisible" title="订单详情" size="min(560px, 92vw)"><template v-if="activeOrder"><div class="drawer-heading"><div><span>本地订单号</span><strong>{{ activeOrder.orderNo }}</strong></div><el-tag :type="type(activeOrder.status) as any">{{ labels[activeOrder.status] }}</el-tag></div><el-descriptions :column="1" border class="admin-descriptions"><el-descriptions-item label="短剧">{{ activeOrder.seriesTitle }}</el-descriptions-item><el-descriptions-item label="用户">{{ activeOrder.email || '未提供' }} · {{ activeOrder.country || '未知' }}</el-descriptions-item><el-descriptions-item label="订单金额">${{ activeOrder.amount.toFixed(2) }} {{ activeOrder.currency }}</el-descriptions-item><el-descriptions-item label="手续费 / 净额">${{ activeOrder.fee.toFixed(2) }} / ${{ activeOrder.netAmount.toFixed(2) }}</el-descriptions-item><el-descriptions-item label="支付方式">{{ paymentMethodLabel(activeOrder.paymentMethod) }} · PayPal 收款</el-descriptions-item><el-descriptions-item label="PayPal Order ID">{{ activeOrder.paypalOrderId || '—' }}</el-descriptions-item><el-descriptions-item label="Capture ID">{{ activeOrder.captureId || '—' }}</el-descriptions-item><el-descriptions-item label="退款状态">{{ activeOrder.refund.status ? refundLabels[activeOrder.refund.status] : '无退款记录' }}<span v-if="activeOrder.refund.paypalRefundId"> · {{ activeOrder.refund.paypalRefundId }}</span></el-descriptions-item><el-descriptions-item label="退款权益回收">{{ activeOrder.refund.entitlementRevokeStatus || '—' }}</el-descriptions-item><el-descriptions-item label="回调时间">{{ activeOrder.callbackAt ? new Date(activeOrder.callbackAt).toLocaleString('zh-CN', { hour12: false }) : '—' }}</el-descriptions-item><el-descriptions-item label="权益状态">{{ entitlementLabels[activeOrder.entitlement] }}</el-descriptions-item></el-descriptions><section class="drawer-note"><strong>服务端记录</strong><p>{{ activeOrder.note || '暂无异常记录。订单状态由 PayPal 核验结果自动维护。' }}</p><p v-if="activeOrder.refund.errorMessage" class="danger-text">退款错误：{{ activeOrder.refund.errorMessage }}</p></section><div class="drawer-actions"><el-button :loading="verifying === activeOrder.orderNo" @click="verify(activeOrder)"><RefreshCw :size="15" />从 PayPal 重新核验</el-button><el-button v-if="activeOrder.status === 'paid'" type="danger" plain :loading="refunding === activeOrder.orderNo" @click="refund(activeOrder)">发起全额退款</el-button><el-button v-if="activeOrder.status === 'paid'" plain :loading="refunding === activeOrder.orderNo" @click="recordManualRefund(activeOrder)">记录人工退款</el-button><el-button v-if="activeOrder.status === 'paid'" text type="danger" :loading="refunding === activeOrder.orderNo" @click="rejectRefund(activeOrder)">记录拒绝</el-button></div></template></el-drawer>
+    <el-drawer v-model="detailVisible" title="订单详情" size="min(560px, 92vw)"><template v-if="activeOrder"><div class="drawer-heading"><div><span>本地订单号</span><strong>{{ activeOrder.orderNo }}</strong></div><el-tag :type="type(activeOrder.status) as any">{{ labels[activeOrder.status] }}</el-tag></div><el-descriptions :column="1" border class="admin-descriptions"><el-descriptions-item label="短剧">{{ activeOrder.seriesTitle }}</el-descriptions-item><el-descriptions-item label="用户">{{ activeOrder.email || '未提供' }} · {{ activeOrder.country || '未知' }}</el-descriptions-item><el-descriptions-item label="订单金额">${{ activeOrder.amount.toFixed(2) }} {{ activeOrder.currency }}</el-descriptions-item><el-descriptions-item label="手续费 / 净额">${{ activeOrder.fee.toFixed(2) }} / ${{ activeOrder.netAmount.toFixed(2) }}</el-descriptions-item><el-descriptions-item label="支付方式">{{ paymentMethodLabel(activeOrder.paymentMethod) }} · PayPal 收款</el-descriptions-item><el-descriptions-item label="PayPal Order ID">{{ activeOrder.paypalOrderId || '—' }}</el-descriptions-item><el-descriptions-item label="Capture ID">{{ activeOrder.captureId || '—' }}</el-descriptions-item><el-descriptions-item label="退款状态">{{ activeOrder.refund.status ? refundLabels[activeOrder.refund.status] : '无退款记录' }}<span v-if="activeOrder.refund.paypalRefundId"> · {{ activeOrder.refund.paypalRefundId }}</span></el-descriptions-item><el-descriptions-item v-if="activeOrder.refund.amount != null" label="申请退款金额">{{ activeOrder.refund.amount.toFixed(2) }} {{ activeOrder.currency }}</el-descriptions-item><el-descriptions-item label="退款权益回收">{{ activeOrder.refund.entitlementRevokeStatus || '—' }}</el-descriptions-item><el-descriptions-item label="回调时间">{{ activeOrder.callbackAt ? new Date(activeOrder.callbackAt).toLocaleString('zh-CN', { hour12: false }) : '—' }}</el-descriptions-item><el-descriptions-item label="权益状态">{{ entitlementLabels[activeOrder.entitlement] }}</el-descriptions-item></el-descriptions><section class="drawer-note"><strong>服务端记录</strong><p>{{ activeOrder.note || '暂无异常记录。订单状态由 PayPal 核验结果自动维护。' }}</p><p v-if="activeOrder.refund.errorMessage" class="danger-text">退款错误：{{ activeOrder.refund.errorMessage }}</p></section><div class="drawer-actions"><el-button :loading="verifying === activeOrder.orderNo" @click="verify(activeOrder)"><RefreshCw :size="15" />从 PayPal 重新核验</el-button><el-button v-if="activeOrder.status === 'paid'" type="danger" plain :loading="refunding === activeOrder.orderNo" @click="refund(activeOrder)">发起退款</el-button><el-button v-if="activeOrder.status === 'paid'" plain :loading="refunding === activeOrder.orderNo" @click="recordManualRefund(activeOrder)">记录人工退款</el-button><el-button v-if="activeOrder.status === 'paid'" text type="danger" :loading="refunding === activeOrder.orderNo" @click="rejectRefund(activeOrder)">记录拒绝</el-button></div></template></el-drawer>
+    <el-dialog v-model="refundVisible" :title="refundMethod === 'manual' ? '记录人工退款' : '发起退款'" width="min(520px, 92vw)" align-center :close-on-click-modal="false" :close-on-press-escape="!refunding" :show-close="!refunding">
+      <template v-if="refundOrder">
+        <p class="refund-order-number">{{ refundOrder.orderNo }}</p>
+        <el-alert type="warning" show-icon :closable="false" :title="refundMethod === 'manual' ? '仅记录已在 PayPal 商户后台完成的退款。全额或部分退款均会回收此订单的观看权益。' : '全额或部分退款完成后，均会回收此订单的观看权益。'" />
+        <el-form label-position="top" class="refund-form" :disabled="Boolean(refunding)" @submit.prevent="submitRefund">
+          <el-form-item label="订单金额"><strong>{{ refundOrder.amount.toFixed(2) }} {{ refundOrder.currency }}</strong></el-form-item>
+          <el-form-item label="退款金额" :error="refundSubmitted ? refundAmountError : ''" required>
+            <el-input v-model="refundAmount" aria-label="退款金额" inputmode="decimal" :disabled="refundAmountLocked" placeholder="0.00"><template #append>{{ refundOrder.currency }}</template></el-input>
+            <span v-if="refundAmountLocked" class="refund-field-note">已提交的退款金额已锁定</span>
+            <el-button v-else link type="primary" @click="refundAmount = refundOrder.amount.toFixed(2)">全额退款</el-button>
+          </el-form-item>
+          <el-form-item label="退款原因" :error="refundSubmitted ? refundReasonError : ''" required>
+            <el-input v-model="refundReason" aria-label="退款原因" type="textarea" :rows="3" :maxlength="500" show-word-limit placeholder="至少 8 个字符" />
+          </el-form-item>
+        </el-form>
+      </template>
+      <template #footer><el-button :disabled="Boolean(refunding)" @click="refundVisible = false">取消</el-button><el-button type="primary" :loading="Boolean(refunding)" @click="submitRefund">{{ refundMethod === 'manual' ? '记录已完成' : '确认退款' }}</el-button></template>
+    </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.refund-order-number { margin: 0 0 16px; overflow-wrap: anywhere; }
+.refund-form { margin-top: 20px; }
+.refund-field-note { color: var(--el-text-color-secondary); font-size: 13px; }
+</style>

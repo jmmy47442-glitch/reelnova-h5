@@ -7,14 +7,16 @@ import test from 'node:test';
 import ts from 'typescript';
 import * as checkout from '../server/utils/paypal-checkout.ts';
 import * as paymentState from '../server/utils/paypal-payment-state.ts';
+import * as refundAmount from '../shared/refund-amount.ts';
 
 const createError = ({ statusMessage, ...data }) => Object.assign(new Error(statusMessage), data);
-function harness({ afterCreate, beforeRead, afterCapture } = {}) {
+function harness({ afterCreate, beforeRead, afterCapture, afterRefund } = {}) {
   const database = new DatabaseSync(':memory:');
   const directory = new URL('../migrations/', import.meta.url);
   for (const file of readdirSync(directory).filter((name) => name.endsWith('.sql')).sort()) database.exec(readFileSync(new URL(file, directory), 'utf8'));
   database.exec("INSERT INTO users (user_id, email, created_at, updated_at, last_seen_at) VALUES ('u', 'u@example.com', 'now', 'now', 'now')");
   const providerOrders = new Map(); let providerCreates = 0; let providerCaptures = 0;
+  const providerRefunds = new Map();
   const d1 = {
     d1First: async (_event, sql, params = []) => database.prepare(sql).get(...params) || null,
     d1All: async (_event, sql, params = []) => database.prepare(sql).all(...params),
@@ -23,6 +25,17 @@ function harness({ afterCreate, beforeRead, afterCapture } = {}) {
   };
   const providerFetch = async (url, options) => {
     if (url.endsWith('/token')) return { access_token: 'test-access-token' };
+    if (url.includes('/v2/payments/captures/') && url.endsWith('/refund')) {
+      const key = options.headers['PayPal-Request-Id'];
+      if (!providerRefunds.has(key)) providerRefunds.set(key, { id: `REF-${key}`, status: 'COMPLETED', amount: options.body.amount });
+      const refund = providerRefunds.get(key);
+      assert.deepEqual(refund.amount, options.body.amount);
+      await afterRefund?.(refund);
+      return refund;
+    }
+    if (url.includes('/v2/payments/refunds/')) {
+      return [...providerRefunds.values()].find((refund) => url.endsWith(encodeURIComponent(refund.id)));
+    }
     if (url.endsWith('/v2/checkout/orders')) {
       providerCreates++;
       const key = options.headers['PayPal-Request-Id'];
@@ -53,6 +66,9 @@ function harness({ afterCreate, beforeRead, afterCapture } = {}) {
     '~/server/utils/user-profile': { upsertUserProfile: async () => {}, assertUserEnabled: async () => {} },
     '~/server/utils/system-config': { getSystemConfig: async (_e, _k, fallback) => fallback, saveSystemConfig: async () => {} },
     '~/server/utils/paypal-payment-state': paymentState,
+    '~/shared/refund-amount': refundAmount,
+    '~/server/utils/admin-rbac': { requireAdminPermission: () => ({ email: 'admin@example.com' }) },
+    '~/server/utils/admin-audit': { recordAdminAudit: async () => {} },
     './paypal-checkout': checkout,
     ofetch: { ofetch: providerFetch },
     '~/server/utils/response': { ok: (data) => ({ data }) },
@@ -66,6 +82,7 @@ function harness({ afterCreate, beforeRead, afterCapture } = {}) {
     runInNewContext(code, {
       exports, require: (name) => { if (!imports[name]) throw new Error(`Unexpected import ${name}`); return imports[name]; },
       createError, defineEventHandler: (fn) => fn, readBody: async (event) => event.body,
+      getRouterParam: (event, name) => event.params?.[name],
       getQuery: (event) => event.query || {}, sendRedirect: (_event, location, statusCode) => ({ location, statusCode }),
       getRequestURL: () => new URL('https://example.com'), crypto: { randomUUID },
       useRuntimeConfig: () => ({ paypalEnvironment: 'sandbox', paypalClientId: 'test', paypalSecret: 'test', public: { paypalClientId: 'test' } }),
@@ -76,6 +93,7 @@ function harness({ afterCreate, beforeRead, afterCapture } = {}) {
   imports['~/server/utils/paypal'] = load('server/utils/paypal.ts');
   return {
     db: database, providerOrders, creates: () => providerCreates, captures: () => providerCaptures,
+    providerRefunds, refund: load('server/api/admin/orders/[orderNo]/refund.post.ts').default,
     create: load('server/api/orders/index.post.ts').default,
     capture: load('server/api/paypal/capture.post.ts').default,
     cancel: load('server/api/paypal/cancel.post.ts').default,
@@ -83,6 +101,78 @@ function harness({ afterCreate, beforeRead, afterCapture } = {}) {
     paypal: imports['~/server/utils/paypal'],
   };
 }
+async function paidOrder(h) {
+  const order = (await h.create({ body: { seriesId: 's', paymentMethod: 'card' } })).data;
+  h.providerOrders.get(order.paypalOrderId).status = 'APPROVED';
+  await h.capture({ body: { paypalOrderId: order.paypalOrderId } });
+  return order;
+}
+
+for (const amount of ['0.01', '2.35', '9.99', undefined]) test(`admin refund amount ${amount ?? 'default full'} reaches PayPal and persists through replay`, async () => {
+  const h = harness();
+  try {
+    const order = await paidOrder(h);
+    const event = { params: { orderNo: order.orderNo }, body: { reason: 'Customer requested refund', ...(amount === undefined ? {} : { amount }) } };
+    assert.equal((await h.refund(event)).data.status, 'refunded');
+    assert.equal([...h.providerRefunds.values()][0].amount.value, amount ?? '9.99');
+    assert.equal(h.db.prepare('SELECT amount_cents FROM refund_requests').get().amount_cents, Math.round(Number(amount ?? '9.99') * 100));
+    assert.equal(h.db.prepare('SELECT status FROM entitlements').get().status, 'revoked');
+    assert.match(h.db.prepare("SELECT detail FROM refund_events WHERE event_type = 'refund_requested'").get().detail, /amount=/);
+    await h.refund(event);
+    assert.equal(h.providerRefunds.size, 1);
+  } finally { h.db.close(); }
+});
+
+test('invalid refund amounts are rejected before provider calls or database writes', async () => {
+  const h = harness();
+  try {
+    const order = await paidOrder(h);
+    for (const amount of [0, -1, '10.00', '1.001', '', 'NaN', 'Infinity', '1e0', null, {}, true]) {
+      await assert.rejects(h.refund({ params: { orderNo: order.orderNo }, body: { amount, reason: 'Customer requested refund' } }), (error) => error.statusCode === 400);
+    }
+    assert.equal(h.providerRefunds.size, 0);
+    assert.equal(h.db.prepare('SELECT COUNT(*) AS count FROM refund_requests').get().count, 0);
+    assert.equal(h.db.prepare('SELECT status FROM orders').get().status, 'paid');
+  } finally { h.db.close(); }
+});
+
+test('manual partial refund records the selected amount without calling PayPal', async () => {
+  const h = harness();
+  try {
+    const order = await paidOrder(h);
+    await h.refund({ params: { orderNo: order.orderNo }, body: { amount: '3.50', reason: 'Merchant portal refund completed', method: 'manual', providerStatus: 'COMPLETED' } });
+    assert.equal(h.providerRefunds.size, 0);
+    assert.equal(h.db.prepare('SELECT amount_cents FROM refund_requests').get().amount_cents, 350);
+    assert.equal(h.db.prepare('SELECT status FROM entitlements').get().status, 'revoked');
+  } finally { h.db.close(); }
+});
+
+test('refund retry after an uncertain provider response keeps the amount and idempotency key', async () => {
+  let fail = true;
+  const h = harness({ afterRefund: () => { if (fail) throw new Error('Connection interrupted'); } });
+  try {
+    const order = await paidOrder(h);
+    const event = { params: { orderNo: order.orderNo }, body: { amount: '2.35', reason: 'Customer requested refund' } };
+    await assert.rejects(h.refund(event));
+    await assert.rejects(h.refund({ ...event, body: { ...event.body, amount: '4.00' } }), (error) => error.statusCode === 409);
+    fail = false;
+    assert.equal((await h.refund(event)).data.status, 'refunded');
+    assert.equal(h.providerRefunds.size, 1);
+    assert.equal(h.db.prepare('SELECT amount_cents FROM refund_requests').get().amount_cents, 235);
+  } finally { h.db.close(); }
+});
+
+test('concurrent refund submissions with different amounts cannot overwrite the winning request', async () => {
+  const h = harness();
+  try {
+    const order = await paidOrder(h);
+    const results = await Promise.allSettled(['2.00', '3.00'].map((amount) => h.refund({ params: { orderNo: order.orderNo }, body: { amount, reason: 'Customer requested refund' } })));
+    assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+    assert.equal(h.providerRefunds.size, 1);
+    assert.equal(h.db.prepare('SELECT amount_cents FROM refund_requests').get().amount_cents, Number([...h.providerRefunds.values()][0].amount.value) * 100);
+  } finally { h.db.close(); }
+});
+
 for (const method of ['paypal', 'card', 'apple_pay']) test(`${method}: trusted order, retry, capture, webhook replay and refund`, async () => {
   const h = harness();
   try {
