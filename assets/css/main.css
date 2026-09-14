@@ -393,19 +393,21 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .payment-method { display: inline-flex; min-height: 48px; padding: 8px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text-muted); font-size: 11px; cursor: pointer; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
 .payment-method.is-active { border-color: var(--signal); color: var(--text); background: rgba(255,183,95,.12); }
 .payment-method svg { flex: 0 0 auto; }
+.payment-method__brand { display: block; flex: 0 0 auto; object-fit: contain; }
 .payment-method:focus-visible, .apple-pay-button:focus-visible, .checkout-cancel:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; }
 .payment-method:disabled, .apple-pay-button:disabled, .checkout-cancel:disabled { cursor: wait; opacity: .55; }
 .paypal-card-fields { display: grid; gap: 12px; }
 .paypal-card-fields label { display: grid; min-width: 0; gap: 6px; color: var(--text-muted); font-size: 12px; }
-.paypal-card-fields label > span { display: block; position: relative; height: 48px; min-height: 48px; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+.paypal-card-fields label > span { display: block; position: relative; height: 64px; min-height: 64px; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
 .paypal-card-fields label > span iframe { display: block; width: 100% !important; height: 100% !important; min-height: 0 !important; border: 0; }
-.card-fields-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.card-fields-row { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 12px; }
+.card-field-error { margin: 0; color: #f43f5e; font-size: 12px; line-height: 1.5; }
+html[data-theme='light'] .card-field-error { color: #b91c1c; }
 .checkout-hint { display: flex; margin: 10px 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; gap: 8px; }
 .checkout-hint svg { flex-shrink: 0; }
 .checkout-cancel { display: block; min-height: 44px; margin: 8px auto 0; padding: 8px; background: transparent; color: var(--text-muted); text-decoration: underline; }
 .apple-pay-button { display: flex; width: 100%; height: 48px; padding: 0 16px; border: 0; border-radius: 6px; background: #000; color: #fff; cursor: pointer; align-items: center; justify-content: center; }
-.apple-pay-button__content { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 15px; font-weight: 700; }
-.apple-pay-button__content svg { fill: currentColor; }
+.apple-pay-button__logo { display: block; width: 54px; height: 22px; object-fit: contain; }
 .payment-unavailable { display: flex; min-height: 50px; padding: 10px 12px; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; background: rgba(255,255,255,.05); color: #d9dae0; align-items: center; gap: 10px; }
 .payment-unavailable > svg { flex: 0 0 auto; color: #ffb75f; }.payment-unavailable > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }.payment-unavailable strong { font-size: 11px; }.payment-unavailable span { color: #9ea0aa; font-size: 9px; }
 .legal-copy { margin-top: 10px; color: #696671; text-align: center; font-size: 8px; line-height: 1.5; }.legal-copy a { color: var(--signal); text-decoration: underline; text-underline-offset: 2px; }

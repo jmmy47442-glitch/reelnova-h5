@@ -42,10 +42,17 @@ async function scenario(name, options, run) {
           render: async (host) => { const button = document.createElement('button'); button.textContent = 'Mock PayPal checkout'; button.onclick = async () => { try { const orderID = await callbacks.createOrder(); if (window.__testOptions.cancel) await callbacks.onCancel(); else await callbacks.onApprove({ orderID }); } catch (error) { callbacks.onError(error); } }; host.appendChild(button); if (window.__testOptions.slowPayPalRender) await new Promise(() => {}); }, close: () => {},
         }),
         CardFields: (callbacks) => {
+          const getState = () => window.__testOptions.missingCardDetails ? {
+            isFormValid: false, fields: {
+              cardNameField: { isValid: true }, cardNumberField: { isValid: true },
+              cardExpiryField: { isValid: false, isEmpty: true }, cardCvvField: { isValid: false, isEmpty: true },
+            },
+          } : { isFormValid: window.__testOptions.invalidCard !== true };
+          window.__correctCardDetails = () => { window.__testOptions.missingCardDetails = false; callbacks.inputEvents?.onChange?.(getState()); };
           const field = () => ({ render: async (host) => { const input = document.createElement('input'); input.setAttribute('aria-label', 'Hosted field'); host.appendChild(input); }, close: () => {} });
           return { isEligible: () => window.__testOptions.cardEligible !== false,
             NameField: field, NumberField: field, ExpiryField: field, CVVField: field,
-            getState: async () => ({ isFormValid: window.__testOptions.invalidCard !== true }),
+            getState: async () => getState(),
             submit: async () => { window.__submitCount++; const orderID = await callbacks.createOrder(); await callbacks.onApprove({ orderID }); },
           };
         },
@@ -100,9 +107,9 @@ try {
     await page.getByRole('button', { name: 'Credit or debit card', exact: true }).click();
     await page.getByRole('button', { name: 'Pay $9.99 USD', exact: true }).waitFor();
     assert.equal(await page.locator('.paypal-card-fields input').count(), 4);
-    assert.equal(await page.locator('.payment-method svg').count(), 3);
+    assert.equal(await page.locator('.payment-method svg, .payment-method img').count(), 3);
     const cardFieldBox = await page.locator('[data-card-number]').boundingBox();
-    assert.ok(cardFieldBox && cardFieldBox.height <= 50, `card field height was ${cardFieldBox?.height}`);
+    assert.ok(cardFieldBox && cardFieldBox.height >= 64 && cardFieldBox.height <= 70, `card field height was ${cardFieldBox?.height}`);
     await page.screenshot({ path: 'artifacts/screenshots/checkout-card-375.png', fullPage: true });
     await page.getByRole('button', { name: 'Pay $9.99 USD', exact: true }).click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
@@ -114,6 +121,22 @@ try {
     await page.getByRole('button', { name: 'Pay $9.99 USD', exact: true }).click();
     await page.getByRole('alert').filter({ hasText: 'Check your card number' }).waitFor();
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
+  });
+  await scenario('missing expiry and security code explain the problem and recover after correction', { missingCardDetails: true }, async ({ page, calls, captures }) => {
+    await page.getByRole('button', { name: 'Credit or debit card', exact: true }).click();
+    await page.getByRole('button', { name: 'Pay $9.99 USD', exact: true }).click();
+    await page.getByText('Enter a valid expiration date (MM/YY).', { exact: true }).waitFor();
+    await page.getByText('Enter the 3- or 4-digit security code on your card.', { exact: true }).waitFor();
+    assert.equal(await page.locator('.paypal-card-fields label .card-field-error').count(), 2);
+    assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
+    assert.equal(await page.evaluate(() => window.__submitCount), 0);
+    await page.evaluate(() => window.__correctCardDetails());
+    await page.locator('.paypal-card-fields [role="alert"]').waitFor({ state: 'hidden' });
+    assert.equal(await page.locator('.paypal-card-fields label .card-field-error').count(), 0);
+    await page.getByRole('button', { name: 'Pay $9.99 USD', exact: true }).click();
+    await page.getByRole('dialog').waitFor({ state: 'hidden' });
+    assert.equal(calls.filter((call) => call.path === '/api/orders').length, 1);
+    assert.equal(captures(), 1);
   });
   await scenario('slow PayPal rendering does not block card fields', { slowPayPalRender: true }, async ({ page }) => {
     await page.getByRole('button', { name: 'Credit or debit card', exact: true }).click();
@@ -128,7 +151,7 @@ try {
   });
   await scenario('Apple Pay validates merchant, confirms token and captures', {}, async ({ page, calls, captures }) => {
     await page.getByRole('button', { name: 'Apple Pay', exact: true }).click();
-    await page.locator('.apple-pay-button__content svg').waitFor();
+    await page.locator('.apple-pay-button__logo').waitFor();
     await page.getByRole('button', { name: 'Buy with Apple Pay' }).click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
     assert.equal(calls.find((call) => call.path === '/api/orders').body.paymentMethod, 'apple_pay');

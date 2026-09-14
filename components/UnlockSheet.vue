@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Apple, Check, CircleAlert, Clock3, CreditCard, LoaderCircle, ShieldCheck, WalletCards, X } from 'lucide-vue-next';
+import { Check, CircleAlert, Clock3, CreditCard, LoaderCircle, ShieldCheck, X } from 'lucide-vue-next';
 import { useUserAuth } from '~/composables/useUserAuth';
 import { useAnalytics } from '~/composables/useAnalytics';
 import { loadPayPalSdk } from '~/utils/paypal-sdk';
@@ -24,6 +24,9 @@ const busy = ref(false);
 const sdkFailed = ref(false);
 const cardReady = ref(false);
 const cardMessage = ref('');
+const cardValidationAttempted = ref(false);
+const cardValidationMessage = ref('');
+const cardFieldErrors = ref<Record<string, string>>({});
 const appleReady = ref(false);
 const appleMessage = ref('');
 const activeOrder = shallowRef<Order | null>(null);
@@ -156,13 +159,36 @@ const selectMethod = async (method: PaymentMethod) => {
   checkoutKey.value = '';
   error.value = '';
 };
+const validateCardState = (state: any) => {
+  const messages: Record<string, string> = {};
+  const fields = [
+    ['cardNameField', 'name', 'Enter the name shown on your card.'],
+    ['cardNumberField', 'number', 'Enter a valid card number.'],
+    ['cardExpiryField', 'expiry', 'Enter a valid expiration date (MM/YY).'],
+    ['cardCvvField', 'cvv', 'Enter the 3- or 4-digit security code on your card.'],
+  ];
+  if (!state.isFormValid) {
+    for (const [key, field, message] of fields) {
+      if (state.fields?.[key]?.isValid === false) messages[field] = message;
+    }
+  }
+  if (state.errors?.includes('INELIGIBLE_CARD_VENDOR')) {
+    messages.number = 'This card type is not supported for this checkout. Try another card or PayPal.';
+  }
+  cardFieldErrors.value = messages;
+  cardValidationMessage.value = state.isFormValid ? '' : Object.keys(messages).length
+    ? 'Please correct the highlighted card details before paying.'
+    : 'Check your card number, expiration date (MM/YY), security code and name on card.';
+};
 const submitCard = async () => {
   if (!cardReady.value || processing.value) return;
   busy.value = true;
   error.value = '';
   try {
     const state = await cardFields.getState();
-    if (!state.isFormValid) { error.value = 'Check your card number, expiration date and security code.'; return; }
+    cardValidationAttempted.value = true;
+    validateCardState(state);
+    if (!state.isFormValid) return;
     // Hosted fields keep card data out of our server. The SDK also handles 3-D Secure.
     await cardFields.submit();
   } catch (reason) { showFailure(reason, 'Card payment could not be completed. Check your details and try again.'); }
@@ -247,7 +273,8 @@ const initialize = async () => {
     const initializeCardFields = async () => {
       try {
         cardFields = paypal.CardFields?.({
-          style: { input: { 'font-size': '16px', color: '#1f2937' }, '.invalid': { color: '#b91c1c' } },
+          style: { input: { 'font-size': '16px', 'line-height': '24px', padding: '10px', color: '#1f2937' }, '.invalid': { color: '#b91c1c' } },
+          inputEvents: { onChange: (state: any) => { if (cardValidationAttempted.value) validateCardState(state); } },
           createOrder: async () => (await createOrder('card')).paypalOrderId,
           onApprove: ({ orderID }: { orderID: string }) => completePayment(orderID),
           onError: (reason: unknown) => showFailure(reason, 'Card payment could not be completed. Please check your details.'),
@@ -255,7 +282,7 @@ const initialize = async () => {
         if (cardFields?.isEligible()) {
           const definitions = [['NameField', 'name', 'Name on card'], ['NumberField', 'number', 'Card number'], ['ExpiryField', 'expiry', 'MM / YY'], ['CVVField', 'cvv', 'Security code']];
           const fields = definitions.map(([factory, field, label]) => ({
-            hostedField: cardFields[factory]({ placeholder: label, inputEvents: {} }),
+            hostedField: cardFields[factory]({ placeholder: label }),
             container: cardContainer.value!.querySelector(`[data-card-${field}]`),
           }));
           renderedFields.push(...fields.map(({ hostedField }) => hostedField));
@@ -308,6 +335,7 @@ const dispose = () => {
   for (const field of renderedFields) { try { void Promise.resolve(field.close?.()).catch(() => undefined); } catch { /* Detached iframe. */ } }
   renderedFields = []; buttons = null; cardFields = null;
   loading.value = false; cardReady.value = false; appleReady.value = false;
+  cardValidationAttempted.value = false; cardValidationMessage.value = ''; cardFieldErrors.value = {};
 };
 const close = () => { if (!busy.value) emit('close'); };
 watch(() => props.open, (open) => {
@@ -373,11 +401,11 @@ onBeforeUnmount(dispose);
             <div class="paypal-slot" :aria-busy="loading || processing">
               <template v-if="purchasable && paypalAvailable">
                 <div class="payment-methods" role="group" aria-label="Payment method">
-                  <button v-for="(label, method) in methodLabels" :key="method" type="button" :disabled="processing" :aria-pressed="paymentMethod === method" :class="['payment-method', { 'is-active': paymentMethod === method }]" @click="selectMethod(method)">
-                    <WalletCards v-if="method === 'paypal'" :size="16" aria-hidden="true" />
+                  <button v-for="(label, method) in methodLabels" :key="method" type="button" :aria-label="label" :disabled="processing" :aria-pressed="paymentMethod === method" :class="['payment-method', { 'is-active': paymentMethod === method }]" @click="selectMethod(method)">
+                    <img v-if="method === 'paypal'" class="payment-method__brand" src="/payment/paypal-mark.svg" width="20" height="20" alt="" aria-hidden="true" />
                     <CreditCard v-else-if="method === 'card'" :size="16" aria-hidden="true" />
-                    <Apple v-else :size="16" aria-hidden="true" />
-                    <span>{{ label }}</span>
+                    <img v-else class="payment-method__brand" src="/payment/apple-pay-mark.svg" width="44" height="28" alt="" aria-hidden="true" />
+                    <span v-if="method !== 'apple_pay'">{{ label }}</span>
                   </button>
                 </div>
                 <p v-if="loading" class="checkout-hint" role="status"><LoaderCircle class="spin" :size="16" /> Loading secure payment options…</p>
@@ -387,9 +415,13 @@ onBeforeUnmount(dispose);
                 </div>
                 <div v-show="paymentMethod === 'card'">
                   <div v-show="cardReady" ref="cardContainer" class="paypal-card-fields" aria-label="Credit or debit card checkout">
-                    <label>Name on card <span data-card-name /></label>
-                    <label>Card number <span data-card-number /></label>
-                    <div class="card-fields-row"><label>Expiration date <span data-card-expiry /></label><label>Security code <span data-card-cvv /></label></div>
+                    <label>Name on card <span data-card-name /><small v-if="cardFieldErrors.name" class="card-field-error">{{ cardFieldErrors.name }}</small></label>
+                    <label>Card number <span data-card-number /><small v-if="cardFieldErrors.number" class="card-field-error">{{ cardFieldErrors.number }}</small></label>
+                    <div class="card-fields-row">
+                      <label>Expiration date <span data-card-expiry /><small v-if="cardFieldErrors.expiry" class="card-field-error">{{ cardFieldErrors.expiry }}</small></label>
+                      <label>Security code <span data-card-cvv /><small v-if="cardFieldErrors.cvv" class="card-field-error">{{ cardFieldErrors.cvv }}</small></label>
+                    </div>
+                    <p v-if="cardValidationMessage" class="card-field-error" role="alert">{{ cardValidationMessage }}</p>
                     <button class="button button--primary button--wide" type="button" :disabled="!cardReady || processing" @click="submitCard"><LoaderCircle v-if="busy" class="spin" :size="16" /> {{ busy ? 'Processing…' : `Pay ${formatPrice(series.price)} USD` }}</button>
                     <p class="checkout-hint">Visa, Mastercard and other supported credit or debit cards. No PayPal account required.</p>
                   </div>
@@ -397,7 +429,7 @@ onBeforeUnmount(dispose);
                 </div>
                 <div v-show="paymentMethod === 'apple_pay'">
                   <button v-if="appleReady" class="apple-pay-button" type="button" aria-label="Buy with Apple Pay" :disabled="processing" @click="startApplePay">
-                    <span class="apple-pay-button__content" aria-hidden="true"><Apple :size="19" /><span>Pay</span></span>
+                    <img class="apple-pay-button__logo" src="/payment/apple-pay-logo-white.svg" width="54" height="22" alt="" aria-hidden="true" />
                   </button>
                   <p v-if="appleMessage" class="checkout-hint" role="status">{{ appleMessage }}</p>
                 </div>
