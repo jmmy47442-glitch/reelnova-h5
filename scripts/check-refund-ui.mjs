@@ -11,10 +11,12 @@ try {
     const submissions = [];
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
+    page.on('console', (message) => { if (message.type() === 'error') console.log(message.text()); });
+    page.on('requestfailed', (request) => console.log('Request failed:', request.url(), request.failure()));
     const order = {
       orderNo: 'RN-20260914-1789386400525-25363c', seriesId: 's', seriesTitle: 'Refund Test Series', email: 'test@example.com', country: 'US',
       amount: 9.99, currency: 'USD', fee: 0.4, netAmount: 9.59, status: 'paid', paypalOrderId: 'PP-TEST', captureId: 'CAP-TEST',
-      paymentMethod: 'apple_pay', createdAt: new Date().toISOString(), callbackAt: null, entitlement: 'granted', refund: { status: null, amount: null }, note: null,
+      paymentMethod: 'apple_pay', createdAt: new Date().toISOString(), callbackAt: null, entitlement: 'granted', refund: { status: 'failed', amount: 9.99 }, note: null,
     };
     await page.route('**/api/**', async (route) => {
       const path = new URL(route.request().url()).pathname;
@@ -28,10 +30,19 @@ try {
       else return route.fulfill({ status: 404, json: { message: 'Unexpected mock request' } });
       await route.fulfill({ json: { data } });
     });
+    // Serve the public SPA shell; all API traffic remains mocked, including authentication.
+    await page.route(`${baseURL}/admin/orders`, async (route) => {
+      const response = await route.fetch({ url: `${baseURL}/admin/login` });
+      await route.fulfill({ response });
+    });
     await page.goto(`${baseURL}/admin/orders`);
-    await page.getByRole('button', { name: '退款', exact: true }).click();
+    await page.getByRole('button', { name: '退款', exact: true }).click({ timeout: 10000 }).catch(async (error) => {
+      console.log({ url: page.url(), errors, body: await page.locator('body').innerText() });
+      throw error;
+    });
     const dialog = page.getByRole('dialog', { name: '发起退款', exact: true });
     const amount = dialog.getByRole('textbox', { name: '退款金额', exact: true });
+    assert.equal(await amount.isEnabled(), true);
     assert.equal(await amount.inputValue(), '9.99');
     await dialog.getByRole('textbox', { name: '退款原因', exact: true }).fill('Customer requested partial refund');
     for (const invalid of ['0', '-1', '10.00', '1.001', '']) {

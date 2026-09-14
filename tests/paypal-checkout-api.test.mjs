@@ -10,7 +10,7 @@ import * as paymentState from '../server/utils/paypal-payment-state.ts';
 import * as refundAmount from '../shared/refund-amount.ts';
 
 const createError = ({ statusMessage, ...data }) => Object.assign(new Error(statusMessage), data);
-function harness({ afterCreate, beforeRead, afterCapture, afterRefund } = {}) {
+function harness({ afterCreate, beforeRead, afterCapture, beforeRefund, afterRefund } = {}) {
   const database = new DatabaseSync(':memory:');
   const directory = new URL('../migrations/', import.meta.url);
   for (const file of readdirSync(directory).filter((name) => name.endsWith('.sql')).sort()) database.exec(readFileSync(new URL(file, directory), 'utf8'));
@@ -26,6 +26,7 @@ function harness({ afterCreate, beforeRead, afterCapture, afterRefund } = {}) {
   const providerFetch = async (url, options) => {
     if (url.endsWith('/token')) return { access_token: 'test-access-token' };
     if (url.includes('/v2/payments/captures/') && url.endsWith('/refund')) {
+      await beforeRefund?.(options);
       const key = options.headers['PayPal-Request-Id'];
       if (!providerRefunds.has(key)) providerRefunds.set(key, { id: `REF-${key}`, status: 'COMPLETED', amount: options.body.amount });
       const refund = providerRefunds.get(key);
@@ -159,6 +160,63 @@ test('refund retry after an uncertain provider response keeps the amount and ide
     assert.equal((await h.refund(event)).data.status, 'refunded');
     assert.equal(h.providerRefunds.size, 1);
     assert.equal(h.db.prepare('SELECT amount_cents FROM refund_requests').get().amount_cents, 235);
+  } finally { h.db.close(); }
+});
+
+test('a rejected refund can be retried with a new amount and a new provider request ID', async () => {
+  let reject = true;
+  const keys = [];
+  const h = harness({ beforeRefund: (options) => {
+    keys.push(options.headers['PayPal-Request-Id']);
+    if (reject) throw Object.assign(new Error('Refund rejected'), { statusCode: 422, data: { details: [{ issue: 'INSUFFICIENT_FUNDS' }] } });
+  } });
+  try {
+    const order = await paidOrder(h);
+    const event = { params: { orderNo: order.orderNo }, body: { amount: '9.99', reason: 'Customer requested refund' } };
+    await assert.rejects(h.refund(event));
+    assert.equal(h.db.prepare('SELECT provider_status FROM refund_requests').get().provider_status, 'REQUEST_REJECTED');
+    reject = false;
+    await h.refund({ ...event, body: { ...event.body, amount: '0.50' } });
+    assert.notEqual(keys[0], keys[1]);
+    assert.equal([...h.providerRefunds.values()][0].amount.value, '0.50');
+    assert.equal(h.db.prepare('SELECT amount_cents FROM refund_requests').get().amount_cents, 50);
+    assert.match(h.db.prepare("SELECT detail FROM refund_events WHERE event_type = 'refund_amount_changed'").get().detail, /9.99 -> 0.50/);
+  } finally { h.db.close(); }
+});
+
+test('legacy failed requests with explicit PayPal rejection allow amount changes', async () => {
+  const h = harness();
+  try {
+    const order = await paidOrder(h);
+    h.db.prepare(`INSERT INTO refund_requests (id, order_no, capture_id, amount_cents, status, reason, requested_by, created_at, updated_at, attempt_count, provider_request_id, error_message)
+      VALUES ('legacy-refund', ?, ?, 999, 'failed', 'Customer requested refund', 'admin', 'now', 'now', 1, 'old-key', 'PayPal rejected the refund request: INSUFFICIENT_FUNDS')`).run(order.orderNo, `CAP-${order.paypalOrderId}`);
+    await h.refund({ params: { orderNo: order.orderNo }, body: { amount: '0.50', reason: 'Customer requested partial refund' } });
+    assert.equal(h.db.prepare('SELECT amount_cents FROM refund_requests').get().amount_cents, 50);
+    assert.equal([...h.providerRefunds.values()][0].amount.value, '0.50');
+  } finally { h.db.close(); }
+});
+
+for (const providerStatus of ['FAILED', 'PENDING', 'COMPLETED']) test(`changing a failed refund amount reconciles provider status ${providerStatus}`, async () => {
+  let first = true;
+  const h = harness({ afterRefund: (refund) => {
+    if (first) { refund.status = 'FAILED'; first = false; }
+  } });
+  try {
+    const order = await paidOrder(h);
+    const event = { params: { orderNo: order.orderNo }, body: { amount: '9.99', reason: 'Customer requested refund' } };
+    await h.refund(event);
+    [...h.providerRefunds.values()][0].status = providerStatus;
+    const changed = { ...event, body: { ...event.body, amount: '0.50' } };
+    if (providerStatus === 'FAILED') {
+      await h.refund(changed);
+      assert.equal(h.providerRefunds.size, 2);
+      assert.equal(h.db.prepare('SELECT amount_cents FROM refund_requests').get().amount_cents, 50);
+    } else {
+      await assert.rejects(h.refund(changed), (error) => error.statusCode === 409);
+      assert.equal(h.providerRefunds.size, 1);
+      assert.equal(h.db.prepare('SELECT amount_cents FROM refund_requests').get().amount_cents, 999);
+      assert.equal(h.db.prepare('SELECT status FROM orders').get().status, providerStatus === 'PENDING' ? 'refunding' : 'refunded');
+    }
   } finally { h.db.close(); }
 });
 

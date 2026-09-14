@@ -27,7 +27,6 @@ const refundAmountError = computed(() => {
     ? '退款金额须大于 0，最多两位小数，且不超过订单金额' : '';
 });
 const refundReasonError = computed(() => refundReason.value.trim().length < 8 || refundReason.value.trim().length > 500 ? '退款原因需为 8-500 个字符' : '');
-const refundAmountLocked = computed(() => Boolean(refundOrder.value?.refund.status && refundOrder.value.refund.status !== 'rejected'));
 const statusOptions: Array<{ label: string; value: PersistedOrderStatus | '' }> = [
   { label: '全部状态', value: '' }, { label: '已支付', value: 'paid' }, { label: '处理中', value: 'processing' }, { label: '待支付', value: 'pending' },
   { label: '支付失败', value: 'failed' }, { label: '退款中', value: 'refunding' }, { label: '已退款', value: 'refunded' }, { label: '风控审核', value: 'risk_review' },
@@ -83,7 +82,7 @@ const submitRefund = async () => {
     await refresh();
     if (activeOrder.value?.orderNo === order.orderNo) activeOrder.value = data.value?.items.find((item) => item.orderNo === order.orderNo) || activeOrder.value;
   } catch (reason: any) {
-    ElMessage.error(reason?.data?.statusMessage || '退款提交失败');
+    ElMessage.error(reason?.data?.data?.message || reason?.data?.statusMessage || '退款提交失败');
   } finally { refunding.value = ''; }
 };
 const rejectRefund = async (order: PersistedOrder) => {
@@ -128,9 +127,8 @@ const exportOrders = () => {
         <el-form label-position="top" class="refund-form" :disabled="Boolean(refunding)" @submit.prevent="submitRefund">
           <el-form-item label="订单金额"><strong>{{ refundOrder.amount.toFixed(2) }} {{ refundOrder.currency }}</strong></el-form-item>
           <el-form-item label="退款金额" :error="refundSubmitted ? refundAmountError : ''" required>
-            <el-input v-model="refundAmount" aria-label="退款金额" inputmode="decimal" :disabled="refundAmountLocked" placeholder="0.00"><template #append>{{ refundOrder.currency }}</template></el-input>
-            <span v-if="refundAmountLocked" class="refund-field-note">已提交的退款金额已锁定</span>
-            <el-button v-else link type="primary" @click="refundAmount = refundOrder.amount.toFixed(2)">全额退款</el-button>
+            <el-input v-model="refundAmount" aria-label="退款金额" inputmode="decimal" placeholder="0.00"><template #append>{{ refundOrder.currency }}</template></el-input>
+            <el-button link type="primary" @click="refundAmount = refundOrder.amount.toFixed(2)">全额退款</el-button>
           </el-form-item>
           <el-form-item label="退款原因" :error="refundSubmitted ? refundReasonError : ''" required>
             <el-input v-model="refundReason" aria-label="退款原因" type="textarea" :rows="3" :maxlength="500" show-word-limit placeholder="至少 8 个字符" />
@@ -145,5 +143,4 @@ const exportOrders = () => {
 <style scoped>
 .refund-order-number { margin: 0 0 16px; overflow-wrap: anywhere; }
 .refund-form { margin-top: 20px; }
-.refund-field-note { color: var(--el-text-color-secondary); font-size: 13px; }
 </style>

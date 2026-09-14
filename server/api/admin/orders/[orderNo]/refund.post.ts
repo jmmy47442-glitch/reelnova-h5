@@ -13,7 +13,9 @@ import { recordAdminAudit } from '~/server/utils/admin-audit';
 import { parseRefundAmountCents } from '~/shared/refund-amount';
 
 interface RefundOrder { order_no: string; status: string; capture_id: string | null; amount_cents: number; currency: string; paypal_environment: PayPalEnvironment | null }
-interface ExistingRefund { id: string; paypal_refund_id: string | null; status: string; amount_cents: number; request_source: string; attempt_count: number; provider_request_id: string | null }
+interface ExistingRefund { id: string; paypal_refund_id: string | null; status: string; amount_cents: number; request_source: string; attempt_count: number; provider_request_id: string | null; provider_status: string | null; error_message: string | null }
+
+const refundConflict = (message: string) => createError({ statusCode: 409, statusMessage: 'Refund requires reconciliation', data: { message } });
 
 const assertReason = (reason: unknown) => {
   const value = typeof reason === 'string' ? reason.trim() : '';
@@ -32,17 +34,40 @@ export default defineEventHandler(async (event) => {
   if (method === 'manual' && !['PENDING', 'COMPLETED', 'FAILED', 'CANCELLED'].includes(providerStatus)) throw createError({ statusCode: 400, statusMessage: 'Manual refund requires providerStatus PENDING, COMPLETED, FAILED or CANCELLED' });
   const order = await d1First<RefundOrder>(event, 'SELECT order_no, status, capture_id, amount_cents, currency, paypal_environment FROM orders WHERE order_no = ?', [orderNo]);
   if (!order) throw createError({ statusCode: 404, statusMessage: 'Order not found' });
-  const existing = await d1First<ExistingRefund>(event, 'SELECT id, paypal_refund_id, status, amount_cents, request_source, attempt_count, provider_request_id FROM refund_requests WHERE order_no = ? ORDER BY created_at DESC LIMIT 1', [orderNo]);
+  let existing = await d1First<ExistingRefund>(event, 'SELECT id, paypal_refund_id, status, amount_cents, request_source, attempt_count, provider_request_id, provider_status, error_message FROM refund_requests WHERE order_no = ? ORDER BY created_at DESC LIMIT 1', [orderNo]);
   const amountCents = body?.amount === undefined ? Number(existing?.amount_cents ?? order.amount_cents) : parseRefundAmountCents(body.amount);
   if (amountCents === null || amountCents > Number(order.amount_cents)) throw createError({ statusCode: 400, statusMessage: 'Refund amount must be positive, have at most 2 decimal places and not exceed the order amount' });
   const amount = (amountCents / 100).toFixed(2);
-  // Reusing a PayPal request ID must always reuse its original amount, even after a timeout.
-  const canChangeAmount = existing?.status === 'rejected' && !existing.provider_request_id && !existing.paypal_refund_id && !existing.attempt_count;
-  if (existing && amountCents !== Number(existing.amount_cents) && !canChangeAmount) throw createError({ statusCode: 409, statusMessage: 'Refund amount is locked to the original request; refresh the order and retry' });
+  const amountChanged = Boolean(existing && amountCents !== Number(existing.amount_cents));
+  if (amountChanged && method === 'reject') throw refundConflict('记录拒绝不应修改退款金额。');
+  if (amountChanged && (existing?.status === 'completed' || order.status === 'refunded')) throw refundConflict('此订单已完成退款，请刷新订单查看实际退款金额。');
   if (existing?.status === 'completed' || order.status === 'refunded') return ok({ orderNo, status: 'refunded' as const, synchronized: true, refundRequestId: existing?.id });
   if (!['paid', 'refunding'].includes(order.status) && method !== 'reject') throw createError({ statusCode: 409, statusMessage: 'Only captured paid orders can be refunded' });
   if (!order.capture_id) throw createError({ statusCode: 409, statusMessage: 'Order has no PayPal Capture ID' });
   if (method === 'paypal_api') await requirePayPalConfiguration(event, order.paypal_environment || undefined);
+
+  let replacementProviderRequestId: string | null = null;
+  if (existing && amountChanged && method !== 'reject') {
+    if (['pending', 'processing'].includes(existing.status)) {
+      throw refundConflict('上一笔退款仍在处理中，请先核验退款结果后再提交新金额。');
+    }
+    if (existing.paypal_refund_id) {
+      const previous = await getPayPalRefundDetails(event, existing.paypal_refund_id, order.paypal_environment || undefined);
+      if (!['FAILED', 'CANCELLED', 'DENIED'].includes(previous.status.toUpperCase())) {
+        await applyVerifiedRefund(event, { paypalRefundId: previous.id, captureId: order.capture_id, status: previous.status, source: 'paypal_api', actor: admin.email });
+        throw refundConflict('上一笔退款已受理或已完成，订单已同步，请刷新查看结果。');
+      }
+    } else {
+      const neverSubmitted = !existing.attempt_count && !existing.provider_request_id;
+      // Older records only retained the explicit PayPal rejection in error_message.
+      const rejectedByProvider = existing.provider_status === 'REQUEST_REJECTED'
+        || /^PayPal rejected the configured credentials/.test(existing.error_message || '')
+        || /^PayPal rejected the refund request: (?:REFUND_AMOUNT_EXCEEDED|REFUND_NOT_ALLOWED|INVALID_PARAMETER_VALUE|INVALID_REQUEST|INSUFFICIENT_FUNDS|PERMISSION_DENIED|RESOURCE_NOT_FOUND)(?:;|$)/.test(existing.error_message || '');
+      if (!neverSubmitted && !rejectedByProvider) throw refundConflict('上一笔退款结果尚未确认，可能已被 PayPal 受理。请先按原金额重试或核验订单，再修改金额。');
+    }
+    // A changed amount is a new provider operation and must not reuse the old idempotency key.
+    replacementProviderRequestId = crypto.randomUUID();
+  }
 
   const now = new Date().toISOString();
   const requestId = existing?.id || `refund_${orderNo}`;
@@ -61,16 +86,25 @@ export default defineEventHandler(async (event) => {
     }
   } else {
     const updated = await d1First<{ id: string }>(event, `UPDATE refund_requests SET status = ?, request_source = ?, customer_service_result = ?, reason = ?, requested_by = ?,
-      resolution_note = ?, error_message = NULL, updated_at = ?, amount_cents = ?
+      resolution_note = ?, error_message = NULL, updated_at = ?, amount_cents = ?,
+      provider_request_id = COALESCE(?, provider_request_id),
+      paypal_refund_id = CASE WHEN ? IS NOT NULL THEN NULL ELSE paypal_refund_id END,
+      provider_status = CASE WHEN ? IS NOT NULL THEN NULL ELSE provider_status END
       WHERE id = ? AND status = ? AND amount_cents = ? AND attempt_count = ? RETURNING id`, [
       method === 'reject' ? 'rejected' : 'pending', method === 'paypal_api' ? 'paypal_api' : 'manual', method === 'reject' ? 'rejected' : 'approved',
-      reason, admin.email, method === 'reject' ? '客服拒绝退款申请' : null, now, amountCents, requestId, existing.status, existing.amount_cents, existing.attempt_count,
+      reason, admin.email, method === 'reject' ? '客服拒绝退款申请' : null, now, amountCents,
+      replacementProviderRequestId, replacementProviderRequestId, replacementProviderRequestId,
+      requestId, existing.status, existing.amount_cents, existing.attempt_count,
     ]);
     if (!updated) throw createError({ statusCode: 409, statusMessage: 'Refund request changed; refresh the order and retry' });
+    if (replacementProviderRequestId) {
+      await recordRefundEvent(event, { refundRequestId: requestId, orderNo, eventType: 'refund_amount_changed', source: 'admin', actor: admin.email, fromStatus: existing.status, toStatus: 'pending', paypalRefundId: existing.paypal_refund_id, detail: `${(existing.amount_cents / 100).toFixed(2)} -> ${amount} ${order.currency}; ${reason}` });
+      existing = { ...existing, paypal_refund_id: null, provider_request_id: replacementProviderRequestId };
+    }
   }
 
   if (method === 'reject') {
-    await d1Run(event, 'UPDATE refund_requests SET resolved_by = ?, resolution_note = ?, updated_at = ? WHERE id = ?', [admin.email, reason, now, requestId]);
+    await d1Run(event, "UPDATE refund_requests SET status = 'rejected', resolved_by = ?, resolution_note = ?, updated_at = ? WHERE id = ?", [admin.email, reason, now, requestId]);
     await recordRefundEvent(event, { refundRequestId: requestId, orderNo, eventType: 'customer_service_rejected', source: 'admin', actor: admin.email, fromStatus: existing?.status, toStatus: 'rejected', detail: reason });
     await recordAdminAudit(event, { module: '订单与退款', action: '记录退款拒绝', target: orderNo, detail: reason, risk: '高风险' });
     return ok({ orderNo, refundRequestId: requestId, status: 'rejected' as const, synchronized: false });
@@ -121,7 +155,9 @@ export default defineEventHandler(async (event) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'PayPal refund failed';
     const failedAt = new Date().toISOString();
-    await d1Run(event, "UPDATE refund_requests SET status = 'failed', error_message = ?, updated_at = ? WHERE id = ?", [message, failedAt, requestId]);
+    const providerError = error as { data?: { providerStatus?: number; code?: string } };
+    const rejected = [400, 401, 403, 404, 422].includes(providerError.data?.providerStatus || 0);
+    await d1Run(event, "UPDATE refund_requests SET status = 'failed', error_message = ?, provider_status = ?, updated_at = ? WHERE id = ?", [message, rejected ? 'REQUEST_REJECTED' : 'UNKNOWN', failedAt, requestId]);
     await d1Run(event, "UPDATE orders SET status = 'paid', note = ?, updated_at = ? WHERE order_no = ? AND status = 'refunding'", [`Refund failed: ${message}`, failedAt, orderNo]);
     await recordRefundEvent(event, { refundRequestId: requestId, orderNo, eventType: 'refund_attempt_failed', source: 'paypal_api', actor: admin.email, fromStatus: 'processing', toStatus: 'failed', detail: message });
     await recordAdminAudit(event, { module: '订单与退款', action: '退款失败', target: orderNo, detail: `${reason}; ${message}`, risk: '高风险' });
