@@ -22,6 +22,7 @@ try {
     await page.route('**/api/**', async (route) => {
       const url = new URL(route.request().url());
       const path = url.pathname;
+      if (!path.startsWith('/api/')) return route.continue();
       let data;
       if (path.endsWith('/auth/session')) data = path.startsWith('/api/admin') ? { id: 'admin', name: 'Admin', email: 'admin@example.com', role: 'super_admin' } : { userId: 'u', name: 'Test Customer', email: 'customer@example.com' };
       else if (path === '/api/me/settings') data = { language: 'en', recommendations: true, analytics: true, marketing: false };
