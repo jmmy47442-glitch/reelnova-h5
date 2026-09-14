@@ -299,15 +299,35 @@ test('a rejected refund can be retried with a new amount and a new provider requ
   } finally { h.db.close(); }
 });
 
-test('legacy failed requests with explicit PayPal rejection allow amount changes', async () => {
+for (const issue of ['INSUFFICIENT_FUNDS', 'REFUND_FAILED_INSUFFICIENT_FUNDS']) test(`legacy failed requests with ${issue} allow amount changes`, async () => {
   const h = harness();
   try {
     const order = await paidOrder(h);
     h.db.prepare(`INSERT INTO refund_requests (id, order_no, capture_id, amount_cents, status, reason, requested_by, created_at, updated_at, attempt_count, provider_request_id, error_message)
-      VALUES ('legacy-refund', ?, ?, 999, 'failed', 'Customer requested refund', 'admin', 'now', 'now', 1, 'old-key', 'PayPal rejected the refund request: INSUFFICIENT_FUNDS')`).run(order.orderNo, `CAP-${order.paypalOrderId}`);
+      VALUES ('legacy-refund', ?, ?, 999, 'failed', 'Customer requested refund', 'admin', 'now', 'now', 1, 'old-key', ?)`).run(order.orderNo, `CAP-${order.paypalOrderId}`, `PayPal rejected the refund request: ${issue}`);
     await h.refund({ params: { orderNo: order.orderNo }, body: { amount: '0.50', reason: 'Customer requested partial refund' } });
     assert.equal(h.db.prepare('SELECT amount_cents FROM refund_requests').get().amount_cents, 50);
     assert.equal([...h.providerRefunds.values()][0].amount.value, '0.50');
+  } finally { h.db.close(); }
+});
+
+for (const providerStatus of [null, 'UNKNOWN']) test(`legacy insufficient-funds refund with provider status ${providerStatus} can be verified, cancelled and reapplied`, async () => {
+  const h = harness();
+  try {
+    const order = await paidOrder(h);
+    h.db.prepare(`INSERT INTO refund_requests (id, order_no, capture_id, amount_cents, status, reason, requested_by, created_at, updated_at, attempt_count, provider_request_id, provider_status, error_message)
+      VALUES ('legacy-refund', ?, ?, 100, 'failed', 'Original refund request', 'admin', 'now', 'now', 2, 'old-key', ?, 'PayPal rejected the refund request: REFUND_FAILED_INSUFFICIENT_FUNDS')`).run(order.orderNo, `CAP-${order.paypalOrderId}`, providerStatus);
+    const event = { params: { orderNo: order.orderNo }, context: {} };
+    const verified = (await h.verify(event)).data;
+    assert.equal(verified.refundReconciliationRequired, false);
+    assert.equal(verified.refundStatus, 'failed');
+    assert.equal((await h.refund({ ...event, body: { method: 'cancel', reason: 'Close rejected refund application' } })).data.status, 'cancelled');
+    assert.equal((await h.verify(event)).data.refundStatus, 'cancelled');
+    assert.equal(h.providerRefunds.size, 0);
+    assert.equal(h.db.prepare('SELECT status FROM entitlements').get().status, 'granted');
+    await h.refund({ ...event, body: { amount: '0.66', reason: 'Reapply for partial refund' } });
+    assert.equal([...h.providerRefunds.values()][0].amount.value, '0.66');
+    assert.notEqual([...h.providerRefunds.keys()][0], 'old-key');
   } finally { h.db.close(); }
 });
 

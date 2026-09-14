@@ -11,13 +11,10 @@ import {
 import { requireAdminPermission } from '~/server/utils/admin-rbac';
 import { recordAdminAudit } from '~/server/utils/admin-audit';
 import { parseRefundAmountCents } from '~/shared/refund-amount';
+import { isRejectedPayPalRefundRequest } from '~/server/utils/paypal-payment-state';
 
 interface RefundOrder { order_no: string; status: string; capture_id: string | null; amount_cents: number; currency: string; paypal_environment: PayPalEnvironment | null }
 interface ExistingRefund { id: string; paypal_refund_id: string | null; status: string; amount_cents: number; request_source: string; attempt_count: number; provider_request_id: string | null; provider_status: string | null; error_message: string | null }
-
-const wasRequestRejected = (request: ExistingRefund) => request.provider_status === 'REQUEST_REJECTED'
-  || /^PayPal rejected the configured credentials/.test(request.error_message || '')
-  || /^PayPal rejected the refund request: (?:REFUND_AMOUNT_EXCEEDED|REFUND_NOT_ALLOWED|INVALID_PARAMETER_VALUE|INVALID_REQUEST|INSUFFICIENT_FUNDS|PERMISSION_DENIED|RESOURCE_NOT_FOUND)(?:;|$)/.test(request.error_message || '');
 
 const assertReason = (reason: unknown) => {
   const value = typeof reason === 'string' ? reason.trim() : '';
@@ -60,7 +57,7 @@ export default defineEventHandler(async (event) => {
         await applyVerifiedRefund(event, { paypalRefundId: previous.id, captureId: order.capture_id, status: previous.status, source: 'paypal_api', actor: admin.email });
         throw refundConflict('PayPal 已受理或完成退款，无法取消，订单状态已同步。');
       }
-    } else if ((existing.attempt_count || existing.provider_request_id) && !wasRequestRejected(existing)) {
+    } else if ((existing.attempt_count || existing.provider_request_id) && !isRejectedPayPalRefundRequest(existing)) {
       throw refundConflict('上一笔退款结果尚未确认，暂时无法取消。请先核验退款，或按原申请金额重试。');
     }
     const now = new Date().toISOString();
@@ -87,7 +84,7 @@ export default defineEventHandler(async (event) => {
     } else {
       const neverSubmitted = !existing.attempt_count && !existing.provider_request_id;
       // Older records only retained the explicit PayPal rejection in error_message.
-      const rejectedByProvider = wasRequestRejected(existing);
+      const rejectedByProvider = isRejectedPayPalRefundRequest(existing);
       if (!neverSubmitted && !rejectedByProvider) throw refundConflict('上一笔退款结果尚未确认，可能已被 PayPal 受理。请先按原金额重试或核验订单，再修改金额。');
     }
     // A changed amount is a new provider operation and must not reuse the old idempotency key.

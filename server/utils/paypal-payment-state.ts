@@ -9,6 +9,12 @@ export const isTerminalCaptureFailureStatus = (status: unknown) =>
 
 export const isCancelledPayPalOrderStatus = (status: unknown) => normalizePayPalStatus(status) === 'VOIDED';
 
+// Legacy refund attempts stored PayPal's rejection only in the error message.
+export const isRejectedPayPalRefundRequest = (request: { provider_status: string | null; error_message: string | null }) =>
+  request.provider_status === 'REQUEST_REJECTED'
+  || /^PayPal rejected the configured credentials/.test(request.error_message || '')
+  || /^PayPal rejected the refund request: (?:REFUND_AMOUNT_EXCEEDED|REFUND_NOT_ALLOWED|INVALID_PARAMETER_VALUE|INVALID_REQUEST|INSUFFICIENT_FUNDS|REFUND_FAILED_INSUFFICIENT_FUNDS|PERMISSION_DENIED|RESOURCE_NOT_FOUND)(?:;|$)/.test(request.error_message || '');
+
 export const resolvePayPalRefundReferences = (eventType: string, resource: {
   id?: string;
   supplementary_data?: { related_ids?: { order_id?: string; capture_id?: string; refund_id?: string } };

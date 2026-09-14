@@ -1,12 +1,12 @@
 import { ok } from '~/server/utils/response';
 import { d1First } from '~/server/utils/cloudflare-d1';
 import { applyPayPalPaymentTerminalState, applyVerifiedCapture, applyVerifiedRefund, getPayPalOrderDetails, getPayPalRefundDetails } from '~/server/utils/paypal';
-import { isCancelledPayPalOrderStatus, isTerminalCaptureFailureStatus } from '~/server/utils/paypal-payment-state';
+import { isCancelledPayPalOrderStatus, isRejectedPayPalRefundRequest, isTerminalCaptureFailureStatus } from '~/server/utils/paypal-payment-state';
 import { recordAdminAudit } from '~/server/utils/admin-audit';
 import type { PayPalEnvironment } from '~/server/utils/paypal';
 
 interface OrderLookup { paypal_order_id: string | null; capture_id: string | null; status: string; paypal_environment: PayPalEnvironment | null }
-interface RefundLookup { id: string; paypal_refund_id: string | null; status: string; amount_cents: number; currency: string; attempt_count: number; provider_request_id: string | null; provider_status: string | null }
+interface RefundLookup { id: string; paypal_refund_id: string | null; status: string; amount_cents: number; currency: string; attempt_count: number; provider_request_id: string | null; provider_status: string | null; error_message: string | null }
 
 export default defineEventHandler(async (event) => {
   const orderNo = getRouterParam(event, 'orderNo') || '';
@@ -29,7 +29,7 @@ export default defineEventHandler(async (event) => {
     refundStatus = applied.status;
     refundVerified = true;
   }
-  const refundRequest = await d1First<RefundLookup>(event, 'SELECT id, paypal_refund_id, status, amount_cents, currency, attempt_count, provider_request_id, provider_status FROM refund_requests WHERE order_no = ? ORDER BY created_at DESC LIMIT 1', [orderNo]);
+  const refundRequest = await d1First<RefundLookup>(event, 'SELECT id, paypal_refund_id, status, amount_cents, currency, attempt_count, provider_request_id, provider_status, error_message FROM refund_requests WHERE order_no = ? ORDER BY created_at DESC LIMIT 1', [orderNo]);
   if (!refundVerified && refundRequest?.paypal_refund_id) {
     const refund = await getPayPalRefundDetails(event, refundRequest.paypal_refund_id, order.paypal_environment || undefined);
     const applied = await applyVerifiedRefund(event, { paypalRefundId: refund.id, captureId: order.capture_id, status: refund.status, source: 'admin', actor, detail: `Official refund verification: ${refund.status}` });
@@ -50,8 +50,10 @@ export default defineEventHandler(async (event) => {
       await recordAdminAudit(event, { module: '订单与退款', action: '核验退款状态', target: orderNo, detail: `Recovered PayPal refund ${refund.id}: ${refund.status}`, risk: '高风险' });
     }
   }
+  const refundRejected = Boolean(refundRequest && isRejectedPayPalRefundRequest(refundRequest));
+  if (!refundVerified && refundRejected && refundRequest && ['failed', 'cancelled'].includes(refundRequest.status)) refundStatus = refundRequest.status;
   const refundUnresolved = Boolean(refundRequest && !refundVerified && refundRequest.status !== 'completed'
-    && refundRequest.provider_status !== 'REQUEST_REJECTED' && (refundRequest.attempt_count || refundRequest.provider_request_id));
+    && !refundRejected && (refundRequest.attempt_count || refundRequest.provider_request_id));
   const refundReconciliationRequired = refundUnresolved || refundStatus === 'processing';
   return ok({
     paypalStatus: details.status,
