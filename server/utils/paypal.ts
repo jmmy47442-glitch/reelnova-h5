@@ -205,11 +205,11 @@ export const getPayPalOrderDetails = async (event: H3Event, paypalOrderId: strin
 
 export const refundPayPalCapture = async (event: H3Event, input: { captureId: string; requestId: string; amount: string; currency: string; environment?: PayPalEnvironment }) => {
   const { token, baseUrl } = await accessToken(event, input.environment);
-  return $fetch<PayPalRefundResponse>(`${baseUrl}/v2/payments/captures/${encodeURIComponent(input.captureId)}/refund`, {
+  return paypalRequest<PayPalRefundResponse>(`${baseUrl}/v2/payments/captures/${encodeURIComponent(input.captureId)}/refund`, {
     method: 'POST', timeout: paypalRequestTimeoutMs,
     headers: { Authorization: `Bearer ${token}`, 'PayPal-Request-Id': input.requestId, 'Content-Type': 'application/json' },
     body: { amount: { currency_code: input.currency, value: input.amount } },
-  });
+  }, 'refund');
 };
 
 export const getPayPalRefundDetails = async (event: H3Event, paypalRefundId: string, environment?: PayPalEnvironment) => {
