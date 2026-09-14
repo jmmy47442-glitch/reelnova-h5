@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowLeft, ChevronDown, Clock3, Eye, LockKeyhole, Play, Share2, Star } from 'lucide-vue-next';
+import { ArrowLeft, ChevronDown, Clock3, Eye, LockKeyhole, Play, Star } from 'lucide-vue-next';
 import { useSafeBack } from '~/composables/useSafeBack';
 import { useAnalytics } from '~/composables/useAnalytics';
 import { invalidatePageDataCache, usePageData } from '~/composables/usePageData';
@@ -53,12 +53,6 @@ const handleEpisode = (episodeNo: number, unlocked: boolean) => {
   else if (purchasable.value) { void track('lock_trigger', { seriesId: series.value.id, seriesTitle: series.value.title, episodeNo }); showUnlock.value = true; }
 };
 
-const share = async () => {
-  if (!series.value) return;
-  void track('share', { seriesId: series.value.id, seriesTitle: series.value.title, properties: { source: 'detail' } });
-  await navigator.clipboard?.writeText(window.location.href).catch(() => undefined);
-};
-
 const unlockComplete = async () => {
   locallyUnlocked.value = true;
   showUnlock.value = false;
@@ -73,7 +67,7 @@ const unlockComplete = async () => {
     <EmptyState v-else-if="error || !series" title="Series not available" message="This title may have moved or is not available in your region." action="Go home" @action="navigateTo('/')" />
     <template v-else>
       <section class="detail-hero" :style="{ '--detail-backdrop': `url(${series.backdropUrl})` }">
-        <div class="detail-toolbar"><button class="icon-button icon-button--glass" type="button" aria-label="Go back" @click="goBack"><ArrowLeft :size="21" /></button><button class="icon-button icon-button--glass" type="button" aria-label="Share" @click="share"><Share2 :size="20" /></button></div>
+        <div class="detail-toolbar"><button class="icon-button icon-button--glass" type="button" aria-label="Go back" @click="goBack"><ArrowLeft :size="21" /></button></div>
         <div class="detail-hero__content content-width">
           <span class="content-badge" :class="`badge--${series.badge.toLowerCase()}`">{{ series.badge }}</span>
           <h1>{{ series.title }}</h1>
