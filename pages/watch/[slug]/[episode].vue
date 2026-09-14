@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ArrowLeft, Captions, Check, ChevronRight, Gauge, History, Loader2, LockKeyhole, Maximize2, MoreHorizontal, Pause, Play, RotateCcw, Settings2, Share2, SkipForward, Volume2, VolumeX, X } from 'lucide-vue-next';
+import { ArrowLeft, Check, ChevronRight, Gauge, History, Loader2, LockKeyhole, Maximize2, Minimize2, Pause, Play, RotateCcw, Settings2, SkipForward, X } from 'lucide-vue-next';
 import Hls from 'hls.js';
+import { enterVideoFullscreen, exitVideoFullscreen, type FullscreenDocument } from '~/utils/video-fullscreen';
 import { useSafeBack } from '~/composables/useSafeBack';
 import { useAnalytics } from '~/composables/useAnalytics';
 import { invalidatePageDataCache, usePageData } from '~/composables/usePageData';
@@ -14,8 +15,11 @@ const goBack = useSafeBack(() => `/series/${String(route.params.slug)}`);
 const { track } = useAnalytics();
 const episodeNo = computed(() => Number(route.params.episode || 1));
 const video = ref<HTMLVideoElement | null>(null);
+const player = ref<HTMLElement | null>(null);
+const isFullscreen = ref(false);
+const fullscreenPending = ref(false);
+const fullscreenError = ref('');
 const isPlaying = ref(false);
-const muted = ref(false);
 const showControls = ref(true);
 const showUnlock = ref(false);
 const locallyUnlocked = ref(false);
@@ -626,7 +630,6 @@ const persistSeek = () => {
   seekStartedAt = Date.now();
   if (started.value) void record('heartbeat');
 };
-const toggleMute = () => { muted.value = !muted.value; if (video.value) video.value.muted = muted.value; };
 const cycleSpeed = () => { const values = [1, 1.25, 1.5, 2]; speed.value = values[(values.indexOf(speed.value) + 1) % values.length] || 1; if (video.value) video.value.playbackRate = speed.value; };
 const selectQuality = (value: string) => {
   qualityPreference.value = value === 'auto' || value === 'original'
@@ -666,7 +669,24 @@ const chooseQuality = (value: string) => {
   }
   selectQuality(typeof next === 'number' ? `resolution:${next}` : next);
 };
-const fullscreen = () => { if (video.value?.requestFullscreen) void video.value.requestFullscreen(); };
+const syncFullscreen = () => {
+  const doc = document as FullscreenDocument;
+  isFullscreen.value = Boolean(player.value && (doc.fullscreenElement || doc.webkitFullscreenElement) === player.value);
+  showControls.value = true;
+};
+const fullscreen = async () => {
+  if (!video.value || !player.value || fullscreenPending.value) return;
+  fullscreenError.value = '';
+  fullscreenPending.value = true;
+  try {
+    if (isFullscreen.value) await exitVideoFullscreen(document);
+    else await enterVideoFullscreen(player.value, video.value);
+  } catch {
+    fullscreenError.value = 'Fullscreen could not open. Try again, or open this page in Safari or Chrome.';
+  } finally {
+    fullscreenPending.value = false;
+  }
+};
 const returnToSeries = () => navigateTo(`/series/${String(route.params.slug)}`, { replace: true });
 const nextEpisode = () => {
   if (!series.value || episodeNo.value >= series.value.episodeCount) return;
@@ -677,7 +697,6 @@ const nextEpisode = () => {
   navigateTo(`/watch/${series.value.slug}/${episodeNo.value + 1}`);
 };
 const retry = async () => { playbackError.value = ''; resumeFallbackAttempted.value = false; playRequested.value = true; playbackLoading.value = true; await authorize(); await startPlaybackWhenReady(); };
-const share = async () => { void track('share', { seriesId: series.value?.id, seriesTitle: series.value?.title, episodeNo: episodeNo.value, properties: { source: 'watch' } }); await navigator.clipboard?.writeText(window.location.href).catch(() => undefined); };
 const requestRouteGrant = () => {
   if (initialGrantPromise || initialGrantRequested.value || signedUrl.value) return;
   initialGrantPromise = api.getPlaybackBySlug(String(route.params.slug), episodeNo.value, session());
@@ -773,6 +792,8 @@ onMounted(() => {
   }
   window.addEventListener('pagehide', persistOnExit);
   document.addEventListener('visibilitychange', persistWhenHidden);
+  document.addEventListener('fullscreenchange', syncFullscreen);
+  document.addEventListener('webkitfullscreenchange', syncFullscreen);
   requestRouteGrant();
   requestInitialGrant();
 });
@@ -793,17 +814,19 @@ onBeforeUnmount(() => {
   networkResourceObserver?.disconnect();
   window.removeEventListener('pagehide', persistOnExit);
   document.removeEventListener('visibilitychange', persistWhenHidden);
+  document.removeEventListener('fullscreenchange', syncFullscreen);
+  document.removeEventListener('webkitfullscreenchange', syncFullscreen);
   if (started.value && !video.value?.ended) void record('heartbeat', true);
   hls?.destroy();
 });
 </script>
 
 <template>
-  <main v-if="series && currentEpisode" class="watch-page" @click="showControls = !showControls">
+  <main v-if="series && currentEpisode" ref="player" class="watch-page" @click="showControls = !showControls">
     <div class="watch-visual" :style="{ '--watch-image': `url(${series.backdropUrl})` }" />
     <video v-if="canPlay" ref="video" class="watch-video" :poster="series.backdropUrl" playsinline preload="auto" @click.stop @play="onPlay" @playing="onPlaying" @canplay="onCanPlay" @loadeddata="onLoadedData" @waiting="onWaiting" @pause="onPause" @seeking="onSeeking" @seeked="onSeeked" @timeupdate="onTimeUpdate" @loadedmetadata="onLoadedMetadata" @durationchange="onLoadedMetadata" @progress="onProgress" @emptied="onEmptied" @ended="onEnded" @error="onVideoError" />
     <div class="watch-vignette" />
-    <Transition name="fade"><div v-if="showControls" class="watch-top" @click.stop><button type="button" aria-label="Go back" @click="goBack"><ArrowLeft :size="22" /></button><div><strong>{{ series.title }}</strong><span>Episode {{ episodeNo }} · {{ currentEpisode.title }}</span></div><button type="button" aria-label="Share" @click="share"><Share2 :size="20" /></button><button type="button" aria-label="More"><MoreHorizontal :size="21" /></button></div></Transition>
+    <Transition name="fade"><div v-if="showControls" class="watch-top" @click.stop><button type="button" aria-label="Go back" @click="goBack"><ArrowLeft :size="22" /></button><div><strong>{{ series.title }}</strong><span>Episode {{ episodeNo }} · {{ currentEpisode.title }}</span></div></div></Transition>
     <div v-if="canPlay && playbackLoading && !playbackError && !showResumePrompt" class="watch-loading-overlay" role="status" aria-live="polite" aria-busy="true" @click.stop>
       <div class="watch-loading-overlay__content">
         <Loader2 class="watch-loading-overlay__spinner" :size="34" aria-hidden="true" />
@@ -815,7 +838,7 @@ onBeforeUnmount(() => {
     <section v-if="!canPlay" class="watch-lock" @click.stop><span><LockKeyhole :size="28" /></span><p>Episode {{ episodeNo }} is locked</p><h1>{{ purchasable ? 'Keep the story going' : 'Episode unavailable' }}</h1><button v-if="purchasable" class="button button--primary button--wide" type="button" @click="track('lock_trigger', { seriesId: series.id, seriesTitle: series.title, episodeNo, properties: { source: 'watch_lock' } }); showUnlock = true">Unlock full series</button><button class="watch-lock__secondary" type="button" @click="returnToSeries">Choose another episode</button></section>
     <section v-if="playbackError" class="watch-lock" @click.stop><span><RotateCcw :size="27" /></span><h1>Connection interrupted</h1><p>{{ playbackError }}</p><button class="button button--primary" type="button" @click="retry">Retry playback</button></section>
     <Transition name="resume-modal"><div v-if="showResumePrompt" class="resume-modal-backdrop" @click.stop><section class="resume-modal" role="dialog" aria-modal="true" aria-labelledby="resume-modal-title" aria-describedby="resume-modal-copy" @click.stop @keydown.tab="trapResumePromptFocus" @keydown.esc="dismissResumePrompt"><button ref="resumeCloseButton" class="resume-modal__close" type="button" aria-label="Close continue watching dialog" title="Close" @click="dismissResumePrompt"><X :size="20" /></button><div class="resume-modal__icon"><History :size="22" /></div><p class="resume-modal__eyebrow">Welcome back</p><h2 id="resume-modal-title">Continue watching?</h2><p id="resume-modal-copy" class="resume-modal__copy">Pick up {{ series.title }} where you left off, or start this episode again.</p><div class="resume-modal__progress"><span>Episode {{ episodeNo }}</span><strong>{{ formatTime(resumePromptPosition) }} watched</strong></div><div class="resume-modal__actions"><button ref="resumeContinueButton" class="button button--primary button--wide" type="button" @click="chooseResume('resume')"><Play :size="17" fill="currentColor" />Continue from {{ formatTime(resumePromptPosition) }}</button><button ref="resumeRestartButton" class="button button--secondary button--wide" type="button" @click="chooseResume('restart')"><RotateCcw :size="17" />Start from beginning</button></div></section></div></Transition>
-    <Transition name="fade"><div v-if="showControls && canPlay && signedUrl && !showResumePrompt" class="watch-bottom" @click.stop><div class="watch-progress" :style="{ '--played-progress': `${progress}%` }"><div class="watch-progress__track" aria-hidden="true"><span v-for="(segment, index) in bufferedSegments" :key="index" class="watch-progress__buffered" :style="{ left: `${segment.left}%`, width: `${segment.width}%` }" /><i class="watch-progress__played" /></div><input class="watch-progress-input" type="range" min="0" max="100" step="0.1" :value="progress" :aria-valuetext="`${formatTime(currentTime)} of ${durationLabel}`" aria-label="Seek" @input="seek" @change="persistSeek" /></div><div class="watch-time"><span>{{ formatTime(currentTime) }}</span><span>{{ durationLabel }}</span></div><div class="watch-controls"><button type="button" :aria-label="muted ? 'Unmute' : 'Mute'" @click="toggleMute"><VolumeX v-if="muted" :size="21" /><Volume2 v-else :size="21" /></button><button type="button" aria-label="Captions"><Captions :size="22" /><span>CC</span></button><button type="button" aria-label="Playback speed" @click="cycleSpeed"><Gauge :size="22" /><span>{{ speed }}×</span></button><button ref="qualityTrigger" type="button" class="watch-quality" :class="{ 'is-disabled': !qualityLevels.length && !originalUrl }" :disabled="!qualityLevels.length && !originalUrl" aria-label="Video quality" aria-haspopup="dialog" :aria-expanded="showQualityDrawer" @click="openQualityDrawer"><Settings2 :size="21" aria-hidden="true" /><span>{{ qualityControlLabel }}</span></button><button type="button" aria-label="Fullscreen" @click="fullscreen"><Maximize2 :size="21" /></button><button type="button" aria-label="Next episode" @click="nextEpisode"><SkipForward :size="22" /><span>Next</span></button></div><button v-if="episodeNo < series.episodeCount" class="up-next" type="button" @click="nextEpisode"><span>UP NEXT</span><strong>Episode {{ episodeNo + 1 }}</strong><ChevronRight :size="20" /></button></div></Transition>
+    <Transition name="fade"><div v-if="showControls && canPlay && signedUrl && !showResumePrompt" class="watch-bottom" @click.stop><p v-if="fullscreenError" class="watch-fullscreen-error" role="status">{{ fullscreenError }}</p><div class="watch-progress" :style="{ '--played-progress': `${progress}%` }"><div class="watch-progress__track" aria-hidden="true"><span v-for="(segment, index) in bufferedSegments" :key="index" class="watch-progress__buffered" :style="{ left: `${segment.left}%`, width: `${segment.width}%` }" /><i class="watch-progress__played" /></div><input class="watch-progress-input" type="range" min="0" max="100" step="0.1" :value="progress" :aria-valuetext="`${formatTime(currentTime)} of ${durationLabel}`" aria-label="Seek" @input="seek" @change="persistSeek" /></div><div class="watch-time"><span>{{ formatTime(currentTime) }}</span><span>{{ durationLabel }}</span></div><div class="watch-controls"><PlayerVolumeControl :media="video" /><button type="button" aria-label="Playback speed" @click="cycleSpeed"><Gauge :size="22" /><span>{{ speed }}×</span></button><button ref="qualityTrigger" type="button" class="watch-quality" :class="{ 'is-disabled': !qualityLevels.length && !originalUrl }" :disabled="!qualityLevels.length && !originalUrl" aria-label="Video quality" aria-haspopup="dialog" :aria-expanded="showQualityDrawer" @click="openQualityDrawer"><Settings2 :size="21" aria-hidden="true" /><span>{{ qualityControlLabel }}</span></button><button type="button" :aria-label="isFullscreen ? 'Exit fullscreen' : 'Fullscreen'" :disabled="fullscreenPending" @click="fullscreen"><Minimize2 v-if="isFullscreen" :size="21" /><Maximize2 v-else :size="21" /></button><button type="button" aria-label="Next episode" @click="nextEpisode"><SkipForward :size="22" /><span>Next</span></button></div><button v-if="episodeNo < series.episodeCount" class="up-next" type="button" @click="nextEpisode"><span>UP NEXT</span><strong>Episode {{ episodeNo + 1 }}</strong><ChevronRight :size="20" /></button></div></Transition>
     <Transition name="sheet">
       <div v-if="showQualityDrawer" class="quality-drawer-backdrop" @click.stop="closeQualityDrawer">
         <section ref="qualityDrawer" class="quality-drawer" role="dialog" aria-modal="true" aria-labelledby="quality-drawer-title" @click.stop @keydown.esc.stop="closeQualityDrawer" @keydown.tab="trapQualityFocus">
