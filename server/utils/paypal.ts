@@ -68,12 +68,16 @@ const paypalRequest = async <T>(
     const providerStatus = (error as { statusCode?: number; response?: { status?: number } }).statusCode
       || (error as { response?: { status?: number } }).response?.status;
     if (providerStatus) {
+      const payload = (error as { data?: { name?: string; message?: string; details?: Array<{ issue?: string; description?: string }> }; response?: { _data?: { name?: string; message?: string; details?: Array<{ issue?: string; description?: string }> } } }).data
+        || (error as { response?: { _data?: { name?: string; message?: string; details?: Array<{ issue?: string; description?: string }> } } }).response?._data;
+      const detail = payload?.details?.map((item) => item.issue || item.description).filter(Boolean).join('; ')
+        || payload?.message || payload?.name;
       throw createError({
         statusCode: 502,
         statusMessage: providerStatus === 401
           ? 'PayPal rejected the configured credentials'
-          : `PayPal rejected the ${operation} request`,
-        data: { code: providerStatus === 401 ? 'PAYPAL_CREDENTIALS_REJECTED' : 'PAYPAL_PROVIDER_ERROR' },
+          : `PayPal rejected the ${operation} request${detail ? `: ${detail}` : ''}`,
+        data: { code: providerStatus === 401 ? 'PAYPAL_CREDENTIALS_REJECTED' : 'PAYPAL_PROVIDER_ERROR', providerStatus, providerDetail: detail || null },
       });
     }
     throw createError({
