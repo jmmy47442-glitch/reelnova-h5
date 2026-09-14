@@ -25,6 +25,7 @@
     "test:entitlements": "node --test tests/entitlement-lifecycle.test.mjs",
     "test:payments": "node --experimental-strip-types --test tests/paypal-payment-state.test.mjs",
     "test:playback-security": "node --test tests/playback-security.test.mjs",
+    "test:video-quality": "node --experimental-strip-types --test tests/video-quality.test.mjs",
     "deploy:media-worker": "wrangler deploy --config wrangler.media.toml"
   },
   "dependencies": {

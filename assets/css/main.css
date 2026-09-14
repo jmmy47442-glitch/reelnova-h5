@@ -461,6 +461,11 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .watch-controls { display: flex; margin-top: 8px; align-items: center; justify-content: space-around; }
 .watch-controls button { height: 49px; width: 52px; gap: 2px; }
 .watch-controls span { display: block; font-size: 8px; }
+.watch-quality { position: relative; display: grid; width: 60px; height: 49px; flex: 0 0 auto; color: #fff; cursor: pointer; place-items: center; align-content: center; gap: 2px; }
+.watch-quality span { max-width: 58px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.watch-quality:focus-within { border-radius: 5px; outline: 2px solid rgba(255,255,255,.9); outline-offset: 1px; background: rgba(255,255,255,.1); }
+.watch-quality:active { border-radius: 5px; background: rgba(255,255,255,.13); }
+.watch-quality.is-disabled { opacity: .55; cursor: default; }
 .up-next { display: grid; width: 100%; min-height: 50px; margin-top: 8px; padding: 0 12px; border: 1px solid rgba(255,255,255,.14); border-radius: 5px; background: rgba(255,255,255,.08); color: #fff; grid-template-columns: 1fr 1fr auto; align-items: center; text-align: left; }
 .up-next span { color: var(--text-muted); font-size: 8px; }
 .up-next strong { font-size: 10px; text-align: right; }
@@ -1132,4 +1137,29 @@ html[data-theme='light'] .consumer-auth__legal { color: #858995; }
   html[data-theme='light'] .consumer-auth--register .consumer-auth__form-wrap { margin-top: clamp(124px, 19vh, 160px); }
   html[data-theme='light'] .consumer-auth__switch { background: rgba(229,232,238,.84); }
   html[data-theme='light'] .consumer-auth__field > div { background: rgba(255,255,255,.9); }
+}
+
+/* In-player quality sheet */
+.quality-drawer-backdrop { position: fixed; z-index: 12; inset: 0; display: flex; background: rgba(0,0,0,.5); align-items: flex-end; }
+.quality-drawer { width: min(100%, 560px); margin: 0 auto; padding: 12px 18px max(22px, env(safe-area-inset-bottom)); border: 1px solid rgba(255,255,255,.12); border-bottom: 0; border-radius: 16px 16px 0 0; background: #17171e; box-shadow: 0 -16px 50px rgba(0,0,0,.35); }
+.quality-drawer::before { display: block; width: 32px; height: 3px; margin: 0 auto 18px; border-radius: 4px; background: rgba(255,255,255,.25); content: ''; }
+.quality-drawer header { display: flex; margin-bottom: 18px; align-items: center; justify-content: space-between; }
+.quality-drawer h2 { margin-top: 4px; color: #fff; font-size: 20px; }
+.quality-drawer header button { display: grid; width: 44px; height: 44px; border: 0; border-radius: 50%; background: rgba(255,255,255,.06); color: #fff; place-items: center; }
+.quality-options { display: grid; gap: 7px; max-height: 55dvh; overflow-y: auto; }
+.quality-options button { position: relative; display: grid; min-height: 58px; padding: 11px 15px; border: 1px solid rgba(255,255,255,.08); border-radius: 7px; background: rgba(255,255,255,.03); color: #fff; text-align: left; gap: 4px; }
+.quality-options button span { font-size: 13px; font-weight: 700; }
+.quality-options button small { color: var(--text-muted); font-size: 10px; }
+.quality-options button.is-selected { border-color: rgba(255,61,121,.55); background: rgba(255,61,121,.1); }
+.quality-options button.is-selected span, .quality-options > button > svg { color: var(--signal); }
+.quality-options > button > svg { position: absolute; top: 50%; right: 16px; font-style: normal; transform: translateY(-50%); }
+.sheet-enter-active .quality-drawer, .sheet-leave-active .quality-drawer { transition: transform .25s ease; }
+.sheet-enter-from .quality-drawer, .sheet-leave-to .quality-drawer { transform: translateY(100%); }
+
+.quality-drawer-note { margin-bottom: 14px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.quality-drawer button:focus-visible { outline: 2px solid #fff; outline-offset: -3px; }
+.quality-drawer button:active { background: rgba(255,255,255,.1); }
+.quality-options button small { font-size: 12px; }
+@media (prefers-reduced-motion: reduce) {
+  .sheet-enter-active, .sheet-leave-active, .sheet-enter-active .quality-drawer, .sheet-leave-active .quality-drawer { transition: none; }
 }

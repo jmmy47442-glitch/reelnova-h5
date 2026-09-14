@@ -16,13 +16,16 @@ export default defineEventHandler(async (event) => {
   if (event.method !== 'GET') return;
   const host = requestHostname(event);
   if (!host) return;
+  const requestUrl = getRequestURL(event);
+  if (process.env.NODE_ENV === 'development' && host === '0.0.0.0' && !isApplicationResource(requestUrl.pathname)) {
+    const port = requestUrl.port ? `:${requestUrl.port}` : '';
+    return sendRedirect(event, `http://localhost${port}${requestUrl.pathname}${requestUrl.search}`, 307);
+  }
   if (host === 'www.iseedrama.com') {
-    const requestUrl = getRequestURL(event);
     return sendRedirect(event, `https://iseedrama.com${requestUrl.pathname}${requestUrl.search}`, 301);
   }
   // Domain redirects only apply to document requests. Skipping API, payload,
   // and static asset requests avoids a D1 lookup on every route transition.
-  const requestUrl = getRequestURL(event);
   if (isApplicationResource(requestUrl.pathname)) return;
   const domains = await getDomainConfig(event);
   const source = domains.find((item) => item.host === host && item.role !== '主域名' && item.redirect

@@ -85,6 +85,38 @@ const createBucket = () => {
   };
 };
 
+test('original playback tokens stream private source bytes with range support', async () => {
+  const bucket = createBucket();
+  const assetId = 'media_11111111-1111-4111-8111-111111111111';
+  const objectKey = `originals/series_1/episode_1/${assetId}/1-source.mp4`;
+  const source = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]);
+  await bucket.put(objectKey, source, {
+    httpMetadata: { contentType: 'video/mp4' },
+    customMetadata: { managedBy: 'reelnova', assetId },
+  });
+  const env = {
+    MEDIA_BUCKET: bucket,
+    MEDIA_WORKER_SECRET: secret,
+    APP_ORIGINS: 'https://app.example.test',
+  };
+  const grantResponse = await worker.fetch(await signedRequest('/original/token', {
+    key: objectKey,
+    assetId,
+    exp: Math.floor(Date.now() / 1000) + 600,
+  }), env);
+  assert.equal(grantResponse.status, 200);
+  const grant = await grantResponse.json();
+
+  const response = await worker.fetch(new Request(grant.url, {
+    headers: { origin: 'https://app.example.test', range: 'bytes=2-5' },
+  }), env);
+  assert.equal(response.status, 206);
+  assert.equal(response.headers.get('content-type'), 'video/mp4');
+  assert.equal(response.headers.get('content-range'), 'bytes 2-5/8');
+  assert.equal(response.headers.get('access-control-allow-origin'), 'https://app.example.test');
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), new Uint8Array([2, 3, 4, 5]));
+});
+
 test('cancelling an upload aborts multipart state and removes its resume marker', async () => {
   const bucket = createBucket();
   const env = {

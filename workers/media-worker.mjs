@@ -26,9 +26,9 @@ const cors = (request, env) => {
   const allowed = String(env.APP_ORIGINS || '').split(',').map((item) => item.trim()).filter(Boolean);
   return allowed.includes(origin) ? {
     'access-control-allow-origin': origin,
-    'access-control-allow-methods': 'PUT,DELETE,OPTIONS',
-    'access-control-allow-headers': 'authorization,content-type',
-    'access-control-expose-headers': 'etag',
+    'access-control-allow-methods': 'GET,HEAD,PUT,DELETE,OPTIONS',
+    'access-control-allow-headers': 'authorization,content-type,range',
+    'access-control-expose-headers': 'accept-ranges,content-length,content-range,etag',
     'access-control-max-age': '86400',
     vary: 'Origin',
   } : {};
@@ -254,6 +254,46 @@ const serveIngestObject = async (request, env, encodedToken) => {
   if (range) {
     headers.set('content-range', `bytes ${range.offset}-${range.offset + range.length - 1}/${metadata.size}`);
   }
+  return new Response(object.body, { status: range ? 206 : 200, headers });
+};
+
+const createOriginalPlayback = async (env, origin, body) => {
+  const key = String(body.key || '');
+  const assetId = String(body.assetId || '');
+  const now = Math.floor(Date.now() / 1000);
+  if (!/^originals\/[a-z0-9_-]{2,100}\/[a-z0-9_-]{2,100}\/[a-z0-9_-]{2,100}\/[a-z0-9_.-]{2,160}$/i.test(key)
+    || !/^media_[0-9a-f-]{36}$/i.test(assetId)) throw new Error('Invalid original playback request');
+  const metadata = await env.MEDIA_BUCKET.head(key);
+  if (!metadata || metadata.customMetadata?.assetId !== assetId) throw new Error('Original media object not found');
+  const expires = Math.min(now + 15 * 60, Math.max(now + 60, Math.floor(Number(body.exp) || now + 10 * 60)));
+  const token = await createToken({ kind: 'original-playback', key, assetId, expires }, env.MEDIA_WORKER_SECRET);
+  return { url: `${origin}/original/${encodeURIComponent(token)}`, expiresAt: new Date(expires * 1000).toISOString() };
+};
+
+const serveOriginalObject = async (request, env, encodedToken, requestCors) => {
+  const payload = await readToken(decodeURIComponent(encodedToken), env.MEDIA_WORKER_SECRET);
+  if (payload?.kind !== 'original-playback' || !payload.key || !payload.assetId) {
+    return new Response('Expired original playback URL', { status: 403, headers: requestCors });
+  }
+  const metadata = await env.MEDIA_BUCKET.head(payload.key);
+  if (!metadata || metadata.customMetadata?.assetId !== payload.assetId) {
+    return new Response('Not found', { status: 404, headers: requestCors });
+  }
+  const headers = new Headers(requestCors);
+  if (request.method === 'HEAD') {
+    writeObjectHeaders(headers, metadata);
+    return new Response(null, { status: 200, headers });
+  }
+  const range = parseByteRange(request.headers.get('range'), metadata.size);
+  if (range === false) {
+    headers.set('accept-ranges', 'bytes');
+    headers.set('content-range', `bytes */${metadata.size}`);
+    return new Response(null, { status: 416, headers });
+  }
+  const object = await env.MEDIA_BUCKET.get(payload.key, range ? { range } : undefined);
+  if (!object) return new Response('Not found', { status: 404, headers });
+  writeObjectHeaders(headers, object, range?.length ?? metadata.size);
+  if (range) headers.set('content-range', `bytes ${range.offset}-${range.offset + range.length - 1}/${metadata.size}`);
   return new Response(object.body, { status: range ? 206 : 200, headers });
 };
 
@@ -484,6 +524,12 @@ export default {
         return json(await createImageUpload(env, url.origin, JSON.parse(rawBody)));
       }
 
+      if (request.method === 'POST' && url.pathname === '/original/token') {
+        const rawBody = await request.text();
+        if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
+        return json(await createOriginalPlayback(env, url.origin, JSON.parse(rawBody)));
+      }
+
       if (request.method === 'PUT' && url.pathname === '/images/upload') {
         return putImage(request, env, requestCors);
       }
@@ -557,6 +603,11 @@ export default {
       const ingestMatch = url.pathname.match(/^\/ingest\/(.+)$/);
       if (ingestMatch && ['GET', 'HEAD'].includes(request.method)) {
         return serveIngestObject(request, env, ingestMatch[1]);
+      }
+
+      const originalMatch = url.pathname.match(/^\/original\/(.+)$/);
+      if (originalMatch && ['GET', 'HEAD'].includes(request.method)) {
+        return serveOriginalObject(request, env, originalMatch[1], requestCors);
       }
 
       if (url.pathname.startsWith('/posters/') && ['GET', 'HEAD'].includes(request.method)) {

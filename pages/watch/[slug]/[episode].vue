@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ArrowLeft, Captions, ChevronRight, Gauge, History, Loader2, LockKeyhole, Maximize2, MoreHorizontal, Pause, Play, RotateCcw, Share2, SkipForward, Volume2, VolumeX, X } from 'lucide-vue-next';
+import { ArrowLeft, Captions, Check, ChevronRight, Gauge, History, Loader2, LockKeyhole, Maximize2, MoreHorizontal, Pause, Play, RotateCcw, Settings2, Share2, SkipForward, Volume2, VolumeX, X } from 'lucide-vue-next';
 import Hls from 'hls.js';
 import { useSafeBack } from '~/composables/useSafeBack';
 import { useAnalytics } from '~/composables/useAnalytics';
 import { invalidatePageDataCache, usePageData } from '~/composables/usePageData';
+import { normalizeVideoQualityLevels, parseHlsQualityManifest, resolveVideoQualityLevel, type VideoQualityLevel, type VideoQualityPreference } from '~/utils/video-quality';
 
 definePageMeta({ hideBottomNav: true });
 const route = useRoute();
@@ -19,6 +20,7 @@ const showControls = ref(true);
 const showUnlock = ref(false);
 const locallyUnlocked = ref(false);
 const signedUrl = ref('');
+const originalUrl = ref('');
 const trackingToken = ref('');
 const sessionId = ref('');
 const expiresAt = ref(0);
@@ -32,6 +34,29 @@ const playbackReady = ref(false);
 const firstFrameReady = ref(false);
 const playRequested = ref(false);
 const speed = ref(1);
+const qualityPreference = ref<VideoQualityPreference>('original');
+const qualityLevels = ref<VideoQualityLevel[]>([]);
+const showQualityDrawer = ref(false);
+const qualityTrigger = ref<HTMLButtonElement | null>(null);
+const qualityDrawer = ref<HTMLElement | null>(null);
+const closeQualityDrawer = () => {
+  showQualityDrawer.value = false;
+  void nextTick(() => qualityTrigger.value?.focus());
+};
+const openQualityDrawer = async () => {
+  showQualityDrawer.value = true;
+  await nextTick();
+  qualityDrawer.value?.querySelector<HTMLButtonElement>('.is-selected, button')?.focus();
+};
+const trapQualityFocus = (event: KeyboardEvent) => {
+  const buttons = qualityDrawer.value?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
+  if (!buttons?.length) return;
+  const first = buttons[0]!;
+  const last = buttons[buttons.length - 1]!;
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+};
+const nativeQualityOnly = ref(false);
 const started = ref(false);
 const lastHeartbeat = ref(0);
 const renewing = ref(false);
@@ -54,6 +79,9 @@ const resumeContinueButton = ref<HTMLButtonElement | null>(null);
 const resumeRestartButton = ref<HTMLButtonElement | null>(null);
 const initialGrantRequested = ref(false);
 const activeSourceUrl = ref('');
+const originalPlayback = ref(false);
+const originalFallbackAttempted = ref(false);
+const canUseOriginalSource = computed(() => Boolean(originalUrl.value) && !originalFallbackAttempted.value);
 let renewTimer: ReturnType<typeof setTimeout> | undefined;
 let sourceTransitionTimer: ReturnType<typeof setTimeout> | undefined;
 let hls: Hls | undefined;
@@ -153,6 +181,22 @@ const formatTime = (value: number) => {
   return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, '0')}`;
 };
 const durationLabel = computed(() => formatTime(durationSeconds.value) !== '0:00' ? formatTime(durationSeconds.value) : currentEpisode.value?.duration || '0:00');
+const qualitySelectValue = computed(() => nativeQualityOnly.value ? 'auto' : typeof qualityPreference.value === 'number'
+  ? `resolution:${qualityPreference.value}`
+  : qualityPreference.value);
+const qualityControlLabel = computed(() => {
+  if (nativeQualityOnly.value) return 'Auto';
+  if (qualityPreference.value === 'original') return canUseOriginalSource.value ? 'Original' : qualityLevels.value[0]?.label || 'Highest';
+  if (qualityPreference.value === 'auto') return 'Auto';
+  return `${qualityPreference.value}P`;
+});
+
+const qualityOptions = computed(() => [
+  { value: 'auto', label: 'Auto', detail: 'Adjusts to your connection' },
+  ...(canUseOriginalSource.value || (!nativeQualityOnly.value && qualityLevels.value.length)
+    ? [{ value: 'original', label: canUseOriginalSource.value ? 'Original' : 'Highest', detail: canUseOriginalSource.value ? 'Source quality' : 'Highest available quality' }] : []),
+  ...(!nativeQualityOnly.value ? qualityLevels.value.map(level => ({ value: `resolution:${level.resolution}`, label: level.label, detail: level.resolution >= 720 ? 'High definition' : 'Uses less data' })) : []),
+]);
 
 const snapshotPlayback = () => {
   if (!video.value) return;
@@ -176,6 +220,16 @@ const updateBuffered = () => {
     if (end > start) segments.push({ left: start / mediaDuration * 100, width: (end - start) / mediaDuration * 100 });
   }
   bufferedSegments.value = segments;
+};
+const inspectQualityLevels = async (source: string) => {
+  try {
+    const response = await fetch(source);
+    if (!response.ok) return;
+    const discovered = parseHlsQualityManifest(await response.text());
+    if (source === signedUrl.value && discovered.length) qualityLevels.value = discovered;
+  } catch {
+    // Playback still exposes Auto and Original when a browser blocks manifest inspection.
+  }
 };
 const record = (eventType: 'start' | 'heartbeat' | 'complete', keepalive = false) => {
   if (!series.value || !currentEpisode.value || !trackingToken.value) return;
@@ -211,6 +265,9 @@ const loadSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
   hls?.destroy();
   hls = undefined;
   nativeHlsPlayback = false;
+  originalPlayback.value = false;
+  nativeQualityOnly.value = false;
+  qualityLevels.value = [];
   const restore = () => {
     if (!video.value) return;
     if (restoreAt > 0 && restoreAt < (video.value.duration || Infinity) - 3) video.value.currentTime = restoreAt;
@@ -221,53 +278,98 @@ const loadSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
     video.value.removeEventListener('loadedmetadata', restore);
   };
   video.value.addEventListener('loadedmetadata', restore);
+  if (Hls.isSupported()) {
+    hls = new Hls({
+      enableWorker: true,
+      lowLatencyMode: false,
+      autoStartLoad: false,
+      capLevelToPlayerSize: false,
+      // Wait for MANIFEST_PARSED to select the requested quality before fetching video.
+      startFragPrefetch: false,
+      // VOD playback needs enough forward buffer to absorb short throughput
+      // drops. The previous 12-second cap made a 0.5-0.7 Mbps stream run dry
+      // after the initial burst even though every segment request succeeded.
+      maxBufferLength: 30,
+      maxMaxBufferLength: 120,
+      backBufferLength: 30,
+    });
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      if (!hls) return;
+      qualityLevels.value = normalizeVideoQualityLevels(hls.levels);
+      const selectedLevel = resolveVideoQualityLevel(qualityLevels.value, qualityPreference.value);
+      hls.startLevel = selectedLevel;
+      hls.loadLevel = selectedLevel;
+      hls.startLoad(-1);
+    });
+    hls.on(Hls.Events.FRAG_LOADED, (_event, data) => {
+      const stats = data.frag?.stats;
+      const startedAt = Number(stats?.loading?.start || 0);
+      const firstByteAt = Number(stats?.loading?.first || 0);
+      const endedAt = Number(stats?.loading?.end || 0);
+      const loadedBytes = Number(stats?.loaded || 0);
+      const elapsedMs = endedAt - startedAt;
+      const latencyMs = firstByteAt > 0 && startedAt > 0 ? firstByteAt - startedAt : null;
+      recordNetworkSample(loadedBytes, elapsedMs, latencyMs);
+    });
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (!data.fatal) return;
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls?.startLoad();
+      else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls?.recoverMediaError();
+      else {
+        hls?.destroy();
+        playbackLoading.value = false;
+        playRequested.value = false;
+        isPlaying.value = false;
+        playbackError.value = 'The video stream stopped unexpectedly. Please retry.';
+      }
+    });
+    hls.attachMedia(video.value);
+    hls.loadSource(source);
+    return;
+  }
   if (video.value.canPlayType('application/vnd.apple.mpegurl')) {
     nativeHlsPlayback = true;
+    nativeQualityOnly.value = true;
     video.value.src = source;
     video.value.load();
     return;
   }
-  if (!Hls.isSupported()) throw new Error('HLS playback is not supported');
-  // Start with the smallest rendition so the first frame arrives quickly on
-  // mobile networks. hls.js will switch up after the bandwidth estimate
-  // stabilizes while keeping a larger VOD buffer below.
-  hls = new Hls({
-    enableWorker: true,
-    lowLatencyMode: false,
-    startLevel: 0,
-    capLevelToPlayerSize: true,
-    startFragPrefetch: true,
-    // VOD playback needs enough forward buffer to absorb short throughput
-    // drops. The previous 12-second cap made a 0.5-0.7 Mbps stream run dry
-    // after the initial burst even though every segment request succeeded.
-    maxBufferLength: 30,
-    maxMaxBufferLength: 120,
-    backBufferLength: 30,
-  });
-  hls.on(Hls.Events.FRAG_LOADED, (_event, data) => {
-    const stats = data.frag?.stats;
-    const startedAt = Number(stats?.loading?.start || 0);
-    const firstByteAt = Number(stats?.loading?.first || 0);
-    const endedAt = Number(stats?.loading?.end || 0);
-    const loadedBytes = Number(stats?.loaded || 0);
-    const elapsedMs = endedAt - startedAt;
-    const latencyMs = firstByteAt > 0 && startedAt > 0 ? firstByteAt - startedAt : null;
-    recordNetworkSample(loadedBytes, elapsedMs, latencyMs);
-  });
-  hls.on(Hls.Events.ERROR, (_event, data) => {
-    if (!data.fatal) return;
-    if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls?.startLoad();
-    else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls?.recoverMediaError();
-    else {
-      hls?.destroy();
-      playbackLoading.value = false;
-      playRequested.value = false;
-      isPlaying.value = false;
-      playbackError.value = 'The video stream stopped unexpectedly. Please retry.';
-    }
-  });
-  hls.attachMedia(video.value);
-  hls.loadSource(source);
+  throw new Error('HLS playback is not supported');
+};
+const loadOriginalSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
+  const media = video.value;
+  if (!media) return;
+  activeSourceUrl.value = source;
+  sourceTransition.value = true;
+  playbackReady.value = false;
+  firstFrameReady.value = false;
+  if (shouldPlay || !started.value) playbackLoading.value = true;
+  if (sourceTransitionTimer) clearTimeout(sourceTransitionTimer);
+  sourceTransitionTimer = setTimeout(() => { sourceTransition.value = false; }, 3_000);
+  bufferedSegments.value = [];
+  hls?.destroy();
+  hls = undefined;
+  nativeHlsPlayback = false;
+  nativeQualityOnly.value = false;
+  originalPlayback.value = true;
+  const restore = () => {
+    if (restoreAt > 0 && restoreAt < (media.duration || Infinity) - 3) media.currentTime = restoreAt;
+    snapshotPlayback();
+    if (shouldPlay) void media.play().catch(() => undefined);
+    sourceTransition.value = false;
+    if (sourceTransitionTimer) clearTimeout(sourceTransitionTimer);
+    media.removeEventListener('loadedmetadata', restore);
+  };
+  media.addEventListener('loadedmetadata', restore);
+  media.src = source;
+  media.load();
+};
+const loadPreferredSource = (restoreAt: number, shouldPlay: boolean) => {
+  if (qualityPreference.value === 'original' && canUseOriginalSource.value) {
+    loadOriginalSource(originalUrl.value, restoreAt, shouldPlay);
+  } else if (signedUrl.value) {
+    loadSource(signedUrl.value, restoreAt, shouldPlay);
+  }
 };
 const authorize = async (renew = false) => {
   if (!series.value || !currentEpisode.value) return;
@@ -283,6 +385,8 @@ const authorize = async (renew = false) => {
     const authorization = await (prefetchedGrant || api.getPlayback(series.value.id, currentEpisode.value.episodeNo, session()));
     if (!authorization.signedUrl) throw new Error('No playable source');
     signedUrl.value = authorization.signedUrl;
+    originalUrl.value = authorization.originalUrl || '';
+    void inspectQualityLevels(authorization.signedUrl);
     trackingToken.value = authorization.trackingToken;
     expiresAt.value = Date.parse(authorization.expiresAt || '') || Date.now() + 9 * 60_000;
     if (!renew && !started.value && !resumePromptResolved.value) {
@@ -304,7 +408,8 @@ const authorize = async (renew = false) => {
       return;
     }
     if (video.value) {
-      loadSource(authorization.signedUrl, !renew && !resumePromptResolved.value && resumePosition.value > 0 ? resumePosition.value : oldTime, renew && wasPlaying);
+      const restoreAt = !renew && !resumePromptResolved.value && resumePosition.value > 0 ? resumePosition.value : oldTime;
+      loadPreferredSource(restoreAt, renew && wasPlaying);
       // Match fast-start players: expose the play control as soon as the grant
       // arrives while HLS continues pre-buffering its first segments.
       if (!renew && !playRequested.value) playbackLoading.value = false;
@@ -423,7 +528,7 @@ const onPlaying = () => {
   if (stalled.value) { stalled.value = false; void track('playback_resume', { seriesId: series.value?.id, seriesTitle: series.value?.title, episodeNo: episodeNo.value, positionSeconds: currentTime.value }); }
 };
 const onVideoError = () => {
-  if (sourceTransition.value || renewing.value) return;
+  if ((sourceTransition.value || renewing.value) && !originalPlayback.value) return;
   const mediaErrorCode = video.value?.error?.code || 0;
   // Seeking and source replacement can cancel an obsolete media request. That
   // is expected browser behaviour and must not become a connection error.
@@ -431,6 +536,15 @@ const onVideoError = () => {
     playbackLoading.value = false;
     seeking.value = false;
     isPlaying.value = Boolean(video.value && !video.value.paused);
+    return;
+  }
+  if (originalPlayback.value && signedUrl.value && !originalFallbackAttempted.value) {
+    originalFallbackAttempted.value = true;
+    // Keep the highest-quality preference even when manifest discovery has
+    // not finished. Renewals must also keep using HLS after a source failure.
+    qualityPreference.value = 'original';
+    playbackError.value = '';
+    loadSource(signedUrl.value, currentTime.value, isPlaying.value || playRequested.value);
     return;
   }
   const failedAfterSeek = Boolean(
@@ -514,6 +628,44 @@ const persistSeek = () => {
 };
 const toggleMute = () => { muted.value = !muted.value; if (video.value) video.value.muted = muted.value; };
 const cycleSpeed = () => { const values = [1, 1.25, 1.5, 2]; speed.value = values[(values.indexOf(speed.value) + 1) % values.length] || 1; if (video.value) video.value.playbackRate = speed.value; };
+const selectQuality = (value: string) => {
+  qualityPreference.value = value === 'auto' || value === 'original'
+    ? value
+    : Math.max(0, Number(value.replace('resolution:', '')) || 0);
+  snapshotPlayback();
+  const shouldPlay = Boolean(video.value && !video.value.paused) || playRequested.value;
+  if (qualityPreference.value === 'original' && originalUrl.value) {
+    originalFallbackAttempted.value = false;
+    loadOriginalSource(originalUrl.value, currentTime.value, shouldPlay);
+    return;
+  }
+  if (!hls || originalPlayback.value) {
+    if (signedUrl.value) loadSource(signedUrl.value, currentTime.value, shouldPlay);
+    return;
+  }
+  const selectedLevel = resolveVideoQualityLevel(qualityLevels.value, qualityPreference.value);
+  // `currentLevel` applies the rendition immediately. `nextLevel` alone only
+  // schedules a future switch and can leave the current segment playing for
+  // an indeterminate amount of time, which made the selector look cosmetic.
+  sourceTransition.value = true;
+  playbackLoading.value = true;
+  if (sourceTransitionTimer) clearTimeout(sourceTransitionTimer);
+  hls.currentLevel = selectedLevel;
+  hls.loadLevel = selectedLevel;
+  hls.nextLevel = selectedLevel;
+  sourceTransitionTimer = setTimeout(() => {
+    sourceTransition.value = false;
+    playbackLoading.value = false;
+  }, 1200);
+};
+const chooseQuality = (value: string) => {
+  closeQualityDrawer();
+  const next = value === 'auto' || value === 'original' ? value : Math.max(0, Number(value.replace('resolution:', '')) || 0);
+  if (next === qualityPreference.value) {
+    return;
+  }
+  selectQuality(typeof next === 'number' ? `resolution:${next}` : next);
+};
 const fullscreen = () => { if (video.value?.requestFullscreen) void video.value.requestFullscreen(); };
 const returnToSeries = () => navigateTo(`/series/${String(route.params.slug)}`, { replace: true });
 const nextEpisode = () => {
@@ -559,7 +711,7 @@ const dismissResumePrompt = () => {
   currentTime.value = resumePosition.value;
   progress.value = resumePromptDuration.value ? Math.min(100, resumePosition.value / resumePromptDuration.value * 100) : 0;
   playRequested.value = false;
-  loadSource(signedUrl.value, resumePosition.value, false);
+  loadPreferredSource(resumePosition.value, false);
   playbackLoading.value = false;
 };
 const chooseResume = (choice: 'resume' | 'restart') => {
@@ -575,7 +727,7 @@ const chooseResume = (choice: 'resume' | 'restart') => {
   try {
     const media = video.value;
     if (!media) throw new Error('Video element is unavailable');
-    loadSource(signedUrl.value, resumePosition.value, false);
+    loadPreferredSource(resumePosition.value, false);
     // Start the play request inside the button's user gesture. The promise can
     // remain pending while HLS loads; `canplay` retries if a source swap aborts it.
     void media.play().catch((error) => {
@@ -625,9 +777,12 @@ onMounted(() => {
   requestInitialGrant();
 });
 watch([canPlay, currentEpisode], requestInitialGrant, { flush: 'post' });
-watch([video, signedUrl], () => {
-  if (!video.value || !signedUrl.value || showResumePrompt.value || resumePromptResolving.value || activeSourceUrl.value === signedUrl.value) return;
-  void loadSource(signedUrl.value, !resumePromptResolved.value && resumePosition.value > 0 ? resumePosition.value : currentTime.value, false);
+watch([video, signedUrl, originalUrl], () => {
+  if (!video.value || !signedUrl.value || showResumePrompt.value || resumePromptResolving.value) return;
+  const source = qualityPreference.value === 'original' && canUseOriginalSource.value ? originalUrl.value : signedUrl.value;
+  if (activeSourceUrl.value === source) return;
+  const restoreAt = !resumePromptResolved.value && resumePosition.value > 0 ? resumePosition.value : currentTime.value;
+  loadPreferredSource(restoreAt, false);
 });
 watch(showResumePrompt, (open) => {
   if (open) void nextTick(() => resumeContinueButton.value?.focus());
@@ -660,7 +815,20 @@ onBeforeUnmount(() => {
     <section v-if="!canPlay" class="watch-lock" @click.stop><span><LockKeyhole :size="28" /></span><p>Episode {{ episodeNo }} is locked</p><h1>{{ purchasable ? 'Keep the story going' : 'Episode unavailable' }}</h1><button v-if="purchasable" class="button button--primary button--wide" type="button" @click="track('lock_trigger', { seriesId: series.id, seriesTitle: series.title, episodeNo, properties: { source: 'watch_lock' } }); showUnlock = true">Unlock full series</button><button class="watch-lock__secondary" type="button" @click="returnToSeries">Choose another episode</button></section>
     <section v-if="playbackError" class="watch-lock" @click.stop><span><RotateCcw :size="27" /></span><h1>Connection interrupted</h1><p>{{ playbackError }}</p><button class="button button--primary" type="button" @click="retry">Retry playback</button></section>
     <Transition name="resume-modal"><div v-if="showResumePrompt" class="resume-modal-backdrop" @click.stop><section class="resume-modal" role="dialog" aria-modal="true" aria-labelledby="resume-modal-title" aria-describedby="resume-modal-copy" @click.stop @keydown.tab="trapResumePromptFocus" @keydown.esc="dismissResumePrompt"><button ref="resumeCloseButton" class="resume-modal__close" type="button" aria-label="Close continue watching dialog" title="Close" @click="dismissResumePrompt"><X :size="20" /></button><div class="resume-modal__icon"><History :size="22" /></div><p class="resume-modal__eyebrow">Welcome back</p><h2 id="resume-modal-title">Continue watching?</h2><p id="resume-modal-copy" class="resume-modal__copy">Pick up {{ series.title }} where you left off, or start this episode again.</p><div class="resume-modal__progress"><span>Episode {{ episodeNo }}</span><strong>{{ formatTime(resumePromptPosition) }} watched</strong></div><div class="resume-modal__actions"><button ref="resumeContinueButton" class="button button--primary button--wide" type="button" @click="chooseResume('resume')"><Play :size="17" fill="currentColor" />Continue from {{ formatTime(resumePromptPosition) }}</button><button ref="resumeRestartButton" class="button button--secondary button--wide" type="button" @click="chooseResume('restart')"><RotateCcw :size="17" />Start from beginning</button></div></section></div></Transition>
-    <Transition name="fade"><div v-if="showControls && canPlay && signedUrl && !showResumePrompt" class="watch-bottom" @click.stop><div class="watch-progress" :style="{ '--played-progress': `${progress}%` }"><div class="watch-progress__track" aria-hidden="true"><span v-for="(segment, index) in bufferedSegments" :key="index" class="watch-progress__buffered" :style="{ left: `${segment.left}%`, width: `${segment.width}%` }" /><i class="watch-progress__played" /></div><input class="watch-progress-input" type="range" min="0" max="100" step="0.1" :value="progress" :aria-valuetext="`${formatTime(currentTime)} of ${durationLabel}`" aria-label="Seek" @input="seek" @change="persistSeek" /></div><div class="watch-time"><span>{{ formatTime(currentTime) }}</span><span>{{ durationLabel }}</span></div><div class="watch-controls"><button type="button" :aria-label="muted ? 'Unmute' : 'Mute'" @click="toggleMute"><VolumeX v-if="muted" :size="21" /><Volume2 v-else :size="21" /></button><button type="button" aria-label="Captions"><Captions :size="22" /><span>CC</span></button><button type="button" aria-label="Playback speed" @click="cycleSpeed"><Gauge :size="22" /><span>{{ speed }}×</span></button><button type="button" aria-label="Fullscreen" @click="fullscreen"><Maximize2 :size="21" /></button><button type="button" aria-label="Next episode" @click="nextEpisode"><SkipForward :size="22" /><span>Next</span></button></div><button v-if="episodeNo < series.episodeCount" class="up-next" type="button" @click="nextEpisode"><span>UP NEXT</span><strong>Episode {{ episodeNo + 1 }}</strong><ChevronRight :size="20" /></button></div></Transition>
+    <Transition name="fade"><div v-if="showControls && canPlay && signedUrl && !showResumePrompt" class="watch-bottom" @click.stop><div class="watch-progress" :style="{ '--played-progress': `${progress}%` }"><div class="watch-progress__track" aria-hidden="true"><span v-for="(segment, index) in bufferedSegments" :key="index" class="watch-progress__buffered" :style="{ left: `${segment.left}%`, width: `${segment.width}%` }" /><i class="watch-progress__played" /></div><input class="watch-progress-input" type="range" min="0" max="100" step="0.1" :value="progress" :aria-valuetext="`${formatTime(currentTime)} of ${durationLabel}`" aria-label="Seek" @input="seek" @change="persistSeek" /></div><div class="watch-time"><span>{{ formatTime(currentTime) }}</span><span>{{ durationLabel }}</span></div><div class="watch-controls"><button type="button" :aria-label="muted ? 'Unmute' : 'Mute'" @click="toggleMute"><VolumeX v-if="muted" :size="21" /><Volume2 v-else :size="21" /></button><button type="button" aria-label="Captions"><Captions :size="22" /><span>CC</span></button><button type="button" aria-label="Playback speed" @click="cycleSpeed"><Gauge :size="22" /><span>{{ speed }}×</span></button><button ref="qualityTrigger" type="button" class="watch-quality" :class="{ 'is-disabled': !qualityLevels.length && !originalUrl }" :disabled="!qualityLevels.length && !originalUrl" aria-label="Video quality" aria-haspopup="dialog" :aria-expanded="showQualityDrawer" @click="openQualityDrawer"><Settings2 :size="21" aria-hidden="true" /><span>{{ qualityControlLabel }}</span></button><button type="button" aria-label="Fullscreen" @click="fullscreen"><Maximize2 :size="21" /></button><button type="button" aria-label="Next episode" @click="nextEpisode"><SkipForward :size="22" /><span>Next</span></button></div><button v-if="episodeNo < series.episodeCount" class="up-next" type="button" @click="nextEpisode"><span>UP NEXT</span><strong>Episode {{ episodeNo + 1 }}</strong><ChevronRight :size="20" /></button></div></Transition>
+    <Transition name="sheet">
+      <div v-if="showQualityDrawer" class="quality-drawer-backdrop" @click.stop="closeQualityDrawer">
+        <section ref="qualityDrawer" class="quality-drawer" role="dialog" aria-modal="true" aria-labelledby="quality-drawer-title" @click.stop @keydown.esc.stop="closeQualityDrawer" @keydown.tab="trapQualityFocus">
+          <header><h2 id="quality-drawer-title">Video quality</h2><button type="button" aria-label="Close quality selector" @click="closeQualityDrawer"><X :size="20" /></button></header>
+          <p v-if="nativeQualityOnly" class="quality-drawer-note">Your browser adjusts stream quality automatically.</p>
+          <div class="quality-options">
+            <button v-for="option in qualityOptions" :key="option.value" type="button" :aria-pressed="qualitySelectValue === option.value" :class="{ 'is-selected': qualitySelectValue === option.value }" @click="chooseQuality(option.value)">
+              <span>{{ option.label }}</span><small>{{ option.detail }}</small><Check v-if="qualitySelectValue === option.value" :size="20" aria-hidden="true" />
+            </button>
+          </div>
+        </section>
+      </div>
+    </Transition>
     <UnlockSheet v-if="purchasable" :series="series" :open="showUnlock" @close="showUnlock = false" @unlocked="handleUnlocked" />
   </main>
   <main v-else class="watch-page watch-page--loading" :aria-busy="status === 'pending'">

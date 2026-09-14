@@ -3,6 +3,7 @@ import type { AnalyticsEventInput, ApiEnvelope, ExploreResponse, HomeResponse, L
 type PlaybackAuthorization = {
   authorized: boolean;
   signedUrl?: string;
+  originalUrl?: string;
   expiresAt?: string;
   trackingToken: string;
   resumePositionSeconds?: number;

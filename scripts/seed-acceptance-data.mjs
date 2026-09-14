@@ -66,7 +66,7 @@ const streamFixtures = [
   { seriesId: 'acc-sintel', episodeNo: 1, creator: 'acc-sintel', fileName: 'Sintel_webm_extract.240p.vp9.webm', contentType: 'video/webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Sintel_webm_extract.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/transcoded/2/25/Sintel_webm_extract.webm/Sintel_webm_extract.webm.240p.vp9.webm', sourceSize: 7756199 },
   { seriesId: 'acc-tears-of-steel', episodeNo: 1, creator: 'acc-tears-steel', fileName: 'VP9_low_bitrate_test_ToS.webm', contentType: 'video/webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:VP9_low_bitrate_test_ToS.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/a/ad/VP9_low_bitrate_test_ToS.webm', sourceSize: 852395 },
   { seriesId: 'acc-elephants-dream', episodeNo: 1, creator: 'acc-elephants-dream', fileName: 'Elephants_Dream_120p.webm', contentType: 'video/webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Elephants_Dream_(2006).120p.vp9.opus.multichannel.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/d/d3/Elephants_Dream_%282006%29.120p.vp9.opus.multichannel.webm', sourceSize: 14327747 },
-  { seriesId: 'acc-cosmos-laundromat', episodeNo: 1, creator: 'acc-cosmos-laundromat', fileName: 'Cosmos_Laundromat_240p.webm', contentType: 'video/webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Cosmos_Laundromat_-_First_Cycle_-_Official_Blender_Foundation_release.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/transcoded/3/36/Cosmos_Laundromat_-_First_Cycle_-_Official_Blender_Foundation_release.webm/Cosmos_Laundromat_-_First_Cycle_-_Official_Blender_Foundation_release.webm.240p.vp9.webm', sourceSize: 594685641 },
+  { seriesId: 'acc-cosmos-laundromat', episodeNo: 1, creator: 'acc-cosmos-laundromat-hd-v2', fileName: 'Cosmos_Laundromat_Official_Blender_Foundation_release.webm', contentType: 'video/webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Cosmos_Laundromat_-_First_Cycle_-_Official_Blender_Foundation_release.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/3/36/Cosmos_Laundromat_-_First_Cycle_-_Official_Blender_Foundation_release.webm', sourceSize: 594685641, minInputWidth: 1280 },
 ];
 
 const run = (sql, params = []) => query(sql, params);
@@ -153,6 +153,10 @@ for (const fixture of streamFixtures) {
   }
   const ready = Boolean(video.readyToStream || video.status?.state === 'ready');
   if (!ready) throw new Error(`Timed out waiting for Cloudflare Stream fixture: ${fixture.creator}`);
+  const inputWidth = Number(video.input?.width || 0);
+  if (fixture.minInputWidth && inputWidth < fixture.minInputWidth) {
+    throw new Error(`Cloudflare Stream fixture is below the required resolution: ${fixture.creator} (${inputWidth}px < ${fixture.minInputWidth}px)`);
+  }
   const fixtureKey = fixture.seriesId.slice(4);
   const episodeKey = fixture.episodeNo === 1 ? fixtureKey : `${fixtureKey}-${fixture.episodeNo}`;
   const assetId = `acc-media-${episodeKey}`;
@@ -162,7 +166,9 @@ for (const fixture of streamFixtures) {
   await run(`INSERT INTO media_assets (id, episode_id, kind, storage_provider, source_object_key, stream_uid, source_file_name, source_content_type,
     source_size_bytes, width, height, duration_seconds, has_video, has_audio, validation_status, hls_url, dash_url, thumbnail_url, status, created_at, updated_at)
     VALUES (?, ?, 'video', 'stream', ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET stream_uid=excluded.stream_uid, width=excluded.width, height=excluded.height, duration_seconds=excluded.duration_seconds,
+    ON CONFLICT(id) DO UPDATE SET source_object_key=excluded.source_object_key, stream_uid=excluded.stream_uid,
+      source_file_name=excluded.source_file_name, source_content_type=excluded.source_content_type, source_size_bytes=excluded.source_size_bytes,
+      width=excluded.width, height=excluded.height, duration_seconds=excluded.duration_seconds,
       validation_status=excluded.validation_status, hls_url=excluded.hls_url, dash_url=excluded.dash_url, thumbnail_url=excluded.thumbnail_url,
       status=excluded.status, updated_at=excluded.updated_at, deleted_at=NULL`,
   [assetId, episodeId, fixture.sourceUrl, video.uid, fixture.fileName, fixture.contentType, fixture.sourceSize, Number(video.input?.width || 0) || null,

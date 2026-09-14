@@ -99,9 +99,11 @@ const submit = async () => {
     else await login(credentials);
     await navigateTo(redirect.value);
   } catch (error: unknown) {
-    const statusCode = (error as { statusCode?: number; response?: { status?: number } }).statusCode
-      || (error as { response?: { status?: number } }).response?.status;
-    errors.submit = isPasswordReset.value
+    const failure = error as { code?: string; status?: number; statusCode?: number; response?: { status?: number } };
+    const statusCode = failure.statusCode || failure.status || failure.response?.status;
+    errors.submit = failure.code === 'INSECURE_CRYPTO_CONTEXT'
+      ? 'Secure password protection is unavailable. Open this page with HTTPS or localhost and try again.'
+      : isPasswordReset.value
       ? statusCode === 404
         ? 'No ReelNova account was found for this email.'
         : statusCode === 403
