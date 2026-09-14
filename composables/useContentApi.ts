@@ -38,6 +38,7 @@ export const useContentApi = () => {
     capturePayPalOrder: (paypalOrderId: string) => request<{ orderNo: string; status: 'paid' }>('/paypal/capture', { method: 'POST', body: { paypalOrderId } }),
     cancelPayPalOrder: (paypalOrderId: string) => request<{ orderNo: string; status: 'paid' | 'cancelled' }>('/paypal/cancel', { method: 'POST', body: { paypalOrderId } }),
     getMyOrders: () => request<Order[]>('/me/orders'),
+    requestRefund: (orderNo: string, reason: string) => request<{ orderNo: string; refundStatus: NonNullable<Order['refundStatus']> }>(`/me/orders/${encodeURIComponent(orderNo)}/refund`, { method: 'POST', body: { reason } }),
     getOrder: (orderNo: string) => request<Order>(`/orders/${orderNo}`),
     restoreOrder: (lookup: string) => request<{ restored: number }>('/orders/restore', {
       method: 'POST',

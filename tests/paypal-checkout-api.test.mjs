@@ -21,6 +21,14 @@ function harness({ afterCreate, beforeRead, afterCapture, beforeRefund, afterRef
     d1First: async (_event, sql, params = []) => database.prepare(sql).get(...params) || null,
     d1All: async (_event, sql, params = []) => database.prepare(sql).all(...params),
     d1Run: async (_event, sql, params = []) => database.prepare(sql).run(...params),
+    d1Batch: async (_event, statements) => {
+      database.exec('BEGIN');
+      try {
+        const results = statements.map(({ sql, params = [] }) => database.prepare(sql).run(...params));
+        database.exec('COMMIT');
+        return results;
+      } catch (error) { database.exec('ROLLBACK'); throw error; }
+    },
     getRequestCountry: () => 'US',
   };
   const providerFetch = async (url, options) => {
@@ -95,6 +103,8 @@ function harness({ afterCreate, beforeRead, afterCapture, beforeRefund, afterRef
   return {
     db: database, providerOrders, creates: () => providerCreates, captures: () => providerCaptures,
     providerRefunds, refund: load('server/api/admin/orders/[orderNo]/refund.post.ts').default,
+    customerRefund: load('server/api/me/orders/[orderNo]/refund.post.ts').default,
+    adminOrders: load('server/api/admin/orders.get.ts').default,
     verify: load('server/api/admin/orders/[orderNo]/verify.post.ts').default,
     create: load('server/api/orders/index.post.ts').default,
     capture: load('server/api/paypal/capture.post.ts').default,
@@ -109,6 +119,64 @@ async function paidOrder(h) {
   await h.capture({ body: { paypalOrderId: order.paypalOrderId } });
   return order;
 }
+
+test('customer refund is idempotent, visible to admin, and preserves access until approval', async () => {
+  const h = harness();
+  try {
+    const order = await paidOrder(h);
+    const event = { params: { orderNo: order.orderNo }, body: { reason: 'I purchased the wrong story', amount: '0.01', userId: 'someone-else' } };
+    const results = await Promise.all([h.customerRefund(event), h.customerRefund(event)]);
+    assert.ok(results.every((result) => result.data.refundStatus === 'pending'));
+    assert.equal(h.db.prepare('SELECT COUNT(*) AS count FROM refund_requests').get().count, 1);
+    assert.equal(h.db.prepare('SELECT COUNT(*) AS count FROM refund_events').get().count, 1);
+    assert.equal(h.db.prepare('SELECT amount_cents FROM refund_requests').get().amount_cents, 999);
+    assert.equal(h.db.prepare('SELECT status FROM entitlements').get().status, 'granted');
+    assert.equal(h.db.prepare('SELECT status FROM orders').get().status, 'paid');
+    assert.equal(h.providerRefunds.size, 0);
+    const listed = (await h.adminOrders({ query: { refundStatus: 'pending' } })).data;
+    assert.equal(listed.total, 1);
+    assert.equal(listed.items[0].refund.customerRequest.userId, 'u');
+    assert.equal(listed.items[0].refund.customerRequest.email, 'u@example.com');
+    assert.equal(listed.items[0].refund.customerRequest.reason, event.body.reason);
+    await h.refund({ params: event.params, body: { reason: 'Customer refund approved' } });
+    assert.equal(h.providerRefunds.size, 1);
+    assert.equal(h.db.prepare('SELECT status FROM entitlements').get().status, 'revoked');
+    assert.equal((await h.customerRefund(event)).data.refundStatus, 'completed');
+    assert.equal((await h.adminOrders({})).data.items[0].refund.customerRequest.reason, event.body.reason);
+  } finally { h.db.close(); }
+});
+
+test('customer refund rejects unauthenticated users, other owners, invalid reasons and unpaid orders', async () => {
+  const h = harness();
+  try {
+    const order = await paidOrder(h);
+    const event = { params: { orderNo: order.orderNo }, body: { reason: 'I purchased the wrong story' } };
+    await assert.rejects(h.customerRefund({ ...event, user: false }), (error) => error.statusCode === 401);
+    await assert.rejects(h.customerRefund({ ...event, user: 'another-user' }), (error) => error.statusCode === 404);
+    for (const reason of ['', 'short', ' '.repeat(10), 'x'.repeat(501), {}, null]) {
+      await assert.rejects(h.customerRefund({ ...event, body: { reason } }), (error) => error.statusCode === 400);
+    }
+    h.db.exec("UPDATE orders SET status = 'pending'");
+    await assert.rejects(h.customerRefund(event), (error) => error.statusCode === 409);
+    assert.equal(h.db.prepare('SELECT COUNT(*) AS count FROM refund_requests').get().count, 0);
+    assert.equal(h.providerRefunds.size, 0);
+  } finally { h.db.close(); }
+});
+
+test('rejected customer requests retain original applicant and reason without duplicate requests', async () => {
+  const h = harness();
+  try {
+    const order = await paidOrder(h);
+    const event = { params: { orderNo: order.orderNo }, body: { reason: 'I purchased the wrong story' } };
+    await h.customerRefund(event);
+    await h.refund({ params: event.params, body: { reason: 'Request reviewed and declined', method: 'reject' } });
+    assert.equal((await h.customerRefund(event)).data.refundStatus, 'rejected');
+    const listed = (await h.adminOrders({})).data.items[0];
+    assert.equal(listed.refund.customerRequest.userId, 'u');
+    assert.equal(listed.refund.customerRequest.reason, event.body.reason);
+    assert.equal(h.db.prepare('SELECT status FROM entitlements').get().status, 'granted');
+  } finally { h.db.close(); }
+});
 
 for (const amount of ['0.01', '2.35', '9.99', undefined]) test(`admin refund amount ${amount ?? 'default full'} reaches PayPal and persists through replay`, async () => {
   const h = harness();

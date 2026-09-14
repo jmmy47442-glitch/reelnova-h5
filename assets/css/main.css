@@ -247,6 +247,19 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .account-section-label--spaced { margin-top: 28px; }
 .account-media-list { border-top: 1px solid var(--line); }
 .account-media-row { display: grid; min-height: 116px; padding: 12px 0; border-bottom: 1px solid var(--line); grid-template-columns: 58px minmax(0, 1fr) 38px; align-items: center; gap: 12px; }
+.purchase-row { display: flex; padding: 18px 0; border-bottom: 1px solid var(--line); align-items: center; justify-content: space-between; gap: 16px; }
+.purchase-row__content { display: flex; min-width: 0; align-items: center; gap: 12px; }
+.purchase-row__content img, .purchase-row__placeholder { width: 58px; height: 87px; flex: 0 0 58px; border-radius: 4px; object-fit: cover; }
+.purchase-row__placeholder { display: grid; background: var(--surface); color: var(--text-muted); place-items: center; }
+.purchase-row__info { min-width: 0; }
+.purchase-row h2 { margin: 6px 0; font-family: var(--font-display); font-size: 22px; line-height: 1.15; overflow-wrap: anywhere; }
+.purchase-row p, .purchase-row small { color: var(--text-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.purchase-row__actions { display: flex; flex: 0 0 auto; align-items: center; flex-wrap: wrap; gap: 8px; }
+.purchase-row__actions .button { min-height: 44px; font-size: 12px; }
+@media (max-width: 600px) {
+  .purchase-row { align-items: stretch; flex-direction: column; gap: 12px; }
+  .purchase-row__actions { justify-content: flex-end; }
+}
 .account-media-row img { width: 58px; aspect-ratio: 2/3; border-radius: 4px; object-fit: cover; }
 .account-media-row > div { min-width: 0; }
 .account-media-row h2 { margin-top: 7px; overflow: hidden; font-family: var(--font-display); font-size: 20px; line-height: 1; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }

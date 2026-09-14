@@ -9,6 +9,8 @@ interface OrderRow {
   capture_id: string | null; created_at: string; callback_at: string | null; note: string | null; entitlement_status: string | null;
   refund_status: PersistedOrder['refund']['status']; paypal_refund_id: string | null; refund_source: PersistedOrder['refund']['source'];
   refund_amount_cents: number | null;
+  customer_user_id: string | null; customer_name: string | null; customer_email: string | null;
+  customer_reason: string | null; customer_requested_at: string | null;
   entitlement_revoke_status: PersistedOrder['refund']['entitlementRevokeStatus']; refund_error_message: string | null; refund_updated_at: string | null;
 }
 interface CountRow { value: number }
@@ -21,6 +23,7 @@ const mapOrder = (row: OrderRow): PersistedOrder => ({
   paymentMethod: row.payment_method,
   entitlement: row.entitlement_status === 'granted' ? 'granted' : row.entitlement_status === 'revoked' ? 'revoked' : 'pending',
   refund: {
+    customerRequest: row.customer_user_id ? { userId: row.customer_user_id, name: row.customer_name, email: row.customer_email, reason: row.customer_reason || '', createdAt: row.customer_requested_at || '' } : null,
     amount: row.refund_amount_cents == null ? null : Number(row.refund_amount_cents) / 100,
     status: row.refund_status || null,
     paypalRefundId: row.paypal_refund_id,
@@ -57,9 +60,13 @@ export default defineEventHandler(async (event) => {
   const [rows, total, todayOrders, paidAmount, pending, exceptions] = await Promise.all([
     d1All<OrderRow>(event, `SELECT o.*, e.status AS entitlement_status,
       rr.status AS refund_status, rr.amount_cents AS refund_amount_cents, rr.paypal_refund_id, rr.request_source AS refund_source,
-      rr.entitlement_revoke_status, rr.error_message AS refund_error_message, rr.updated_at AS refund_updated_at
+      rr.entitlement_revoke_status, rr.error_message AS refund_error_message, rr.updated_at AS refund_updated_at,
+      cre.actor AS customer_user_id, cu.display_name AS customer_name, cu.email AS customer_email,
+      cre.detail AS customer_reason, cre.created_at AS customer_requested_at
       FROM orders o
       LEFT JOIN entitlements e ON e.order_no = o.order_no
+      LEFT JOIN refund_events cre ON cre.id = 'customer_refund_' || o.order_no AND cre.event_type = 'customer_refund_requested'
+      LEFT JOIN users cu ON cu.user_id = cre.actor
       LEFT JOIN refund_requests rr ON rr.order_no = o.order_no
         AND rr.created_at = (SELECT MAX(rr2.created_at) FROM refund_requests rr2 WHERE rr2.order_no = o.order_no)
       ${where} ORDER BY o.created_at DESC LIMIT ? OFFSET ?`, [...params, pageSize, (page - 1) * pageSize]),

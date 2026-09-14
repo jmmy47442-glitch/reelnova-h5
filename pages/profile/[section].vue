@@ -4,7 +4,7 @@ import {
   ExternalLink, FileText, Globe2, History, LockKeyhole, Mail, MessageCircle,
   Play, ReceiptText, RefreshCw, Search, Shield, ShoppingBag, Trash2,
 } from 'lucide-vue-next';
-import type { OrderStatus } from '~/types/content';
+import type { Order, OrderStatus } from '~/types/content';
 import { useAccountSettings } from '~/composables/useAccountSettings';
 import { useLocale } from '~/composables/useLocale';
 import { useUserAuth } from '~/composables/useUserAuth';
@@ -47,7 +47,7 @@ const displayConfig = computed(() => {
 useHead(() => ({ title: `${displayConfig.value.title} - ReelNova` }));
 
 const needsLibrary = section === 'purchases';
-const needsOrders = section === 'orders';
+const needsOrders = section === 'orders' || needsLibrary;
 const accountKey = session.value?.userId || 'current';
 const { data: library, status: libraryStatus, error: libraryError, refresh: refreshLibrary } = usePageData(
   `profile-${accountKey}-library-${section}`,
@@ -56,6 +56,7 @@ const { data: library, status: libraryStatus, error: libraryError, refresh: refr
 const { data: orders, status: ordersStatus, error: ordersError, refresh: refreshOrders } = usePageData(
   `profile-${accountKey}-orders-${section}`,
   () => needsOrders ? api.getMyOrders() : Promise.resolve(null),
+  { revalidateOnMount: needsOrders, revalidateOnActivate: needsOrders, revalidateOnFocus: needsOrders },
 );
 const { data: history, status: historyStatus, error: historyError, refresh: refreshHistory } = usePageData(
   `profile-${accountKey}-watch-history-${section}`,
@@ -63,10 +64,10 @@ const { data: history, status: historyStatus, error: historyError, refresh: refr
 );
 const sectionRefreshable = ['purchases', 'orders', 'history'].includes(section);
 const sectionRefreshing = computed(() => section === 'purchases'
-  ? libraryStatus.value === 'pending'
+  ? libraryStatus.value === 'pending' || ordersStatus.value === 'pending'
   : section === 'orders' ? ordersStatus.value === 'pending' : historyStatus.value === 'pending');
 const refreshSection = () => {
-  if (section === 'purchases') void refreshLibrary();
+  if (section === 'purchases') { void refreshLibrary(); void refreshOrders(); }
   else if (section === 'orders') void refreshOrders();
   else if (section === 'history') void refreshHistory();
 };
@@ -101,10 +102,10 @@ const languages = [
 ] as const;
 
 const faqs = [
-  { question: 'How do I restore a purchase?', answer: 'Open Profile and enter the PayPal email or ReelNova order number used at checkout. Verified titles are added to My purchases.' },
-  { question: 'Why is an episode still locked?', answer: 'Confirm that you are signed in to the account used for payment, then restore the purchase. If it stays locked, contact support with the order number.' },
+  { question: 'Where are my purchases?', answer: 'Sign in to the account used at checkout and open My purchases. If a paid purchase is missing, contact support with the order number from Orders & payments.' },
+  { question: 'Why is an episode still locked?', answer: 'Confirm that you are signed in to the account used for payment. If it stays locked, contact support with the order number.' },
   { question: 'Can I watch on another device?', answer: 'Yes. Sign in with the same ReelNova account on the new device. Your purchases and latest watch position will sync automatically.' },
-  { question: 'How do refunds work?', answer: 'Refund eligibility depends on playback activity and the payment date. Send your order number to support so the purchase can be reviewed.' },
+  { question: 'How do refunds work?', answer: 'Open My purchases and select Request refund beside the purchase. Submit a reason and follow the request status there. Eligibility depends on playback activity and the payment date.' },
   { question: 'Where can I find my order number?', answer: 'Order numbers begin with RN- and appear in Orders & payments and in your PayPal receipt.' },
 ];
 
@@ -115,6 +116,13 @@ const filteredFaqs = computed(() => {
   return query ? faqs.filter((item) => `${item.question} ${item.answer}`.toLowerCase().includes(query)) : faqs;
 });
 const visibleHistory = computed(() => history.value || []);
+const purchasedOrders = computed(() => (orders.value || []).filter((order) => ['paid', 'refunding', 'refunded'].includes(order.status) || order.refundStatus));
+const purchaseSeries = (seriesId: string) => library.value?.purchased.find((series) => series.id === seriesId);
+const unlinkedPurchases = computed(() => (library.value?.purchased || []).filter((series) => !purchasedOrders.value.some((order) => order.seriesId === series.id)));
+const refundSubmitted = (order: Order, status: NonNullable<Order['refundStatus']>) => {
+  order.refundStatus = status;
+  void refreshOrders();
+};
 
 const orderLabels: Record<OrderStatus, string> = {
   pending: 'Pending', processing: 'Processing', paid: 'Paid', failed: 'Failed', cancelled: 'Cancelled',
@@ -215,18 +223,36 @@ onBeforeUnmount(() => { if (noticeTimer.value) clearTimeout(noticeTimer.value); 
 
     <main class="account-content">
       <template v-if="section === 'purchases'">
-        <PageSkeleton v-if="libraryStatus === 'pending'" />
-        <EmptyState v-else-if="libraryError" title="Purchases unavailable" action="Try again" @action="refreshLibrary" />
-        <template v-else-if="library?.purchased.length">
-          <div class="account-section-label"><span>{{ library.purchased.length }} {{ library.purchased.length === 1 ? 'story' : 'stories' }}</span><small>Lifetime access</small></div>
+        <PageSkeleton v-if="ordersStatus === 'pending'" />
+        <EmptyState v-else-if="ordersError" title="Purchases unavailable" action="Try again" @action="refreshSection" />
+        <template v-else-if="purchasedOrders.length || unlinkedPurchases.length">
+          <div class="account-section-label"><span>{{ purchasedOrders.length + unlinkedPurchases.length }} purchases</span><small>Purchase history</small></div>
           <div class="account-media-list">
-            <NuxtLink v-for="series in library.purchased" :key="series.id" :to="`/series/${series.slug}`" class="account-media-row">
+            <article v-for="order in purchasedOrders" :key="order.orderNo" class="purchase-row">
+              <div class="purchase-row__content">
+                <img v-if="purchaseSeries(order.seriesId)" :src="purchaseSeries(order.seriesId)!.coverUrl" alt="" />
+                <span v-else class="purchase-row__placeholder"><ShoppingBag :size="24" /></span>
+                <div class="purchase-row__info">
+                  <span class="account-status" :class="`account-status--${order.status}`">{{ orderLabels[order.status] }}</span>
+                  <h2>{{ order.seriesTitle }}</h2>
+                  <p>{{ formatDate(order.createdAt) }} · {{ formatMoney(order.amount) }}</p>
+                  <small>{{ order.orderNo }}</small>
+                </div>
+              </div>
+              <div class="purchase-row__actions">
+                <NuxtLink v-if="purchaseSeries(order.seriesId) && order.entitlementStatus === 'granted' && order.status !== 'refunded'" class="button button--secondary" :to="`/series/${purchaseSeries(order.seriesId)!.slug}`"><Play :size="16" /> Watch</NuxtLink>
+                <PurchaseRefundButton :order="order" @submitted="refundSubmitted(order, $event)" />
+              </div>
+            </article>
+            <NuxtLink v-for="series in unlinkedPurchases" :key="series.id" :to="`/series/${series.slug}`" class="account-media-row">
               <img :src="series.coverUrl" alt="" />
               <div><span class="account-status account-status--owned"><Check :size="11" /> Owned</span><h2>{{ series.title }}</h2><p>{{ series.episodeCount }} episodes · {{ series.updatedLabel }}</p></div>
               <span class="account-row-action"><Play :size="17" fill="currentColor" /></span>
             </NuxtLink>
           </div>
         </template>
+        <PageSkeleton v-else-if="libraryStatus === 'pending'" />
+        <EmptyState v-else-if="libraryError" title="Purchases unavailable" action="Try again" @action="refreshSection" />
         <div v-else class="account-empty"><span><ShoppingBag :size="25" /></span><h2>No purchases yet</h2><p>Stories you unlock will appear here and stay connected to this account.</p><NuxtLink class="button button--primary" to="/explore">Explore stories</NuxtLink></div>
       </template>
 
@@ -304,7 +330,7 @@ onBeforeUnmount(() => { if (noticeTimer.value) clearTimeout(noticeTimer.value); 
             <p v-if="openTerm === index">{{ item.body }}</p>
           </article>
         </div>
-        <section class="refund-callout"><div><strong>Need a refund review?</strong><p>Include your RN order number so support can locate the payment.</p></div><a class="button button--secondary" href="mailto:support@iseedrama.com?subject=Refund%20request">Contact support</a></section>
+        <section class="refund-callout"><div><strong>Need a refund review?</strong><p>Review your purchase and refund status.</p></div><NuxtLink class="button button--secondary" to="/profile/purchases">My purchases</NuxtLink></section>
       </template>
 
       <template v-else-if="section === 'help'">

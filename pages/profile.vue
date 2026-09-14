@@ -1,34 +1,16 @@
 <script setup lang="ts">
-import { ChevronRight, CircleHelp, Clock3, FileText, Globe2, History, LogOut, Mail, Moon, ReceiptText, RotateCcw, Shield, ShoppingBag, Sun } from 'lucide-vue-next';
+import { ChevronRight, CircleHelp, Clock3, FileText, Globe2, History, LogOut, Moon, ReceiptText, Shield, ShoppingBag, Sun } from 'lucide-vue-next';
 import { useUserAuth } from '~/composables/useUserAuth';
 import { useAccountSettings } from '~/composables/useAccountSettings';
 import { useColorTheme } from '~/composables/useColorTheme';
 import { useLocale } from '~/composables/useLocale';
-import { useAnalytics } from '~/composables/useAnalytics';
 
 definePageMeta({ keepalive: true });
-const api = useContentApi();
-const { track } = useAnalytics();
 const { session, logout } = useUserAuth();
 const { settings } = useAccountSettings();
 const { t } = useLocale();
 const { isLight, toggleTheme } = useColorTheme();
 const route = useRoute();
-const lookup = ref('');
-const restoring = ref(false);
-const restoreMessage = ref('');
-
-const restore = async () => {
-  if (!lookup.value.trim()) return;
-  void track('restore_purchase', { properties: { lookupType: lookup.value.includes('@') ? 'email' : 'order' } });
-  restoring.value = true;
-  restoreMessage.value = '';
-  try {
-    const result = await api.restoreOrder(lookup.value.trim());
-    restoreMessage.value = result.restored ? `${result.restored} purchase restored to this device.` : 'No verified purchases found.';
-  } catch { restoreMessage.value = 'We could not verify that order. Check the details and try again.'; }
-  finally { restoring.value = false; }
-};
 
 const languageNames = { en: 'English', es: 'Espanol', pt: 'Portugues', fr: 'Francais', de: 'Deutsch' } as const;
 const menuGroups = computed(() => [
@@ -49,7 +31,6 @@ const signOut = async () => {
   <div v-else class="content-width page-top profile-page">
     <AppHeader compact />
     <header class="profile-identity"><span class="profile-avatar">{{ initials }}</span><div><span class="eyebrow">{{ t('profile.member') }}</span><h1>{{ session?.name || t('profile.title') }}</h1><p>{{ session?.email || t('profile.unavailable') }}</p></div></header>
-    <section class="restore-panel"><div class="restore-panel__title"><span><RotateCcw :size="19" /></span><div><h2>{{ t('profile.restore') }}</h2><p>{{ t('profile.restoreHelp') }}</p></div></div><label class="restore-input"><Mail :size="17" /><input v-model="lookup" type="text" placeholder="Email or RN-2026-..." @keyup.enter="restore" /></label><button class="button button--primary button--wide" type="button" :disabled="!lookup.trim() || restoring" @click="restore">{{ restoring ? t('profile.checking') : t('profile.restoreAction') }}</button><p v-if="restoreMessage" class="restore-message">{{ restoreMessage }}</p></section>
     <section v-for="(group, index) in menuGroups" :key="index" class="settings-list">
       <button
         v-if="index === 1"

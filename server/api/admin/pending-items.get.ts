@@ -23,9 +23,10 @@ const countRefunds = (event: Parameters<typeof d1First>[0], statuses: string[]) 
 
 export default defineEventHandler(async (event) => {
   const session = event.context.adminSession as AdminSession;
-  const [awaitingOrders, refundingOrders, failedRefunds, riskOrders, failedWebhooks] = await Promise.all([
+  const [awaitingOrders, refundingOrders, pendingRefunds, failedRefunds, riskOrders, failedWebhooks] = await Promise.all([
     countOrders(event, ['pending', 'processing']),
     countOrders(event, ['refunding']),
+    countRefunds(event, ['pending']),
     countRefunds(event, ['failed']),
     countOrders(event, ['risk_review']),
     d1First<PendingRow>(event, "SELECT COUNT(*) AS count, MAX(received_at) AS latest_at FROM paypal_webhook_events WHERE processing_status = 'failed'"),
@@ -50,6 +51,13 @@ export default defineEventHandler(async (event) => {
     description: '核对退款状态并同步权益',
     severity: 'warning',
     to: '/admin/orders',
+  });
+  addItem(pendingRefunds, {
+    id: 'refunds-pending-review',
+    title: '笔退款申请等待审核',
+    description: '查看用户申请原因并处理退款',
+    severity: 'warning',
+    to: '/admin/orders?refundStatus=pending',
   });
   addItem(failedRefunds, {
     id: 'refunds-failed',

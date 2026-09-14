@@ -230,6 +230,7 @@ export interface PersistedOrder {
   callbackAt: string | null;
   entitlement: 'pending' | 'granted' | 'revoked';
   refund: {
+    customerRequest?: { userId: string; name: string | null; email: string | null; reason: string; createdAt: string } | null;
     amount?: number | null;
     status: PersistedRefundStatus | null;
     paypalRefundId: string | null;
