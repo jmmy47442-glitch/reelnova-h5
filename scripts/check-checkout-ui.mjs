@@ -57,7 +57,7 @@ async function scenario(name, options, run) {
           };
         },
         Applepay: () => ({ config: async () => { if (window.__testOptions.appleConfigFailure) throw new Error('Domain unregistered'); return { isEligible: true, countryCode: 'US', merchantCapabilities: ['supports3DS'], supportedNetworks: ['visa'] }; },
-          validateMerchant: async () => { if (window.__testOptions.merchantFailure) throw new Error('Domain unregistered'); return { merchantSession: {} }; },
+          validateMerchant: async () => { if (window.__testOptions.merchantFailure) throw Object.assign(new Error('APPLE_PAY_MERCHANT_SESSION_VALIDATION_ERROR'), { paypalDebugId: 'test-domain-debug' }); return { merchantSession: {} }; },
           confirmOrder: async (input) => { window.__appleConfirm = input; return { status: 'APPROVED' }; },
         }),
       };` });
@@ -158,6 +158,19 @@ try {
     assert.equal(captures(), 1);
     assert.equal(await page.evaluate(() => window.__appleConfirm.orderId), 'PP-TEST');
     assert.deepEqual(await page.evaluate(() => window.__appleResults), [1]);
+  });
+  await scenario('Apple Pay merchant validation failure exposes a support reference without creating or charging an order', { merchantFailure: true }, async ({ page, calls, captures }) => {
+    await page.getByRole('button', { name: 'Apple Pay', exact: true }).click();
+    await page.getByRole('button', { name: 'Buy with Apple Pay' }).click();
+    const alert = page.getByRole('alert');
+    await alert.filter({ hasText: 'Apple Pay could not verify this store' }).waitFor();
+    assert.ok((await alert.innerText()).includes('Reference: test-domain-debug.'));
+    assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
+    assert.equal(captures(), 0);
+    assert.equal(await page.evaluate(() => window.__appleConfirm), undefined);
+    await page.getByRole('button', { name: 'Credit or debit card', exact: true }).click();
+    assert.equal(await alert.count(), 0);
+    await page.getByRole('button', { name: 'Pay $9.99 USD', exact: true }).waitFor();
   });
   await scenario('Apple Pay rejects changed price before confirming the wallet', { priceChanged: true }, async ({ page, captures }) => {
     await page.getByRole('button', { name: 'Apple Pay', exact: true }).click();

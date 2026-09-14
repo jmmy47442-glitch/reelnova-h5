@@ -52,6 +52,9 @@ let appleSession: any;
 let pollTimer: ReturnType<typeof setTimeout> | undefined;
 let polls = 0;
 let capturePromise: Promise<void> | undefined;
+// Payment method changes should feel instant. Keep cancellation in flight and
+// let the next order creation wait for it before contacting the server.
+let cancellationPromise: Promise<void> | undefined;
 const methodLabels: Record<PaymentMethod, string> = { paypal: 'PayPal', card: 'Credit or debit card', apple_pay: 'Apple Pay' };
 const trackPayment = (name: 'payment_success' | 'payment_failure' | 'payment_cancel') => {
   void track(name, { seriesId: props.series.id, seriesTitle: props.series.title, properties: { provider: 'paypal', paymentMethod: paymentMethod.value } });
@@ -123,6 +126,12 @@ const completePayment = (paypalOrderId: string): Promise<void> => {
   return capturePromise;
 };
 const createOrder = async (method: PaymentMethod) => {
+  if (cancellationPromise) {
+    const pendingCancellation = cancellationPromise;
+    try { await pendingCancellation; } finally {
+      if (cancellationPromise === pendingCancellation) cancellationPromise = undefined;
+    }
+  }
   checkoutKey.value ||= crypto.randomUUID();
   const order = await api.createOrder(props.series.id, checkoutKey.value, method);
   activeOrder.value = order;
@@ -150,9 +159,20 @@ const cancelCheckout = async () => {
 };
 const selectMethod = async (method: PaymentMethod) => {
   if (processing.value || method === paymentMethod.value) return;
-  if (activeOrder.value?.paypalOrderId || conflictPayPalId.value) {
-    await cancelCheckout();
-    if (activeOrder.value || conflictPayPalId.value || status.value === 'paid') return;
+  const id = conflictPayPalId.value || activeOrder.value?.paypalOrderId;
+  if (id) {
+    // Release the previous checkout without blocking the visible selection.
+    // createOrder() serializes the request if the user starts paying quickly.
+    activeOrder.value = null;
+    conflictPayPalId.value = '';
+    checkoutKey.value = '';
+    const previousCancellation = cancellationPromise;
+    cancellationPromise = (previousCancellation || Promise.resolve()).then(() => api.cancelPayPalOrder(id)).then((result) => {
+      if (result.status === 'paid') markPaid();
+    }).catch(() => {
+      // The next createOrder call will surface a server-side conflict if the
+      // provider could not confirm cancellation.
+    });
   }
   paymentMethod.value = method;
   status.value = 'pending';
@@ -215,8 +235,12 @@ const startApplePay = () => {
         const result = await applepay.validateMerchant({ validationUrl: event.validationURL, displayName: 'ReelNova' });
         session.completeMerchantValidation(result.merchantSession);
       } catch (reason) {
-        session.abort(); appleSession = null; busy.value = false;
-        showFailure(reason, 'Apple Pay is unavailable for this checkout. Please choose another payment method.');
+        try { session.abort(); } catch { /* The browser may have already ended the session. */ }
+        appleSession = null; busy.value = false;
+        const debugId = (reason as { paypalDebugId?: unknown } | null)?.paypalDebugId;
+        const reference = typeof debugId === 'string' && /^[a-zA-Z0-9-]{1,64}$/.test(debugId)
+          ? ` Reference: ${debugId}.` : '';
+        showFailure(reason, `Apple Pay could not verify this store with the payment provider. Your card has not been charged. Please try again or contact support.${reference}`);
       }
     };
     session.onpaymentauthorized = async (event: any) => {
