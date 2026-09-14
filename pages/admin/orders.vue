@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CloudOff, Download, RefreshCw, Search } from 'lucide-vue-next';
+import { CloudOff, Download, RefreshCw, Search, Undo2, X } from 'lucide-vue-next';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { parseRefundAmountCents } from '~/shared/refund-amount';
 import type { PersistedOrder, PersistedOrderStatus, PersistedRefundStatus } from '~/types/admin';
@@ -21,6 +21,9 @@ const refundMethod = ref<'paypal_api' | 'manual'>('paypal_api');
 const refundAmount = ref('');
 const refundReason = ref('');
 const refundSubmitted = ref(false);
+const refundError = ref('');
+const originalRefundAmount = ref<string | null>(null);
+const refundBusy = computed(() => Boolean(refunding.value || verifying.value));
 const refundAmountError = computed(() => {
   const cents = parseRefundAmountCents(refundAmount.value);
   return cents === null || cents > Math.round((refundOrder.value?.amount || 0) * 100)
@@ -46,13 +49,24 @@ const resetFilters = () => { statusFilter.value = ''; refundStatusFilter.value =
 const openDetail = (order: PersistedOrder) => { activeOrder.value = order; detailVisible.value = true; };
 
 const verify = async (order: PersistedOrder) => {
+  if (refundBusy.value) return;
   verifying.value = order.orderNo;
   try {
     const result = await api.verifyOrder(order.orderNo);
     await refresh();
     if (activeOrder.value?.orderNo === order.orderNo) activeOrder.value = data.value?.items.find((item) => item.orderNo === order.orderNo) || activeOrder.value;
-    ElMessage[result.synchronized ? 'success' : 'info'](result.refundStatus === 'completed' ? '退款已确认，权益回收状态已同步' : result.synchronized ? 'PayPal capture 已验证，订单与权益已同步' : `PayPal 状态：${result.paypalStatus}`);
-  } catch (reason: any) { ElMessage.error(reason?.data?.statusMessage || 'PayPal 核验失败'); }
+    if (refundVisible.value && refundOrder.value?.orderNo === order.orderNo) {
+      refundOrder.value = data.value?.items.find((item) => item.orderNo === order.orderNo) || refundOrder.value;
+      refundError.value = result.refundReconciliationRequired ? result.message || '退款结果尚未确认' : '';
+      originalRefundAmount.value = result.refundReconciliationRequired ? result.refundAmount : null;
+      if (result.refundStatus === 'completed') refundVisible.value = false;
+    }
+    ElMessage[result.refundReconciliationRequired ? 'warning' : result.synchronized ? 'success' : 'info'](result.message || (result.refundStatus === 'completed' ? '退款已确认，权益回收状态已同步' : result.synchronized ? 'PayPal capture 已验证，订单与权益已同步' : `PayPal 状态：${result.paypalStatus}`));
+  } catch (reason: any) {
+    const message = reason?.data?.data?.message || reason?.data?.statusMessage || 'PayPal 核验失败';
+    if (refundVisible.value) refundError.value = message;
+    ElMessage.error(message);
+  }
   finally { verifying.value = ''; }
 };
 const openRefund = (order: PersistedOrder, method: 'paypal_api' | 'manual') => {
@@ -61,12 +75,39 @@ const openRefund = (order: PersistedOrder, method: 'paypal_api' | 'manual') => {
   refundAmount.value = (order.refund.amount ?? order.amount).toFixed(2);
   refundReason.value = '';
   refundSubmitted.value = false;
+  refundError.value = '';
+  originalRefundAmount.value = null;
   refundVisible.value = true;
 };
 const refund = (order: PersistedOrder) => openRefund(order, 'paypal_api');
 const recordManualRefund = (order: PersistedOrder) => openRefund(order, 'manual');
+const cancelFailedRefund = async () => {
+  const order = refundOrder.value;
+  if (!order || refundBusy.value) return;
+  refunding.value = order.orderNo;
+  try {
+    const result = await api.refundOrder(order.orderNo, '管理员取消失败的退款申请，准备重新申请退款', { method: 'cancel' });
+    await refresh();
+    refundOrder.value = data.value?.items.find((item) => item.orderNo === order.orderNo) || refundOrder.value;
+    if (result.status === 'refunded') {
+      refundVisible.value = false;
+      ElMessage.info('此订单已完成退款，订单状态已同步');
+      return;
+    }
+    refundError.value = '';
+    originalRefundAmount.value = null;
+    refundReason.value = '';
+    refundSubmitted.value = false;
+    ElMessage.success('失败退款已取消，可以重新申请退款');
+  } catch (reason: any) {
+    refundError.value = reason?.data?.data?.message || reason?.data?.statusMessage || '取消退款失败';
+    originalRefundAmount.value = reason?.data?.data?.originalAmount || null;
+    await refresh();
+    refundOrder.value = data.value?.items.find((item) => item.orderNo === order.orderNo) || refundOrder.value;
+  } finally { refunding.value = ''; }
+};
 const submitRefund = async () => {
-  if (refunding.value) return;
+  if (refundBusy.value) return;
   refundSubmitted.value = true;
   const order = refundOrder.value;
   if (!order || refundAmountError.value || refundReasonError.value) return;
@@ -77,12 +118,20 @@ const submitRefund = async () => {
       amount, method: refundMethod.value,
       ...(refundMethod.value === 'manual' ? { providerStatus: 'COMPLETED' } : {}),
     });
-    refundVisible.value = false;
-    ElMessage[result.synchronized ? 'success' : 'info'](result.synchronized ? `退款 ${amount} ${order.currency} 已完成，用户权益已回收` : '退款已提交 PayPal，等待异步确认');
+    if (['paid', 'failed', 'cancelled'].includes(result.status)) {
+      refundError.value = 'PayPal 已确认退款失败或取消，可取消失败退款后重新申请。';
+    } else {
+      refundVisible.value = false;
+      ElMessage[result.synchronized ? 'success' : 'info'](result.synchronized ? `退款 ${amount} ${order.currency} 已完成，用户权益已回收` : '退款已提交 PayPal，等待异步确认');
+    }
     await refresh();
     if (activeOrder.value?.orderNo === order.orderNo) activeOrder.value = data.value?.items.find((item) => item.orderNo === order.orderNo) || activeOrder.value;
+    refundOrder.value = data.value?.items.find((item) => item.orderNo === order.orderNo) || refundOrder.value;
   } catch (reason: any) {
-    ElMessage.error(reason?.data?.data?.message || reason?.data?.statusMessage || '退款提交失败');
+    refundError.value = reason?.data?.data?.message || reason?.data?.statusMessage || '退款提交失败';
+    originalRefundAmount.value = reason?.data?.data?.originalAmount || null;
+    await refresh();
+    refundOrder.value = data.value?.items.find((item) => item.orderNo === order.orderNo) || refundOrder.value;
   } finally { refunding.value = ''; }
 };
 const rejectRefund = async (order: PersistedOrder) => {
@@ -120,11 +169,20 @@ const exportOrders = () => {
     </template>
 
     <el-drawer v-model="detailVisible" title="订单详情" size="min(560px, 92vw)"><template v-if="activeOrder"><div class="drawer-heading"><div><span>本地订单号</span><strong>{{ activeOrder.orderNo }}</strong></div><el-tag :type="type(activeOrder.status) as any">{{ labels[activeOrder.status] }}</el-tag></div><el-descriptions :column="1" border class="admin-descriptions"><el-descriptions-item label="短剧">{{ activeOrder.seriesTitle }}</el-descriptions-item><el-descriptions-item label="用户">{{ activeOrder.email || '未提供' }} · {{ activeOrder.country || '未知' }}</el-descriptions-item><el-descriptions-item label="订单金额">${{ activeOrder.amount.toFixed(2) }} {{ activeOrder.currency }}</el-descriptions-item><el-descriptions-item label="手续费 / 净额">${{ activeOrder.fee.toFixed(2) }} / ${{ activeOrder.netAmount.toFixed(2) }}</el-descriptions-item><el-descriptions-item label="支付方式">{{ paymentMethodLabel(activeOrder.paymentMethod) }} · PayPal 收款</el-descriptions-item><el-descriptions-item label="PayPal Order ID">{{ activeOrder.paypalOrderId || '—' }}</el-descriptions-item><el-descriptions-item label="Capture ID">{{ activeOrder.captureId || '—' }}</el-descriptions-item><el-descriptions-item label="退款状态">{{ activeOrder.refund.status ? refundLabels[activeOrder.refund.status] : '无退款记录' }}<span v-if="activeOrder.refund.paypalRefundId"> · {{ activeOrder.refund.paypalRefundId }}</span></el-descriptions-item><el-descriptions-item v-if="activeOrder.refund.amount != null" label="申请退款金额">{{ activeOrder.refund.amount.toFixed(2) }} {{ activeOrder.currency }}</el-descriptions-item><el-descriptions-item label="退款权益回收">{{ activeOrder.refund.entitlementRevokeStatus || '—' }}</el-descriptions-item><el-descriptions-item label="回调时间">{{ activeOrder.callbackAt ? new Date(activeOrder.callbackAt).toLocaleString('zh-CN', { hour12: false }) : '—' }}</el-descriptions-item><el-descriptions-item label="权益状态">{{ entitlementLabels[activeOrder.entitlement] }}</el-descriptions-item></el-descriptions><section class="drawer-note"><strong>服务端记录</strong><p>{{ activeOrder.note || '暂无异常记录。订单状态由 PayPal 核验结果自动维护。' }}</p><p v-if="activeOrder.refund.errorMessage" class="danger-text">退款错误：{{ activeOrder.refund.errorMessage }}</p></section><div class="drawer-actions"><el-button :loading="verifying === activeOrder.orderNo" @click="verify(activeOrder)"><RefreshCw :size="15" />从 PayPal 重新核验</el-button><el-button v-if="activeOrder.status === 'paid'" type="danger" plain :loading="refunding === activeOrder.orderNo" @click="refund(activeOrder)">发起退款</el-button><el-button v-if="activeOrder.status === 'paid'" plain :loading="refunding === activeOrder.orderNo" @click="recordManualRefund(activeOrder)">记录人工退款</el-button><el-button v-if="activeOrder.status === 'paid'" text type="danger" :loading="refunding === activeOrder.orderNo" @click="rejectRefund(activeOrder)">记录拒绝</el-button></div></template></el-drawer>
-    <el-dialog v-model="refundVisible" :title="refundMethod === 'manual' ? '记录人工退款' : '发起退款'" width="min(520px, 92vw)" align-center :close-on-click-modal="false" :close-on-press-escape="!refunding" :show-close="!refunding">
+    <el-dialog v-model="refundVisible" :title="refundMethod === 'manual' ? '记录人工退款' : '发起退款'" width="min(520px, 92vw)" align-center :close-on-click-modal="false" :close-on-press-escape="!refundBusy" :show-close="!refundBusy">
       <template v-if="refundOrder">
         <p class="refund-order-number">{{ refundOrder.orderNo }}</p>
         <el-alert type="warning" show-icon :closable="false" :title="refundMethod === 'manual' ? '仅记录已在 PayPal 商户后台完成的退款。全额或部分退款均会回收此订单的观看权益。' : '全额或部分退款完成后，均会回收此订单的观看权益。'" />
-        <el-form label-position="top" class="refund-form" :disabled="Boolean(refunding)" @submit.prevent="submitRefund">
+        <el-alert v-if="refundError" class="refund-error" type="error" show-icon :closable="false" :title="refundError" />
+        <div v-if="refundMethod === 'paypal_api' && (refundOrder.refund.status || refundError)" class="refund-recovery">
+          <span v-if="refundOrder.refund.status">上一笔申请：{{ refundLabels[refundOrder.refund.status] }}<template v-if="refundOrder.refund.amount != null"> · {{ refundOrder.refund.amount.toFixed(2) }} {{ refundOrder.currency }}</template></span>
+          <div class="refund-recovery-actions">
+            <el-button :disabled="refundBusy" :loading="verifying === refundOrder.orderNo" @click="verify(refundOrder)"><RefreshCw :size="15" />核验退款</el-button>
+            <el-button v-if="refundOrder.refund.status === 'failed'" :disabled="refundBusy" @click="cancelFailedRefund"><X :size="15" />取消失败退款</el-button>
+            <el-button v-if="originalRefundAmount" :disabled="refundBusy" @click="refundAmount = originalRefundAmount"><Undo2 :size="15" />恢复原金额 {{ originalRefundAmount }}</el-button>
+          </div>
+        </div>
+        <el-form label-position="top" class="refund-form" :disabled="refundBusy" @submit.prevent="submitRefund">
           <el-form-item label="订单金额"><strong>{{ refundOrder.amount.toFixed(2) }} {{ refundOrder.currency }}</strong></el-form-item>
           <el-form-item label="退款金额" :error="refundSubmitted ? refundAmountError : ''" required>
             <el-input v-model="refundAmount" aria-label="退款金额" inputmode="decimal" placeholder="0.00"><template #append>{{ refundOrder.currency }}</template></el-input>
@@ -135,7 +193,7 @@ const exportOrders = () => {
           </el-form-item>
         </el-form>
       </template>
-      <template #footer><el-button :disabled="Boolean(refunding)" @click="refundVisible = false">取消</el-button><el-button type="primary" :loading="Boolean(refunding)" @click="submitRefund">{{ refundMethod === 'manual' ? '记录已完成' : '确认退款' }}</el-button></template>
+      <template #footer><el-button :disabled="refundBusy" @click="refundVisible = false">取消</el-button><el-button type="primary" :disabled="Boolean(verifying) || refundOrder?.status === 'refunded' || refundOrder?.status === 'refunding'" :loading="Boolean(refunding)" @click="submitRefund">{{ refundMethod === 'manual' ? '记录已完成' : '确认退款' }}</el-button></template>
     </el-dialog>
   </div>
 </template>
@@ -143,4 +201,7 @@ const exportOrders = () => {
 <style scoped>
 .refund-order-number { margin: 0 0 16px; overflow-wrap: anywhere; }
 .refund-form { margin-top: 20px; }
+.refund-error, .refund-recovery { margin-top: 16px; }
+.refund-recovery-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.refund-recovery-actions .el-button { margin-left: 0; }
 </style>

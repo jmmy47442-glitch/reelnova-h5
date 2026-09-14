@@ -25,7 +25,7 @@ export interface PayPalCaptureResponse {
   purchase_units: Array<{ payments?: { captures?: Array<{
     id: string; status: string; amount: { currency_code: string; value: string };
     seller_receivable_breakdown?: { paypal_fee?: { value: string } };
-  }> } }>;
+  }>; refunds?: PayPalRefundResponse[] } }>;
 }
 
 interface OrderSnapshot {

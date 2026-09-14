@@ -9,6 +9,7 @@ try {
   for (const width of [1440, 375]) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     const submissions = [];
+    let refundMode = 'success';
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     page.on('console', (message) => { if (message.type() === 'error') console.log(message.text()); });
@@ -20,12 +21,20 @@ try {
     };
     await page.route('**/api/**', async (route) => {
       const path = new URL(route.request().url()).pathname;
+      if (!path.startsWith('/api/')) return route.continue();
       let data;
       if (path.endsWith('/auth/session')) data = { id: 'test-admin', name: 'Test Admin', email: 'admin@example.com', role: 'super_admin' };
       else if (path.endsWith('/pending-items')) data = { items: [] };
       else if (path.endsWith('/refund')) {
-        submissions.push(route.request().postDataJSON());
-        data = { orderNo: order.orderNo, status: 'refunded', synchronized: true };
+        const input = route.request().postDataJSON();
+        submissions.push(input);
+        if (refundMode === 'uncertain') return route.fulfill({ status: 409, json: { data: { code: 'REFUND_RECONCILIATION_REQUIRED', message: '上一笔退款结果尚未确认，请先核验退款。', originalAmount: '9.99' } } });
+        if (input.method === 'cancel') {
+          order.refund.status = 'cancelled';
+          data = { orderNo: order.orderNo, status: 'cancelled', synchronized: false };
+        } else data = { orderNo: order.orderNo, status: 'refunded', synchronized: true };
+      } else if (path.endsWith('/verify')) {
+        data = { paypalStatus: 'COMPLETED', captureStatus: 'COMPLETED', refundStatus: null, synchronized: false, refundReconciliationRequired: true, refundAmount: '9.99', message: '收款已核验，但上一笔退款结果仍未确认。请按原申请金额重试，或在 PayPal 商户后台核对退款记录。' };
       } else if (path.endsWith('/orders')) data = { connected: true, generatedAt: new Date().toISOString(), items: [order], total: 1, summary: { todayOrders: 1, paidAmount: 9.99, pending: 0, exceptions: 0 } };
       else return route.fulfill({ status: 404, json: { message: 'Unexpected mock request' } });
       await route.fulfill({ json: { data } });
@@ -75,8 +84,34 @@ try {
     assert.equal(submissions[1].amount, '1.25');
     assert.equal(submissions[1].method, 'manual');
     assert.equal(submissions[1].providerStatus, 'COMPLETED');
+    await page.getByRole('button', { name: '退款', exact: true }).click();
+    await amount.fill('0.66');
+    await dialog.getByRole('textbox', { name: '退款原因', exact: true }).fill('Customer requested another refund');
+    refundMode = 'uncertain';
+    await dialog.getByRole('button', { name: '确认退款', exact: true }).click();
+    await dialog.getByText('上一笔退款结果尚未确认，请先核验退款。', { exact: true }).waitFor();
+    await dialog.getByRole('button', { name: '恢复原金额 9.99' }).click();
+    assert.equal(await amount.inputValue(), '9.99');
+    await dialog.getByRole('button', { name: '核验退款', exact: true }).click();
+    await dialog.getByText(/收款已核验，但上一笔退款结果仍未确认/).waitFor();
+    await dialog.getByRole('button', { name: '取消失败退款', exact: true }).click();
+    await dialog.getByText('上一笔退款结果尚未确认，请先核验退款。', { exact: true }).waitFor();
+    assert.equal(order.refund.status, 'failed');
+    await page.screenshot({ path: `artifacts/screenshots/refund-recovery-${width}.png` });
+    const recoveryBounds = await dialog.boundingBox();
+    assert.ok(recoveryBounds.x >= 0 && recoveryBounds.x + recoveryBounds.width <= width && recoveryBounds.y >= 0 && recoveryBounds.y + recoveryBounds.height <= 900);
+    refundMode = 'success';
+    await dialog.getByRole('button', { name: '取消失败退款', exact: true }).click();
+    await dialog.getByText(/上一笔申请：已取消/).waitFor();
+    assert.equal(await dialog.getByRole('textbox', { name: '退款原因', exact: true }).inputValue(), '');
+    await amount.fill('0.66');
+    await dialog.getByRole('textbox', { name: '退款原因', exact: true }).fill('New partial refund after closing failure');
+    await dialog.getByRole('button', { name: '确认退款', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    assert.equal(submissions.at(-1).amount, '0.66');
+    assert.equal(submissions.at(-1).method, 'paypal_api');
     assert.deepEqual(errors, []);
-    console.log(`Refund UI passed at ${width}px: validation, amount submission, reset and manual recording`);
+    console.log(`Refund UI passed at ${width}px: validation, submission, manual recording, reconciliation, cancellation and reapplication`);
     await page.close();
   }
 } finally {

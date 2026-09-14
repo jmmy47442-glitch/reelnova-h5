@@ -95,6 +95,7 @@ function harness({ afterCreate, beforeRead, afterCapture, beforeRefund, afterRef
   return {
     db: database, providerOrders, creates: () => providerCreates, captures: () => providerCaptures,
     providerRefunds, refund: load('server/api/admin/orders/[orderNo]/refund.post.ts').default,
+    verify: load('server/api/admin/orders/[orderNo]/verify.post.ts').default,
     create: load('server/api/orders/index.post.ts').default,
     capture: load('server/api/paypal/capture.post.ts').default,
     cancel: load('server/api/paypal/cancel.post.ts').default,
@@ -155,11 +156,125 @@ test('refund retry after an uncertain provider response keeps the amount and ide
     const order = await paidOrder(h);
     const event = { params: { orderNo: order.orderNo }, body: { amount: '2.35', reason: 'Customer requested refund' } };
     await assert.rejects(h.refund(event));
-    await assert.rejects(h.refund({ ...event, body: { ...event.body, amount: '4.00' } }), (error) => error.statusCode === 409);
+    await assert.rejects(h.refund({ ...event, body: { ...event.body, amount: '4.00' } }), (error) => error.statusCode === 409 && error.data.code === 'REFUND_RECONCILIATION_REQUIRED' && error.data.originalAmount === '2.35');
+    await assert.rejects(h.refund({ ...event, body: { reason: event.body.reason, method: 'cancel' } }), (error) => error.statusCode === 409);
     fail = false;
     assert.equal((await h.refund(event)).data.status, 'refunded');
     assert.equal(h.providerRefunds.size, 1);
     assert.equal(h.db.prepare('SELECT amount_cents FROM refund_requests').get().amount_cents, 235);
+  } finally { h.db.close(); }
+});
+
+for (const amount of ['9.99', '0.66']) test(`cancel a rejected refund and reopen the same paid order for ${amount}`, async () => {
+  let reject = true;
+  const keys = [];
+  const h = harness({ beforeRefund: (options) => {
+    keys.push(options.headers['PayPal-Request-Id']);
+    if (reject) throw Object.assign(new Error('Refund rejected'), { statusCode: 422, data: { details: [{ issue: 'INSUFFICIENT_FUNDS' }] } });
+  } });
+  try {
+    const order = await paidOrder(h);
+    const event = { params: { orderNo: order.orderNo }, body: { amount: '9.99', reason: 'Original customer refund reason' } };
+    await assert.rejects(h.refund(event));
+    assert.equal((await h.refund({ ...event, body: { method: 'cancel', reason: 'Close failed refund application' } })).data.status, 'cancelled');
+    assert.equal(h.db.prepare('SELECT status FROM orders').get().status, 'paid');
+    assert.equal(h.db.prepare('SELECT status FROM entitlements').get().status, 'granted');
+    assert.equal(keys.length, 1);
+    assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM refund_events WHERE event_type = 'refund_cancelled'").get().n, 1);
+    reject = false;
+    assert.equal((await h.refund({ ...event, body: { amount, reason: 'New partial refund application' } })).data.status, 'refunded');
+    assert.notEqual(keys[0], keys[1]);
+    assert.equal([...h.providerRefunds.values()][0].amount.value, amount);
+    assert.match(h.db.prepare("SELECT detail FROM refund_events WHERE event_type = 'refund_requested'").get().detail, /Original customer refund reason; amount=9.99/);
+    assert.equal(h.db.prepare('SELECT status FROM entitlements').get().status, 'revoked');
+  } finally { h.db.close(); }
+});
+
+for (const providerStatus of ['FAILED', 'PENDING', 'COMPLETED']) test(`cancellation reconciles a previously failed refund now reported as ${providerStatus}`, async () => {
+  let first = true;
+  const h = harness({ afterRefund: (refund) => { if (first) { refund.status = 'FAILED'; first = false; } } });
+  try {
+    const order = await paidOrder(h);
+    const event = { params: { orderNo: order.orderNo }, body: { amount: '1.00', reason: 'Customer requested refund' } };
+    assert.equal((await h.refund(event)).data.status, 'failed');
+    [...h.providerRefunds.values()][0].status = providerStatus;
+    const cancel = { ...event, body: { method: 'cancel', reason: 'Close failed refund application' } };
+    if (providerStatus === 'FAILED') {
+      assert.equal((await h.refund(cancel)).data.status, 'cancelled');
+      assert.equal((await h.refund({ ...event, body: { ...event.body, amount: '0.66' } })).data.status, 'refunded');
+      assert.equal(h.providerRefunds.size, 2);
+    } else {
+      await assert.rejects(h.refund(cancel), (error) => error.statusCode === 409);
+      assert.equal(h.providerRefunds.size, 1);
+      assert.equal(h.db.prepare('SELECT status FROM orders').get().status, providerStatus === 'PENDING' ? 'refunding' : 'refunded');
+    }
+  } finally { h.db.close(); }
+});
+
+test('an unresolved refund on another paid order does not block a new refund', async () => {
+  let fail = true;
+  const h = harness({ afterRefund: () => { if (fail) throw new Error('Response lost'); } });
+  try {
+    const first = await paidOrder(h);
+    await assert.rejects(h.refund({ params: { orderNo: first.orderNo }, body: { amount: '1.00', reason: 'First customer refund request' } }));
+    h.db.exec("INSERT INTO users (user_id, email, created_at, updated_at, last_seen_at) VALUES ('other', 'other@example.com', 'now', 'now', 'now')");
+    const second = (await h.create({ user: 'other', body: { seriesId: 's', paymentMethod: 'card' } })).data;
+    h.providerOrders.get(second.paypalOrderId).status = 'APPROVED';
+    await h.capture({ user: 'other', body: { paypalOrderId: second.paypalOrderId } });
+    fail = false;
+    assert.equal((await h.refund({ params: { orderNo: second.orderNo }, body: { amount: '0.66', reason: 'Second customer refund request' } })).data.status, 'refunded');
+    assert.equal(h.db.prepare('SELECT status FROM refund_requests WHERE order_no = ?').get(first.orderNo).status, 'failed');
+  } finally { h.db.close(); }
+});
+
+for (const evidence of ['missing', 'completed', 'pending', 'wrong_amount', 'wrong_capture', 'multiple']) test(`refund verification after a lost response handles ${evidence} evidence without submitting another refund`, async () => {
+  let posts = 0;
+  const h = harness({ beforeRefund: () => { posts++; }, afterRefund: () => { throw new Error('Response lost'); } });
+  try {
+    const order = await paidOrder(h);
+    await assert.rejects(h.refund({ params: { orderNo: order.orderNo }, body: { amount: '0.66', reason: 'Customer requested refund' } }));
+    const payments = h.providerOrders.get(order.paypalOrderId).purchase_units[0].payments;
+    const refund = [...h.providerRefunds.values()][0];
+    if (evidence !== 'missing') payments.refunds = [refund];
+    if (evidence === 'pending') refund.status = 'PENDING';
+    if (evidence === 'wrong_amount') refund.amount.value = '1.00';
+    if (evidence === 'wrong_capture') payments.captures[0].id = 'OTHER-CAPTURE';
+    if (evidence === 'multiple') payments.refunds.push({ ...refund, id: 'OTHER-REFUND' });
+    if (evidence === 'completed') payments.captures[0].status = 'PARTIALLY_REFUNDED';
+    if (evidence === 'wrong_capture') {
+      await assert.rejects(h.verify({ params: { orderNo: order.orderNo }, context: {} }), (error) => error.data?.code === 'CAPTURE_ID_CONFLICT');
+      assert.equal(posts, 1);
+      assert.equal(h.db.prepare('SELECT paypal_refund_id FROM refund_requests').get().paypal_refund_id, null);
+      return;
+    }
+    const result = (await h.verify({ params: { orderNo: order.orderNo }, context: {} })).data;
+    assert.equal(posts, 1);
+    assert.equal(result.refundAmount, '0.66');
+    assert.equal(result.synchronized, evidence === 'completed');
+    assert.equal(result.refundReconciliationRequired, evidence !== 'completed');
+    if (['completed', 'pending'].includes(evidence)) {
+      assert.equal(h.db.prepare('SELECT paypal_refund_id FROM refund_requests').get().paypal_refund_id, refund.id);
+      assert.equal(result.refundStatus, evidence === 'completed' ? 'completed' : 'processing');
+      assert.equal(h.db.prepare('SELECT status FROM entitlements').get().status, evidence === 'completed' ? 'revoked' : 'granted');
+    } else {
+      assert.match(result.message, /退款结果仍未确认/);
+      assert.equal(h.db.prepare('SELECT paypal_refund_id FROM refund_requests').get().paypal_refund_id, null);
+    }
+  } finally { h.db.close(); }
+});
+
+test('verification recognizes a fully refunded capture even without refund details', async () => {
+  const h = harness({ afterRefund: () => { throw new Error('Response lost'); } });
+  try {
+    const order = await paidOrder(h);
+    await assert.rejects(h.refund({ params: { orderNo: order.orderNo }, body: { amount: '9.99', reason: 'Customer requested full refund' } }));
+    h.providerOrders.get(order.paypalOrderId).purchase_units[0].payments.captures[0].status = 'REFUNDED';
+    const result = (await h.verify({ params: { orderNo: order.orderNo }, context: {} })).data;
+    assert.equal(result.refundStatus, 'completed');
+    assert.equal(result.synchronized, true);
+    assert.equal(result.refundReconciliationRequired, false);
+    assert.equal(h.db.prepare('SELECT status FROM entitlements').get().status, 'revoked');
+    assert.equal(h.providerRefunds.size, 1);
   } finally { h.db.close(); }
 });
 
