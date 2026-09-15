@@ -13,7 +13,7 @@ const { track } = useAnalytics();
 const { formatPrice } = useFormatters();
 const route = useRoute();
 const { isAuthenticated } = useUserAuth();
-const { data: paymentConfig, refresh: refreshPaymentConfig } = await useAsyncData('paypal-checkout-config', () => api.getPayPalConfig());
+const { data: paymentConfig, refresh: refreshPaymentConfig, error: paymentConfigError } = await useAsyncData('paypal-checkout-config', () => api.getPayPalConfig());
 const status = ref<OrderStatus>('pending');
 const error = ref('');
 const paymentMethod = ref<PaymentMethod>('paypal');
@@ -22,6 +22,7 @@ const cardContainer = ref<HTMLElement | null>(null);
 const loading = ref(false);
 const busy = ref(false);
 const sdkFailed = ref(false);
+const paypalReady = ref(false);
 const cardReady = ref(false);
 const cardMessage = ref('');
 const cardValidationAttempted = ref(false);
@@ -33,6 +34,18 @@ const activeOrder = shallowRef<Order | null>(null);
 const conflictPayPalId = ref('');
 const checkoutKey = ref('');
 const paypalAvailable = computed(() => Boolean(paymentConfig.value?.available && paymentConfig.value.clientId));
+// Only show progress for the selected method; other providers may still be loading.
+const selectedMethodLoading = computed(() => loading.value && (paymentMethod.value === 'paypal'
+  ? !paypalReady.value && !sdkFailed.value
+  : paymentMethod.value === 'card' ? !cardReady.value && !cardMessage.value : !appleReady.value && !appleMessage.value));
+const withPaymentTimeout = async <T,>(task: Promise<T>): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([task, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Payment option took too long to load.')), 10_000);
+    })]);
+  } finally { clearTimeout(timer); }
+};
 const purchasable = computed(() => props.series.price > 0);
 const processing = computed(() => busy.value || status.value === 'processing');
 const applePayLoadFailureMessage = () => {
@@ -267,9 +280,13 @@ const initialize = async () => {
   if (!props.open || !isAuthenticated.value || !purchasable.value || loading.value) return;
   const currentGeneration = generation;
   loading.value = true;
+  sdkFailed.value = false;
+  paypalReady.value = false;
   try {
     await refreshPaymentConfig();
-    if (currentGeneration !== generation || !paypalAvailable.value) return;
+    if (currentGeneration !== generation) return;
+    if (paymentConfigError.value) throw paymentConfigError.value;
+    if (!paypalAvailable.value) return;
     await nextTick();
     const paypal = await loadPayPalSdk(paymentConfig.value!.clientId);
     if (currentGeneration !== generation || !paypalContainer.value || !cardContainer.value) return;
@@ -291,7 +308,8 @@ const initialize = async () => {
           onCancel: async () => { busy.value = false; await cancelCheckout(); },
           onError: (reason: unknown) => { busy.value = false; showFailure(reason); },
         });
-        await buttons.render(paypalContainer.value);
+        await withPaymentTimeout(buttons.render(paypalContainer.value));
+        if (currentGeneration === generation) paypalReady.value = true;
       } catch { if (currentGeneration === generation) sdkFailed.value = true; }
     };
     const initializeCardFields = async () => {
@@ -310,9 +328,9 @@ const initialize = async () => {
             container: cardContainer.value!.querySelector(`[data-card-${field}]`),
           }));
           renderedFields.push(...fields.map(({ hostedField }) => hostedField));
-          await Promise.all(fields.map(({ hostedField, container }) => hostedField.render(container)));
+          await withPaymentTimeout(Promise.all(fields.map(({ hostedField, container }) => hostedField.render(container))));
           if (currentGeneration === generation) cardReady.value = true;
-        } else cardMessage.value = 'Direct card payment is unavailable for this checkout. You can still use PayPal.';
+        } else if (currentGeneration === generation) cardMessage.value = 'Direct card payment is unavailable for this checkout. You can still use PayPal.';
       } catch { if (currentGeneration === generation) cardMessage.value = 'Card fields could not be loaded. Please reopen checkout to retry or use PayPal.'; }
     };
     const initializeApplePay = async () => {
@@ -320,11 +338,12 @@ const initialize = async () => {
         const ApplePaySession = (window as any).ApplePaySession;
         if (window.isSecureContext && ApplePaySession?.supportsVersion(4) && ApplePaySession.canMakePayments()) {
           applepay = paypal.Applepay();
-          appleConfig = await applepay.config();
+          const config = await withPaymentTimeout<any>(applepay.config());
           if (currentGeneration !== generation) return;
+          appleConfig = config;
           appleReady.value = Boolean(appleConfig.isEligible);
           if (!appleReady.value) appleMessage.value = 'Apple Pay is unavailable for this checkout. Please use card or PayPal.';
-        } else appleMessage.value = 'Use a compatible Apple device with a card in Wallet to pay with Apple Pay.';
+        } else if (currentGeneration === generation) appleMessage.value = 'Use a compatible Apple device with a card in Wallet to pay with Apple Pay.';
       } catch { if (currentGeneration === generation) appleMessage.value = applePayLoadFailureMessage(); }
     };
     await Promise.all([
@@ -333,10 +352,13 @@ const initialize = async () => {
       initializeApplePay(),
     ]);
   } catch {
+    if (currentGeneration !== generation) return;
     sdkFailed.value = true;
     cardMessage.value = 'Card payment could not be loaded. Please reopen checkout to retry.';
     appleMessage.value = 'Apple Pay could not be loaded. Please reopen checkout to retry.';
-    error.value = 'Payment options could not be loaded. You can continue to secure PayPal checkout.';
+    error.value = paypalAvailable.value
+      ? 'Payment options could not be loaded. You can continue to secure PayPal checkout.'
+      : 'Payment options could not be loaded. Please reopen checkout to try again.';
   } finally { if (currentGeneration === generation) loading.value = false; }
 };
 const checkout = async () => {
@@ -358,7 +380,7 @@ const dispose = () => {
   void Promise.resolve(buttons?.close()).catch(() => undefined);
   for (const field of renderedFields) { try { void Promise.resolve(field.close?.()).catch(() => undefined); } catch { /* Detached iframe. */ } }
   renderedFields = []; buttons = null; cardFields = null;
-  loading.value = false; cardReady.value = false; appleReady.value = false;
+  loading.value = false; paypalReady.value = false; sdkFailed.value = false; cardReady.value = false; appleReady.value = false;
   cardValidationAttempted.value = false; cardValidationMessage.value = ''; cardFieldErrors.value = {};
 };
 const close = () => { if (!busy.value) emit('close'); };
@@ -422,7 +444,7 @@ onBeforeUnmount(dispose);
               <li v-if="purchasable"><Check :size="17" /> Secure card and wallet checkout</li>
             </ul>
             <div v-if="error" class="inline-error" role="alert"><CircleAlert :size="18" /><span>{{ error }} <a href="mailto:support@iseedrama.com?subject=Payment%20support">Contact support</a></span></div>
-            <div class="paypal-slot" :aria-busy="loading || processing">
+            <div class="paypal-slot" :aria-busy="selectedMethodLoading || processing">
               <template v-if="purchasable && paypalAvailable">
                 <div class="payment-methods" role="group" aria-label="Payment method">
                   <button v-for="(label, method) in methodLabels" :key="method" type="button" :aria-label="label" :disabled="processing" :aria-pressed="paymentMethod === method" :class="['payment-method', { 'is-active': paymentMethod === method }]" @click="selectMethod(method)">
@@ -432,7 +454,7 @@ onBeforeUnmount(dispose);
                     <span v-if="method !== 'apple_pay'">{{ label }}</span>
                   </button>
                 </div>
-                <p v-if="loading" class="checkout-hint" role="status"><LoaderCircle class="spin" :size="16" /> Loading secure payment options…</p>
+                <p v-if="selectedMethodLoading" class="checkout-hint" role="status"><LoaderCircle class="spin" :size="16" /> Loading secure payment options…</p>
                 <div v-show="paymentMethod === 'paypal'">
                   <div v-show="!sdkFailed" ref="paypalContainer" class="paypal-buttons" aria-label="PayPal checkout" />
                   <button v-if="sdkFailed" class="button button--primary button--wide" type="button" :disabled="processing" @click="checkout">Continue to PayPal</button>

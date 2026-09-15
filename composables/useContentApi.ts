@@ -34,7 +34,7 @@ export const useContentApi = () => {
     recordPlayback: (event: PlaybackEventInput, keepalive = false) => request<{ accepted: true; positionSeconds: number; durationSeconds: number; lastWatchedAt: string }>('/me/watch-history', { method: 'POST', body: event, keepalive }),
     recordAnalytics: (event: AnalyticsEventInput, keepalive = false) => request<{ accepted: true }>('/events', { method: 'POST', body: event, keepalive }),
     createOrder: (seriesId: string, idempotencyKey?: string, paymentMethod: 'paypal' | 'card' | 'apple_pay' = 'paypal') => request<Order>('/orders', { method: 'POST', timeout: 15_000, body: { seriesId, idempotencyKey, paymentMethod } }),
-    getPayPalConfig: () => request<{ environment: 'sandbox' | 'production'; clientId: string; available: boolean }>('/paypal/config'),
+    getPayPalConfig: () => request<{ environment: 'sandbox' | 'production'; clientId: string; available: boolean }>('/paypal/config', { timeout: 8_000, retry: 0 }),
     capturePayPalOrder: (paypalOrderId: string) => request<{ orderNo: string; status: 'paid' }>('/paypal/capture', { method: 'POST', body: { paypalOrderId } }),
     cancelPayPalOrder: (paypalOrderId: string) => request<{ orderNo: string; status: 'paid' | 'cancelled' }>('/paypal/cancel', { method: 'POST', body: { paypalOrderId } }),
     getMyOrders: () => request<Order[]>('/me/orders'),

@@ -35,6 +35,7 @@ async function scenario(name, options, run) {
   }, options);
   await page.route('https://www.paypal.com/sdk/js?**', (route) => {
     if (options.sdkFailure) return route.abort();
+    if (options.sdkStalled) return;
     return route.fulfill({ contentType: 'application/javascript', body: `
       window.paypal = {
         FUNDING: { PAYPAL: 'paypal' },
@@ -49,14 +50,14 @@ async function scenario(name, options, run) {
             },
           } : { isFormValid: window.__testOptions.invalidCard !== true };
           window.__correctCardDetails = () => { window.__testOptions.missingCardDetails = false; callbacks.inputEvents?.onChange?.(getState()); };
-          const field = () => ({ render: async (host) => { const input = document.createElement('input'); input.setAttribute('aria-label', 'Hosted field'); host.appendChild(input); }, close: () => {} });
+          const field = () => ({ render: async (host) => { if (window.__testOptions.slowCardRender) await new Promise(() => {}); const input = document.createElement('input'); input.setAttribute('aria-label', 'Hosted field'); host.appendChild(input); }, close: () => {} });
           return { isEligible: () => window.__testOptions.cardEligible !== false,
             NameField: field, NumberField: field, ExpiryField: field, CVVField: field,
             getState: async () => getState(),
             submit: async () => { window.__submitCount++; const orderID = await callbacks.createOrder(); await callbacks.onApprove({ orderID }); },
           };
         },
-        Applepay: () => ({ config: async () => { if (window.__testOptions.appleConfigFailure) throw new Error('Domain unregistered'); return { isEligible: true, countryCode: 'US', merchantCapabilities: ['supports3DS'], supportedNetworks: ['visa'] }; },
+        Applepay: () => ({ config: async () => { if (window.__testOptions.slowAppleConfig) await new Promise(() => {}); if (window.__testOptions.appleConfigFailure) throw new Error('Domain unregistered'); return { isEligible: true, countryCode: 'US', merchantCapabilities: ['supports3DS'], supportedNetworks: ['visa'] }; },
           validateMerchant: async () => { if (window.__testOptions.merchantFailure) throw Object.assign(new Error('APPLE_PAY_MERCHANT_SESSION_VALIDATION_ERROR'), { paypalDebugId: 'test-domain-debug' }); return { merchantSession: {} }; },
           confirmOrder: async (input) => { window.__appleConfirm = input; return { status: 'APPROVED' }; },
         }),
@@ -142,6 +143,30 @@ try {
     await page.getByRole('button', { name: 'Credit or debit card', exact: true }).click();
     await page.getByRole('button', { name: 'Pay $9.99 USD', exact: true }).waitFor();
     assert.equal(await page.locator('.paypal-card-fields input').count(), 4);
+    await page.getByText('Loading secure payment options…', { exact: true }).waitFor({ state: 'hidden', timeout: 2000 });
+    await page.getByRole('button', { name: 'PayPal', exact: true }).click();
+    await page.getByRole('button', { name: 'Continue to PayPal', exact: true }).waitFor({ timeout: 12_000 });
+    await page.getByText('Loading secure payment options…', { exact: true }).waitFor({ state: 'hidden' });
+  });
+  await scenario('stalled card and Apple Pay do not block a ready PayPal wallet', { slowCardRender: true, slowAppleConfig: true }, async ({ page }) => {
+    await page.getByRole('button', { name: 'Mock PayPal checkout' }).waitFor();
+    await page.getByText('Loading secure payment options…', { exact: true }).waitFor({ state: 'hidden', timeout: 2000 });
+    await page.getByRole('button', { name: 'Credit or debit card', exact: true }).click();
+    await page.getByText('Card fields could not be loaded.', { exact: false }).waitFor({ timeout: 12_000 });
+    await page.getByText('Loading secure payment options…', { exact: true }).waitFor({ state: 'hidden' });
+    await page.getByRole('button', { name: 'Apple Pay', exact: true }).click();
+    await page.getByText('Apple Pay cannot be tested on localhost', { exact: false }).waitFor();
+    await page.getByText('Loading secure payment options…', { exact: true }).waitFor({ state: 'hidden' });
+  });
+  await scenario('stalled SDK offers PayPal redirect without creating an order automatically', { sdkStalled: true }, async ({ page, calls }) => {
+    await page.getByRole('button', { name: 'Continue to PayPal', exact: true }).waitFor({ timeout: 12_000 });
+    await page.getByText('Loading secure payment options…', { exact: true }).waitFor({ state: 'hidden' });
+    assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
+    await page.route('https://www.sandbox.paypal.com/checkoutnow?**', (route) => route.fulfill({ contentType: 'text/html', body: 'Mock PayPal redirect' }));
+    await page.getByRole('button', { name: 'Continue to PayPal', exact: true }).click();
+    await page.waitForURL('https://www.sandbox.paypal.com/checkoutnow?token=PP-TEST');
+    assert.equal(calls.filter((call) => call.path === '/api/orders').length, 1);
+    assert.equal(calls.find((call) => call.path === '/api/orders').body.paymentMethod, 'paypal');
   });
   await scenario('PayPal wallet still creates and captures', {}, async ({ page, calls, captures }) => {
     await page.getByRole('button', { name: 'Mock PayPal checkout' }).click();

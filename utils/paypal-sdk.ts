@@ -27,7 +27,7 @@ export const loadPayPalSdk = (clientId: string): Promise<any> => {
         reject(error);
       } else resolve((window as any).paypal);
     };
-    const timer = window.setTimeout(() => finish(new Error('Payment options took too long to load.')), 20_000);
+    const timer = window.setTimeout(() => finish(new Error('Payment options took too long to load.')), 10_000);
     script.onload = () => finish((window as any).paypal ? undefined : new Error('Payment SDK unavailable.'));
     script.onerror = () => finish(new Error('Payment options could not be loaded.'));
     document.head.appendChild(script);
