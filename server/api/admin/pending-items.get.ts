@@ -1,3 +1,4 @@
+import { reportingOrders } from '~/server/utils/reporting-orders';
 import { ok } from '~/server/utils/response';
 import { d1First } from '~/server/utils/cloudflare-d1';
 import type { AdminPendingItem, AdminPendingItemsResponse } from '~/types/admin';
@@ -11,13 +12,13 @@ interface PendingRow {
 
 const countOrders = (event: Parameters<typeof d1First>[0], statuses: string[]) => d1First<PendingRow>(
   event,
-  `SELECT COUNT(*) AS count, MAX(updated_at) AS latest_at FROM orders WHERE status IN (${statuses.map(() => '?').join(', ')})`,
+  `SELECT COUNT(*) AS count, MAX(o.updated_at) AS latest_at FROM orders o WHERE ${reportingOrders()} AND o.status IN (${statuses.map(() => '?').join(', ')})`,
   statuses,
 );
 
 const countRefunds = (event: Parameters<typeof d1First>[0], statuses: string[]) => d1First<PendingRow>(
   event,
-  `SELECT COUNT(*) AS count, MAX(updated_at) AS latest_at FROM refund_requests WHERE status IN (${statuses.map(() => '?').join(', ')})`,
+  `SELECT COUNT(*) AS count, MAX(r.updated_at) AS latest_at FROM refund_requests r JOIN orders o ON o.order_no = r.order_no WHERE ${reportingOrders()} AND r.status IN (${statuses.map(() => '?').join(', ')})`,
   statuses,
 );
 

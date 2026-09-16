@@ -1,3 +1,4 @@
+import { reportingOrders, capturedOrders } from '~/server/utils/reporting-orders';
 import { ok } from '~/server/utils/response';
 import { d1All, d1First } from '~/server/utils/cloudflare-d1';
 import type { DashboardMetric, DashboardSummary, DashboardTrendPoint } from '~/types/admin';
@@ -21,20 +22,20 @@ export default defineEventHandler(async (event) => {
   const [playsToday, playsYesterday, ordersToday, ordersYesterday, revenueToday, revenueYesterday, exceptionsToday, exceptionsYesterday, trendRows, topRows, health, pendingOrders] = await Promise.all([
     d1First<CountRow>(event, "SELECT COUNT(*) AS value FROM playback_events WHERE event_type = 'start' AND created_at >= ?", [todayIso]),
     d1First<CountRow>(event, "SELECT COUNT(*) AS value FROM playback_events WHERE event_type = 'start' AND created_at >= ? AND created_at < ?", [yesterdayIso, todayIso]),
-    d1First<CountRow>(event, 'SELECT COUNT(*) AS value FROM orders WHERE created_at >= ?', [todayIso]),
-    d1First<CountRow>(event, 'SELECT COUNT(*) AS value FROM orders WHERE created_at >= ? AND created_at < ?', [yesterdayIso, todayIso]),
-    d1First<MoneyRow>(event, "SELECT COALESCE(SUM(amount_cents), 0) AS value FROM orders WHERE status = 'paid' AND callback_at >= ?", [todayIso]),
-    d1First<MoneyRow>(event, "SELECT COALESCE(SUM(amount_cents), 0) AS value FROM orders WHERE status = 'paid' AND callback_at >= ? AND callback_at < ?", [yesterdayIso, todayIso]),
-    d1First<CountRow>(event, "SELECT COUNT(*) AS value FROM orders WHERE status IN ('failed', 'risk_review') AND created_at >= ?", [todayIso]),
-    d1First<CountRow>(event, "SELECT COUNT(*) AS value FROM orders WHERE status IN ('failed', 'risk_review') AND created_at >= ? AND created_at < ?", [yesterdayIso, todayIso]),
+    d1First<CountRow>(event, `SELECT COUNT(*) AS value FROM orders o WHERE ${reportingOrders()} AND created_at >= ?`, [todayIso]),
+    d1First<CountRow>(event, `SELECT COUNT(*) AS value FROM orders o WHERE ${reportingOrders()} AND created_at >= ? AND created_at < ?`, [yesterdayIso, todayIso]),
+    d1First<MoneyRow>(event, `SELECT COALESCE(SUM(amount_cents), 0) AS value FROM orders o WHERE ${reportingOrders()} AND ${capturedOrders()} AND callback_at >= ?`, [todayIso]),
+    d1First<MoneyRow>(event, `SELECT COALESCE(SUM(amount_cents), 0) AS value FROM orders o WHERE ${reportingOrders()} AND ${capturedOrders()} AND callback_at >= ? AND callback_at < ?`, [yesterdayIso, todayIso]),
+    d1First<CountRow>(event, `SELECT COUNT(*) AS value FROM orders o WHERE ${reportingOrders()} AND status IN ('failed', 'risk_review') AND created_at >= ?`, [todayIso]),
+    d1First<CountRow>(event, `SELECT COUNT(*) AS value FROM orders o WHERE ${reportingOrders()} AND status IN ('failed', 'risk_review') AND created_at >= ? AND created_at < ?`, [yesterdayIso, todayIso]),
     d1All<{ date: string; plays: number; revenue_cents: number }>(event, `
       WITH dates AS (
         SELECT date(created_at) AS date FROM playback_events WHERE created_at >= ?
-        UNION SELECT date(created_at) AS date FROM orders WHERE created_at >= ?
+        UNION SELECT date(callback_at) AS date FROM orders o WHERE ${reportingOrders()} AND ${capturedOrders()} AND callback_at >= ?
       ), plays AS (
         SELECT date(created_at) AS date, COUNT(*) AS plays FROM playback_events WHERE event_type = 'start' AND created_at >= ? GROUP BY date(created_at)
       ), revenue AS (
-        SELECT date(callback_at) AS date, SUM(amount_cents) AS revenue_cents FROM orders WHERE status = 'paid' AND callback_at >= ? GROUP BY date(callback_at)
+        SELECT date(callback_at) AS date, SUM(amount_cents) AS revenue_cents FROM orders o WHERE ${reportingOrders()} AND ${capturedOrders()} AND callback_at >= ? GROUP BY date(callback_at)
       )
       SELECT dates.date, COALESCE(plays.plays, 0) AS plays, COALESCE(revenue.revenue_cents, 0) AS revenue_cents
       FROM dates LEFT JOIN plays USING(date) LEFT JOIN revenue USING(date) ORDER BY dates.date ASC
@@ -45,7 +46,7 @@ export default defineEventHandler(async (event) => {
         WHERE event_type = 'start' AND created_at >= ? GROUP BY series_id
       ), sales AS (
         SELECT series_id, MAX(series_title) AS title, COUNT(*) AS paid_orders, COALESCE(SUM(amount_cents), 0) AS revenue_cents
-        FROM orders WHERE status = 'paid' AND callback_at >= ? GROUP BY series_id
+        FROM orders o WHERE ${reportingOrders()} AND ${capturedOrders()} AND callback_at >= ? GROUP BY series_id
       ), ids AS (SELECT series_id FROM plays UNION SELECT series_id FROM sales)
       SELECT ids.series_id, COALESCE(plays.title, sales.title) AS title, COALESCE(plays.plays, 0) AS plays,
         COALESCE(sales.paid_orders, 0) AS paid_orders, COALESCE(sales.revenue_cents, 0) AS revenue_cents
@@ -54,7 +55,7 @@ export default defineEventHandler(async (event) => {
     `, [new Date(today.getTime() - 6 * 86_400_000).toISOString(), new Date(today.getTime() - 6 * 86_400_000).toISOString()]),
     d1First<HealthRow>(event, `SELECT MAX(received_at) AS last_webhook_at,
       SUM(CASE WHEN processing_status = 'failed' THEN 1 ELSE 0 END) AS failed_webhooks FROM paypal_webhook_events`),
-    d1First<CountRow>(event, "SELECT COUNT(*) AS value FROM orders WHERE status IN ('pending', 'processing', 'refunding')"),
+    d1First<CountRow>(event, `SELECT COUNT(*) AS value FROM orders o WHERE ${reportingOrders()} AND status IN ('pending', 'processing', 'refunding')`),
   ]);
 
   const trendByDate = new Map(trendRows.map((row) => [row.date, row]));

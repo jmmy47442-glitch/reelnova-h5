@@ -17,9 +17,9 @@
 
 完整的域名、回调、DNS 和上线待补参数见 [`docs/PROJECT-INFORMATION.md`](./docs/PROJECT-INFORMATION.md)。
 
-## UI 原型运行
+## 本地运行
 
-当前仓库包含 Vue 3 + Nuxt 3 用户端 H5，以及基于 Art Design Pro / Element Plus 设计规范的后台管理 UI。业务数据由 Nuxt mock API 提供，真实后台可通过 `NUXT_PUBLIC_API_BASE` 接入。
+当前仓库包含 Vue 3 + Nuxt 3 用户端 H5，以及基于 Art Design Pro / Element Plus 设计规范的后台管理 UI。业务接口由 Nuxt/Nitro 提供，内容、订单、观看记录与配置存储于 Cloudflare D1。`NUXT_PUBLIC_API_BASE` 可用于指定 API 地址。
 
 ```bash
 npm install
@@ -27,35 +27,25 @@ npm run dev
 ```
 
 - 用户端：登录 `/login`，注册 `/register`，首页 `/`，探索 `/explore`，片库 `/library`，个人中心 `/profile`。用户必须注册或登录后才能进入用户端界面。
-- 核心流程：详情 `/series/vows-and-vengeance`，锁片播放 `/watch/vows-and-vengeance/4`。
+- 核心流程：详情 `/series/{slug}`，分集播放 `/watch/{slug}/{episode}`，使用后台已上架的真实短剧。
 - 管理后台：概览 `/admin`，短剧 `/admin/series`，订单 `/admin/orders`，首页配置 `/admin/operations`，支付配置 `/admin/system`。
 - 管理后台仅提供登录，不开放注册。所有管理员账号（包括预设超级管理员）均保存在 Cloudflare D1 `admin_accounts` 表，未连接数据库时不使用内存数据兜底。默认超级管理员为 `admin@reelnova.com` / `ReelNova@2026`；可通过 `SUPER_ADMIN_EMAIL`、`SUPER_ADMIN_PASSWORD`、`ADMIN_SESSION_SECRET` 和 `ADMIN_CREDENTIAL_SECRET` 覆盖。启用 Cloudflare Access 后，服务端会验证 Access JWT 的签名和声明。
 - 超级管理员可在 `/admin/administrators` 直接创建管理员，系统生成的登录密码仅在创建成功时返回一次。
-- D1 尚无已上架短剧时，用户端返回内容不可用；仅本地开发可显式设置 `REELNOVA_PUBLIC_MOCK_FALLBACK=true` 展示原型内容，生产构建强制禁用该回退。
-- MVP 验收目录可通过 `npm run db:seed:acceptance` 幂等导入，并用 `npm run check:acceptance-data` 只读核对；该命令不会创建伪造支付或购买权益。需要验收后台订单状态时，必须在隔离环境显式运行 `npm run db:seed:acceptance:transactions`。字段、PayPal Sandbox 实测步骤见 [`docs/MVP-ACCEPTANCE-DATA.md`](./docs/MVP-ACCEPTANCE-DATA.md)。生产构建始终禁用 mock fallback。
+- 已删除原型内容回退和虚构后台数据；数据库不可用时返回错误，保存失败不会回退到内存并报告成功。
+- 用户端不显示播放数、评分、虚构在线人数。真实更新提示每 30 秒及返回首页/窗口时比较最新数据，按变化的短剧与分组计数，刷新成功后清零；请求时间戳、隐藏播放数字和观看进度变化不计入更新。Popular 按 D1 中通过授权校验的播放开始事件累计排序；播放器实际开始播放时上报，同一播放会话同一集只计一次，心跳不增加播放量。New 按更新时间排序。两个分组由系统生成，后台管理附加分区。
+- 已删除未验证邮箱归属的密码重置入口及接口、无服务支撑的个性化推荐和营销邮件开关。
+- MVP 验收目录可通过 `npm run db:seed:acceptance` 幂等导入，并用 `npm run check:acceptance-data` 只读核对；该命令不会创建伪造支付或购买权益。需要验收后台订单状态时，必须在隔离环境显式运行 `npm run db:seed:acceptance:transactions`。字段、PayPal Sandbox 实测步骤见 [`docs/MVP-ACCEPTANCE-DATA.md`](./docs/MVP-ACCEPTANCE-DATA.md)。
 - PayPal 与 R2/Stream 可以后开通：配置留空时 H5 会关闭结账入口、后台会禁用媒体上传，服务端不会写入失败订单或上传任务；开通后补齐 `.env.example` 对应变量并重启即可启用。
 - MVP 域名使用普通 Cloudflare Custom Domains：Nuxt 绑定根域名和 `admin`，媒体 Worker 绑定 `media`，`www` 通过 Cloudflare Redirect Rule 301 到根域名。后台动态添加任意第三方备用域名需在 Cloudflare for SaaS 开通后再启用。
 - 验收命令：`npm run typecheck`、`npm run build`、`npm run visual-check`；正式域名绑定后运行 `npm run check:domains` 验证 DNS、TLS 与 `www` 301。
 - 接口约定见 [`docs/API-INTEGRATION.md`](./docs/API-INTEGRATION.md)，后台 UI 基线见 [`docs/ART-DESIGN-PRO.md`](./docs/ART-DESIGN-PRO.md)。`NUXT_PUBLIC_API_BASE` 应指向包含 `/auth`、`/admin` 和业务路由的 API 根路（本地默认为 `/api`）。
 - Cloudflare D1、规范化内容模型、R2/Stream 媒体链路、播放统计与 PayPal 真实订单配置见 [`docs/CLOUDFLARE-INTEGRATION.md`](./docs/CLOUDFLARE-INTEGRATION.md)。
 
-## 推荐技术选型
+## 当前实现
 
-本项目面向美国市场，包含移动端 H5 点播页面、运营管理后台、PayPal 支付、视频转码与 HLS 分发等功能。MVP 阶段推荐使用以下技术栈：
+- 用户端与管理后台：TypeScript、Vue 3、Nuxt 3、Element Plus。
+- 服务端：Nuxt/Nitro API，Cloudflare D1 数据库。
+- 视频：Cloudflare R2 原片存储、Stream 转码、媒体 Worker 签名分发。
+- 支付：PayPal 订单、支付回调、权益与退款处理。
 
-| 层级 | 推荐语言 | 推荐技术 |
-| --- | --- | --- |
-| 用户端 H5 | TypeScript | Vue 3 + Nuxt 3（Node.js） |
-| 运营管理后台 | TypeScript | Vue 3 + Element Plus（Art Design Pro） |
-| 服务端 API | Java 21 | Spring Boot 3 |
-| 数据库 | SQL | PostgreSQL |
-| 缓存与会话 | - | Redis |
-| 视频处理 | Java 调度 | FFmpeg + HLS |
-
-### 选型说明
-
-- 用户端要求兼容 iOS Safari、Android Chrome 和常见内嵌浏览器，同时需要支持 SEO 和分享页面，因此采用 TypeScript + Vue 3 + Nuxt 3。
-- 用户端和运营后台统一使用 TypeScript/Vue 3，便于共享 API 类型、表单校验、国际化资源和基础组件。
-- 服务端需要处理订单事务、PayPal Webhook 验签与幂等、权益发放、退款状态和审计日志，因此采用 Java + Spring Boot。
-- 视频转码直接使用 FFmpeg，MVP 阶段由 Java 服务投递和调度转码任务；后续业务量增长后可再拆分独立 Worker。
-- Nuxt 3 主要承担 H5 渲染、页面服务和开发期 mock API，不作为核心支付后端；支付回调、权益校验和转码任务由 Spring Boot 服务负责。
+真实支付和媒体上传需要对应服务凭据，缺少配置时入口禁用。

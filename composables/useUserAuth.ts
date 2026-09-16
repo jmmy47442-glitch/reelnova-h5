@@ -1,5 +1,5 @@
 import type { ApiEnvelope } from '~/types/content';
-import type { UserLoginInput, UserPasswordResetInput, UserRegisterInput, UserSession } from '~/types/user';
+import type { UserLoginInput, UserRegisterInput, UserSession } from '~/types/user';
 import { useAccountSettings } from '~/composables/useAccountSettings';
 import { clearPageDataCache } from '~/composables/usePageData';
 import {
@@ -73,24 +73,6 @@ export const useUserAuth = () => {
     return response.data;
   };
 
-  const resetPassword = async (input: UserPasswordResetInput) => {
-    const passwordSalt = createUserPasswordSalt();
-    const passwordHash = await deriveUserPasswordHash(input.password, passwordSalt);
-    const challengeResponse = await $fetch<ApiEnvelope<{ challenge: string }>>('/auth/challenge', {
-      baseURL,
-      method: 'POST',
-      body: { email: input.email, purpose: 'reset' },
-    });
-    const proof = await deriveUserPasswordProof(input.password, passwordSalt, challengeResponse.data.challenge);
-    const response = await $fetch<ApiEnvelope<{ email: string }>>('/auth/password-reset', {
-      baseURL,
-      credentials: 'include',
-      method: 'POST',
-      body: { ...input, passwordSalt, passwordHash, challenge: challengeResponse.data.challenge, proof },
-    });
-    return response.data;
-  };
-
   const logout = async () => {
     try {
       await $fetch('/auth/logout', { baseURL, credentials: 'include', method: 'POST' });
@@ -102,5 +84,5 @@ export const useUserAuth = () => {
     }
   };
 
-  return { session, sessionChecked, isAuthenticated, fetchSession, login, register, resetPassword, logout };
+  return { session, sessionChecked, isAuthenticated, fetchSession, login, register, logout };
 };

@@ -115,7 +115,6 @@ export const listNormalizedSeries = async (event: H3Event): Promise<ManagedSerie
       badge: (tagsBySeries.get(row.id)?.[0] || row.badge || 'New') as ManagedSeries['badge'],
       genres: categoriesBySeries.get(row.id) || [],
       views: 0,
-      rating: 0,
       episodeCount: episodes.length,
       freeEpisodeCount,
       price: row.price_cents / 100,

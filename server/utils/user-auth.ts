@@ -201,40 +201,6 @@ export const authenticateUserProof = async (event: H3Event, email: string, chall
   return { ...toAccount(account), lastLoginAt: loggedInAt };
 };
 
-export const resetUserPassword = async (
-  event: H3Event,
-  email: string,
-  passwordSalt: string,
-  passwordHash: string,
-  challenge: string,
-  proof: string,
-) => {
-  await enforceAuthRateLimit(event, 'user-reset', email, { ip: 10, email: 4, windowSeconds: 600, blockSeconds: 900 });
-  const account = await findByEmail(event, email.trim().toLowerCase());
-  if (!account) return null;
-  if (account.status !== 'active') {
-    throw createError({ statusCode: 403, statusMessage: 'This account cannot reset its password' });
-  }
-  const normalizedEmail = email.trim().toLowerCase();
-  const challengePayload = await verifyUserLoginChallenge(event, challenge, normalizedEmail, 'reset');
-  if (!challengePayload) return null;
-  const expectedProof = await signWithKey(challenge, userBase64UrlToBytes(passwordHash));
-  if (!constantTimeEqual(proof, expectedProof) || !await consumeChallenge(event, challengePayload.nonce, normalizedEmail, 'reset')) return null;
-  const updatedAt = new Date().toISOString();
-  if (canUseMemoryAuth(event)) {
-    const stored = memoryAccounts.get(account.email);
-    if (stored) memoryAccounts.set(account.email, { ...stored, password_salt: passwordSalt, password_hash: passwordHash });
-  } else {
-    await d1Run(event, 'UPDATE users SET password_salt = ?, password_hash = ?, updated_at = ? WHERE user_id = ?', [
-      passwordSalt,
-      passwordHash,
-      updatedAt,
-      account.user_id,
-    ]);
-  }
-  return toAccount({ ...account, password_salt: passwordSalt, password_hash: passwordHash });
-};
-
 export const setUserSession = async (event: H3Event, account: UserAccount, remember: boolean) => {
   const maxAge = remember ? rememberedSessionMaxAge : standardSessionMaxAge;
   const loggedInAt = new Date().toISOString();

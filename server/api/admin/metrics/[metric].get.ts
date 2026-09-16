@@ -1,3 +1,4 @@
+import { reportingOrders, capturedOrders } from '~/server/utils/reporting-orders';
 import { ok } from '~/server/utils/response';
 import { d1All, d1First } from '~/server/utils/cloudflare-d1';
 import type {
@@ -41,9 +42,9 @@ interface OrderRow {
 
 const metricCopy: Record<DashboardMetricKey, { title: string; description: string }> = {
   plays: { title: '今日播放量明细', description: '今日触发播放开始的记录，同一会话、短剧和集数只计一次。' },
-  orders: { title: '今日订单明细', description: '今日创建的全部订单，包含待支付、处理中、已支付和异常状态。' },
-  revenue: { title: '已确认收入明细', description: '今日完成 PayPal 确认且订单状态为已支付的收入记录。' },
-  exceptions: { title: '异常订单明细', description: '今日创建且处于支付失败或风控审核状态的订单。' },
+  orders: { title: '今日订单明细', description: '今日正式环境创建的全部订单，包含待支付、处理中、已支付和异常状态。' },
+  revenue: { title: '支付成功金额明细', description: '今日正式环境支付成功金额，退款在对账中心按完成时间单列。' },
+  exceptions: { title: '异常订单明细', description: '今日正式环境创建且处于支付失败或风控审核状态的订单。' },
 };
 
 const asMetric = (value: string | undefined): DashboardMetricKey => {
@@ -114,12 +115,12 @@ export default defineEventHandler(async (event) => {
     return ok(data);
   }
 
-  const conditions: string[] = [];
+  const conditions: string[] = [reportingOrders()];
   const params: unknown[] = [];
   let occurredAt = 'o.created_at';
   if (metric === 'revenue') {
     occurredAt = 'o.callback_at';
-    conditions.push("o.status = 'paid'", 'o.callback_at >= ?', 'o.callback_at < ?');
+    conditions.push(capturedOrders(), 'o.callback_at >= ?', 'o.callback_at < ?');
   } else {
     conditions.push('o.created_at >= ?', 'o.created_at < ?');
     if (metric === 'exceptions') conditions.push("o.status IN ('failed', 'risk_review')");

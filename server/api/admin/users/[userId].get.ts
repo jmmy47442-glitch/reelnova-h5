@@ -8,6 +8,8 @@ interface ProfileRow {
   language: string | null; recommendations: number | null; analytics: number | null; marketing: number | null;
 }
 interface OrderRow {
+  paypal_environment: 'production' | 'sandbox';
+  completed_refund_cents: number;
   order_no: string; series_id: string; series_title: string; email: string | null; country: string | null;
   amount_cents: number; fee_cents: number; status: PersistedOrder['status']; paypal_order_id: string | null;
   capture_id: string | null; created_at: string; callback_at: string | null; note: string | null; entitlement_status: string | null;
@@ -21,10 +23,11 @@ const maskEmail = (value: string | null) => {
   return local && domain ? `${local.slice(0, Math.min(2, local.length))}***@${domain}` : '—';
 };
 const mapOrder = (row: OrderRow): PersistedOrder => ({
-  orderNo: row.order_no, seriesId: row.series_id, seriesTitle: row.series_title,
+  environment: row.paypal_environment, orderNo: row.order_no, seriesId: row.series_id, seriesTitle: row.series_title,
   email: row.email ? maskEmail(row.email) : null, country: row.country,
   amount: Number(row.amount_cents) / 100, currency: 'USD', fee: Number(row.fee_cents) / 100,
-  netAmount: (Number(row.amount_cents) - Number(row.fee_cents)) / 100, status: row.status,
+  netAmount: (['paid', 'refunding', 'refunded'].includes(row.status) && row.capture_id
+    ? Number(row.amount_cents) - Number(row.fee_cents) - Number(row.completed_refund_cents || 0) : 0) / 100, status: row.status,
   paypalOrderId: row.paypal_order_id, captureId: row.capture_id, createdAt: row.created_at,
   callbackAt: row.callback_at,
   entitlement: row.entitlement_status === 'granted' ? 'granted' : row.entitlement_status === 'revoked' ? 'revoked' : 'pending',
@@ -65,12 +68,12 @@ export default defineEventHandler(async (event) => {
       wh.duration_seconds AS durationSeconds, wh.completed,
       wh.last_watched_at AS lastWatchedAt FROM watch_history wh
       WHERE wh.user_id = ? ORDER BY wh.last_watched_at DESC LIMIT 100`, [userId]),
-    d1All<OrderRow>(event, `SELECT o.*, e.status AS entitlement_status,
+    d1All<OrderRow>(event, `SELECT o.*, (SELECT COALESCE(SUM(r.amount_cents), 0) FROM refund_requests r WHERE r.order_no = o.order_no AND r.status = 'completed') AS completed_refund_cents, e.status AS entitlement_status,
       rr.status AS refund_status, rr.paypal_refund_id, rr.request_source AS refund_source,
       rr.entitlement_revoke_status, rr.error_message AS refund_error_message, rr.updated_at AS refund_updated_at
       FROM orders o LEFT JOIN entitlements e ON e.order_no = o.order_no
       LEFT JOIN refund_requests rr ON rr.order_no = o.order_no
-        AND rr.created_at = (SELECT MAX(rr2.created_at) FROM refund_requests rr2 WHERE rr2.order_no = o.order_no)
+        AND rr.id = (SELECT rr2.id FROM refund_requests rr2 WHERE rr2.order_no = o.order_no ORDER BY rr2.created_at DESC, rr2.id DESC LIMIT 1)
       WHERE o.user_id = ? ORDER BY o.created_at DESC LIMIT 100`, [userId]),
   ]);
   return ok<AdminUserDetail>({

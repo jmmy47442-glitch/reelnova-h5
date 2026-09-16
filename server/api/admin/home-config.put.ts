@@ -3,6 +3,7 @@ import { saveHomeSections, type StoredHomeSection } from '~/server/utils/home-co
 import { recordAdminAudit } from '~/server/utils/admin-audit';
 
 const isValidSection = (value: StoredHomeSection) => value && typeof value.id === 'string' && typeof value.title === 'string'
+  && !['popular', 'new'].includes(value.id)
   && typeof value.subtitle === 'string' && typeof value.source === 'string' && typeof value.enabled === 'boolean'
   && Number.isInteger(value.count) && value.count >= 1 && value.count <= 50
   && Array.isArray(value.itemIds) && value.itemIds.every((id) => typeof id === 'string');

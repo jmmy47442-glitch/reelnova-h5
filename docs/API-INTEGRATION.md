@@ -1,6 +1,6 @@
 # ReelNova API integration
 
-The UI reads all business data through `composables/useContentApi.ts`. Local Nuxt server routes provide mock responses for development. Set `NUXT_PUBLIC_API_BASE` to the Spring Boot gateway URL to connect a real backend without changing page components.
+The UI reads all business data through `composables/useContentApi.ts`. Nuxt/Nitro routes use Cloudflare D1 for persisted business data. Set `NUXT_PUBLIC_API_BASE` to override the API root. Prototype catalogue fallbacks and unverified password-reset endpoints have been removed. The home Popular shelf ranks the entire published catalogue by authorized playback starts before applying its display limit.
 
 ## Response envelope
 

@@ -1,7 +1,7 @@
 import { ok } from '~/server/utils/response';
 import { hydrateSeriesRuntimeData } from '~/server/utils/series-runtime';
 import { getPublicSeries, getTaxonomyConfig } from '~/server/utils/managed-content';
-import { getSeriesBusinessMetrics } from '~/server/utils/content-ranking';
+import { getSeriesBusinessMetrics, sortSeriesByPopularity } from '~/server/utils/content-ranking';
 
 export default defineEventHandler(async (event) => {
   setHeader(event, 'cache-control', 'private, no-store, max-age=0');
@@ -28,7 +28,7 @@ export default defineEventHandler(async (event) => {
   });
   const publicGenreNames = new Set(result.flatMap((series) => series.genres));
   return ok({
-    items: hydrated,
+    items: ['Popular', 'Most Watched'].includes(sort) ? sortSeriesByPopularity(hydrated) : hydrated,
     genres: taxonomy.filter((item) => item.type === '分类' && item.enabled && publicGenreNames.has(item.name)).map((item) => item.name),
   });
 });

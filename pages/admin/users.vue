@@ -5,7 +5,7 @@ import type { AdminUserDetail, PersistedUser, PersistedUserStatus } from '~/type
 
 definePageMeta({ layout: 'admin', keepalive: true });
 
-const { state, addAudit } = useAdminStore();
+const { state } = useAdminStore();
 const api = useAdminApi();
 const keyword = ref('');
 const statusFilter = ref<PersistedUserStatus | ''>('');
@@ -64,7 +64,6 @@ const changeStatus = async (user: PersistedUser) => {
     await api.updateUserStatus(user.id, next);
     await refresh();
     refreshActiveUser();
-    addAudit({ module: '用户与权益', action: next === 'disabled' ? '禁用账号' : '恢复账号', target: user.id, detail: `${statusLabels[before]} → ${statusLabels[next]}`, risk: '高风险' });
     ElMessage.success(`账号已${next === 'disabled' ? '禁用' : '恢复'}`);
   } catch (reason: any) { ElMessage.error(reason?.data?.statusMessage || '用户状态更新失败'); }
 };
@@ -75,7 +74,6 @@ const releaseDevice = async (user: PersistedUser) => {
     await api.releaseUserDevice(user.id);
     await refresh();
     refreshActiveUser();
-    addAudit({ module: '用户与权益', action: '解除设备限制', target: user.id, detail: user.device, risk: '高风险' });
     ElMessage.success('设备限制已解除');
   } catch (reason: any) { ElMessage.error(reason?.data?.statusMessage || '设备限制解除失败'); }
 };
@@ -90,7 +88,6 @@ const grantEntitlement = async () => {
     await api.grantUserEntitlement(activeUser.value.id, series.id, grantForm.reason.trim());
     await refresh();
     refreshActiveUser();
-    addAudit({ module: '用户与权益', action: '手工补发权益', target: activeUser.value.id, detail: `${series.title} · 原因：${grantForm.reason.trim()}`, risk: '高风险' });
     grantVisible.value = false;
     ElMessage.success('权益已写入 Cloudflare D1 并记录审计日志');
   } catch (reason: any) { ElMessage.error(reason?.data?.statusMessage || '权益补发失败'); }
@@ -118,7 +115,7 @@ const grantEntitlement = async () => {
             <el-descriptions-item label="地区">{{ activeDetail.profile.country }}</el-descriptions-item><el-descriptions-item label="最近设备">{{ activeDetail.profile.device }}</el-descriptions-item>
             <el-descriptions-item label="注册时间">{{ formatDate(activeDetail.profile.createdAt) }}</el-descriptions-item><el-descriptions-item label="最近访问">{{ formatDate(activeDetail.profile.lastSeenAt) }}</el-descriptions-item>
             <el-descriptions-item label="账号语言">{{ activeDetail.profile.language.toUpperCase() }}</el-descriptions-item><el-descriptions-item label="订单 / 有效权益">{{ activeDetail.profile.orders }} / {{ activeDetail.profile.entitlements }}</el-descriptions-item>
-            <el-descriptions-item label="隐私偏好" :span="2">推荐 {{ activeDetail.profile.privacy.recommendations ? '开' : '关' }} · 分析 {{ activeDetail.profile.privacy.analytics ? '开' : '关' }} · 营销 {{ activeDetail.profile.privacy.marketing ? '开' : '关' }}</el-descriptions-item>
+            <el-descriptions-item label="隐私偏好" :span="2">分析 {{ activeDetail.profile.privacy.analytics ? '开' : '关' }}</el-descriptions-item>
           </el-descriptions>
           <el-tabs v-model="detailTab" class="user-detail-tabs">
             <el-tab-pane :label="`观看记录 ${activeDetail.watchHistory.length}`" name="history">

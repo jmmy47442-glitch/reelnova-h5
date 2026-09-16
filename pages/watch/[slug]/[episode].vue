@@ -475,11 +475,7 @@ const onPlay = () => {
   playbackLoading.value = false;
   playRequested.value = false;
   snapshotPlayback();
-  if (!started.value) {
-    started.value = true; lastHeartbeat.value = Date.now(); playbackStartedAt.value = performance.now();
-    void record('start');
-    void track(currentEpisode.value?.isFree ? 'preview_start' : 'playback_start', { seriesId: series.value?.id, seriesTitle: series.value?.title, episodeNo: episodeNo.value });
-  }
+  if (!started.value) playbackStartedAt.value = performance.now();
 };
 const onPause = () => {
   isPlaying.value = false;
@@ -528,6 +524,11 @@ const onPlaying = () => {
   playbackLoading.value = false;
   playRequested.value = false;
   seeking.value = false;
+  if (!started.value) {
+    started.value = true; lastHeartbeat.value = Date.now();
+    void record('start');
+    void track(currentEpisode.value?.isFree ? 'preview_start' : 'playback_start', { seriesId: series.value?.id, seriesTitle: series.value?.title, episodeNo: episodeNo.value });
+  }
   onFirstFrame();
   if (stalled.value) { stalled.value = false; void track('playback_resume', { seriesId: series.value?.id, seriesTitle: series.value?.title, episodeNo: episodeNo.value, positionSeconds: currentTime.value }); }
 };

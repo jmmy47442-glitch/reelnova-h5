@@ -24,6 +24,7 @@
     "check:media-worker": "node --check workers/media-worker.mjs",
     "test:media-worker": "node --test tests/media-worker-idempotency.test.mjs",
     "test:entitlements": "node --test tests/entitlement-lifecycle.test.mjs",
+    "test:reporting": "node --test tests/reporting-data.test.mjs tests/home-data.test.mjs",
     "test:payments": "node --experimental-strip-types --test tests/paypal-payment-state.test.mjs tests/paypal-checkout.test.mjs tests/paypal-checkout-api.test.mjs",
     "test:playback-security": "node --test tests/playback-security.test.mjs",
     "test:video-quality": "node --experimental-strip-types --test tests/video-quality.test.mjs",

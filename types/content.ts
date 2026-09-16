@@ -22,7 +22,6 @@ export interface Series {
   badge: SeriesBadge;
   genres: string[];
   views: number;
-  rating: number;
   episodeCount: number;
   freeEpisodeCount: number;
   price: number;

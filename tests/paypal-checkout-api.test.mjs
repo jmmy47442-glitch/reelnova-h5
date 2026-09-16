@@ -99,6 +99,7 @@ function harness({ afterCreate, beforeRead, afterCapture, beforeRefund, afterRef
     }, { filename: name });
     return exports;
   };
+  imports['~/server/utils/reporting-orders'] = load('server/utils/reporting-orders.ts');
   imports['~/server/utils/paypal'] = load('server/utils/paypal.ts');
   return {
     db: database, providerOrders, creates: () => providerCreates, captures: () => providerCaptures,
@@ -133,7 +134,7 @@ test('customer refund is idempotent, visible to admin, and preserves access unti
     assert.equal(h.db.prepare('SELECT status FROM entitlements').get().status, 'granted');
     assert.equal(h.db.prepare('SELECT status FROM orders').get().status, 'paid');
     assert.equal(h.providerRefunds.size, 0);
-    const listed = (await h.adminOrders({ query: { refundStatus: 'pending' } })).data;
+    const listed = (await h.adminOrders({ query: { environment: 'sandbox', refundStatus: 'pending' } })).data;
     assert.equal(listed.total, 1);
     assert.equal(listed.items[0].refund.customerRequest.userId, 'u');
     assert.equal(listed.items[0].refund.customerRequest.email, 'u@example.com');
@@ -142,7 +143,7 @@ test('customer refund is idempotent, visible to admin, and preserves access unti
     assert.equal(h.providerRefunds.size, 1);
     assert.equal(h.db.prepare('SELECT status FROM entitlements').get().status, 'revoked');
     assert.equal((await h.customerRefund(event)).data.refundStatus, 'completed');
-    assert.equal((await h.adminOrders({})).data.items[0].refund.customerRequest.reason, event.body.reason);
+    assert.equal((await h.adminOrders({ query: { environment: 'sandbox' } })).data.items[0].refund.customerRequest.reason, event.body.reason);
   } finally { h.db.close(); }
 });
 
@@ -171,7 +172,7 @@ test('rejected customer requests retain original applicant and reason without du
     await h.customerRefund(event);
     await h.refund({ params: event.params, body: { reason: 'Request reviewed and declined', method: 'reject' } });
     assert.equal((await h.customerRefund(event)).data.refundStatus, 'rejected');
-    const listed = (await h.adminOrders({})).data.items[0];
+    const listed = (await h.adminOrders({ query: { environment: 'sandbox' } })).data.items[0];
     assert.equal(listed.refund.customerRequest.userId, 'u');
     assert.equal(listed.refund.customerRequest.reason, event.body.reason);
     assert.equal(h.db.prepare('SELECT status FROM entitlements').get().status, 'granted');

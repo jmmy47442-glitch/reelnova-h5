@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowLeft, ChevronDown, Clock3, Eye, LockKeyhole, Play, Star } from 'lucide-vue-next';
+import { ArrowLeft, ChevronDown, LockKeyhole, Play } from 'lucide-vue-next';
 import { useSafeBack } from '~/composables/useSafeBack';
 import { useAnalytics } from '~/composables/useAnalytics';
 import { invalidatePageDataCache, usePageData } from '~/composables/usePageData';
@@ -8,7 +8,7 @@ definePageMeta({ hideBottomNav: true, keepalive: true });
 const route = useRoute();
 const api = useContentApi();
 const goBack = useSafeBack(() => '/');
-const { formatPrice, formatViews } = useFormatters();
+const { formatPrice } = useFormatters();
 const showFullDescription = ref(false);
 const showUnlock = ref(false);
 const locallyUnlocked = ref(false);
@@ -72,13 +72,13 @@ const unlockComplete = async () => {
           <span class="content-badge" :class="`badge--${series.badge.toLowerCase()}`">{{ series.badge }}</span>
           <h1>{{ series.title }}</h1>
           <p class="detail-tagline">{{ series.tagline }}</p>
-          <div class="detail-stats"><span><Star :size="15" fill="currentColor" /> {{ series.rating }}</span><span><Eye :size="15" /> {{ formatViews(series.views) }}</span><span>{{ series.updatedLabel }}</span></div>
+          <div class="detail-stats"><span>{{ series.updatedLabel }}</span></div>
           <div class="detail-actions"><NuxtLink class="button button--primary" :to="`/watch/${series.slug}/${series.currentEpisode || 1}`"><Play :size="18" fill="currentColor" />{{ watchLabel }}</NuxtLink><button v-if="purchasable && !series.purchased && !locallyUnlocked" class="button button--ghost" type="button" @click="track('lock_trigger', { seriesId: series.id, seriesTitle: series.title, properties: { source: 'detail_cta' } }); showUnlock = true"><LockKeyhole :size="17" />{{ formatPrice(series.price) }}</button></div>
         </div>
       </section>
       <div class="detail-content content-width">
         <div class="genre-row"><span v-for="genre in series.genres" :key="genre">{{ genre }}</span></div>
-        <section class="detail-copy"><p :class="{ 'is-clamped': !showFullDescription }">{{ series.description }}</p><button type="button" @click="showFullDescription = !showFullDescription">{{ showFullDescription ? 'Show less' : 'Read more' }} <ChevronDown :size="15" :class="{ rotate: showFullDescription }" /></button><small>Cast: {{ series.cast.join(', ') }}</small></section>
+        <section class="detail-copy"><p :class="{ 'is-clamped': !showFullDescription }">{{ series.description }}</p><button type="button" @click="showFullDescription = !showFullDescription">{{ showFullDescription ? 'Show less' : 'Read more' }} <ChevronDown :size="15" :class="{ rotate: showFullDescription }" /></button><small v-if="series.cast.length">Cast: {{ series.cast.join(', ') }}</small></section>
         <section class="episode-section">
           <SectionHeader :title="`${series.episodeCount} episodes`" :subtitle="`${series.freeEpisodeCount} free · ${series.updatedLabel}`" />
           <div class="episode-grid">

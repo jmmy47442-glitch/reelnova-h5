@@ -7,5 +7,6 @@ export default defineEventHandler(async (event) => {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     throw createError({ statusCode: 400, statusMessage: 'Enter a valid email address' });
   }
-  return ok(await createUserLoginChallenge(event, email, body.purpose === 'reset' ? 'reset' : 'login'));
+  if (body.purpose && body.purpose !== 'login') throw createError({ statusCode: 400, statusMessage: 'Unsupported challenge purpose' });
+  return ok(await createUserLoginChallenge(event, email));
 });

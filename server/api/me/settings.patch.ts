@@ -19,7 +19,8 @@ export default defineEventHandler(async (event) => {
   if (body.language !== undefined && !languages.includes(body.language)) {
     throw createError({ statusCode: 400, statusMessage: 'Unsupported language' });
   }
-  for (const key of ['recommendations', 'analytics', 'marketing'] as const) {
+  if ('recommendations' in body || 'marketing' in body) throw createError({ statusCode: 400, statusMessage: 'Unsupported preference' });
+  for (const key of ['analytics'] as const) {
     if (body[key] !== undefined && typeof body[key] !== 'boolean') {
       throw createError({ statusCode: 400, statusMessage: `Invalid ${key} preference` });
     }
@@ -30,9 +31,9 @@ export default defineEventHandler(async (event) => {
   const now = new Date().toISOString();
   const next = {
     language: body.language ?? current?.language ?? 'en',
-    recommendations: body.recommendations ?? (current ? Boolean(current.recommendations) : true),
+    recommendations: (current ? Boolean(current.recommendations) : true),
     analytics: body.analytics ?? (current ? Boolean(current.analytics) : true),
-    marketing: body.marketing ?? (current ? Boolean(current.marketing) : false),
+    marketing: (current ? Boolean(current.marketing) : false),
   };
   await d1Run(event, `INSERT INTO user_preferences
     (user_id, language, recommendations, analytics, marketing, created_at, updated_at)

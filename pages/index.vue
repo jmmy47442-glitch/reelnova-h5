@@ -1,23 +1,20 @@
 <script setup lang="ts">
-import { ChevronRight, Flame, Heart, Play, Search, Shield, Sparkles, Trophy, UsersRound, WandSparkles } from 'lucide-vue-next';
+import { ChevronRight, Heart, Play, Search, Shield, Sparkles, Trophy, UsersRound, WandSparkles } from 'lucide-vue-next';
 import type { Component } from 'vue';
 import { useAnalytics } from '~/composables/useAnalytics';
 import { usePageData } from '~/composables/usePageData';
+import { countHomeUpdates } from '~/utils/home-updates';
 
 definePageMeta({ keepalive: true });
 const api = useContentApi();
-const { formatViews } = useFormatters();
 const activeTab = ref('Popular');
 const { data, status, error, refresh } = usePageData(
   'home',
   () => api.getHome(),
-  { revalidateOnMount: true, revalidateOnActivate: true, revalidateOnFocus: true },
+  { revalidateOnMount: true },
 );
 const { track } = useAnalytics();
 const featuredTracked = ref(false);
-const pendingUpdates = ref(0);
-const router = useRouter();
-const primaryTabRoutes = new Set(['/', '/explore', '/library', '/profile']);
 const selectedGenre = ref('All');
 
 const curatedCategoryDefinitions: { name: string; description: string; icon: Component; accent: string }[] = [
@@ -29,15 +26,55 @@ const curatedCategoryDefinitions: { name: string; description: string; icon: Com
   { name: 'Family', description: 'The ties that pull tight', icon: UsersRound, accent: '#b88cff' },
 ];
 
-const refreshHome = async () => {
-  await refresh();
-  if (!error.value) pendingUpdates.value = 0;
-};
+const pendingUpdates = ref(0);
+const refreshing = ref(false);
+let active = false;
+let checking = false;
+let checkGeneration = 0;
+let updateTimer: ReturnType<typeof setInterval> | undefined;
 
-const removeNavigationHook = router.afterEach((to, from) => {
-  if (to.path === '/' && from.path && !primaryTabRoutes.has(from.path) && data.value) {
-    pendingUpdates.value = 2;
-  }
+const checkUpdates = async () => {
+  if (!active || document.visibilityState !== 'visible' || !data.value || checking || refreshing.value) return;
+  checking = true;
+  const generation = checkGeneration;
+  try {
+    const latest = await api.getHome();
+    if (active && generation === checkGeneration && data.value) pendingUpdates.value = countHomeUpdates(data.value, latest);
+  } catch {
+    // An unavailable endpoint is not evidence of new content.
+  } finally { checking = false; }
+};
+const refreshHome = async () => {
+  if (refreshing.value) return;
+  refreshing.value = true;
+  checkGeneration++;
+  try {
+    await refresh();
+    if (!error.value) pendingUpdates.value = 0;
+  } finally { refreshing.value = false; }
+};
+const startChecking = () => {
+  active = true;
+  if (!updateTimer) updateTimer = setInterval(() => void checkUpdates(), 30_000);
+  void checkUpdates();
+};
+const stopChecking = () => {
+  active = false;
+  checkGeneration++;
+  if (updateTimer) clearInterval(updateTimer);
+  updateTimer = undefined;
+};
+onMounted(() => {
+  startChecking();
+  window.addEventListener('focus', checkUpdates);
+  document.addEventListener('visibilitychange', checkUpdates);
+});
+onActivated(startChecking);
+onDeactivated(stopChecking);
+onBeforeUnmount(() => {
+  stopChecking();
+  window.removeEventListener('focus', checkUpdates);
+  document.removeEventListener('visibilitychange', checkUpdates);
 });
 
 const selectTab = (tab: string) => {
@@ -65,10 +102,6 @@ const selectGenre = (genre: string) => {
   void track('filter', { properties: { source: 'home_category', value: genre } });
 };
 
-onBeforeUnmount(() => {
-  removeNavigationHook();
-});
-
 const allSeries = computed(() => {
   if (!data.value) return [];
   return [...new Map(data.value.sections.flatMap((section) => section.items).map((series) => [series.id, series])).values()];
@@ -91,12 +124,12 @@ const categoryItems = computed(() => {
 const categoryCount = (name: string) => allSeries.value.filter((series) => series.genres.some((genre) => genre.toLowerCase().includes(name.toLowerCase()))).length;
 const tabSections = computed(() => {
   if (!data.value) return [];
-  if (activeTab.value === 'New') return [data.value.sections.find((section) => section.id === 'new') || data.value.sections[1] || data.value.sections[0]].filter(Boolean);
-  if (activeTab.value === 'Rankings') return [data.value.sections.find((section) => section.id === 'popular') || data.value.sections[0]].filter(Boolean);
-  return data.value.sections.slice(0, activeTab.value === 'Popular' ? 2 : 1);
+  return data.value.sections.filter((section) => activeTab.value === 'New' ? section.id === 'new' : section.id !== 'new');
 });
 
 watch(data, (value) => {
+  pendingUpdates.value = 0;
+  checkGeneration++;
   if (value && !featuredTracked.value) {
     featuredTracked.value = true;
     void track('home_section_exposure', { properties: { sectionId: 'featured' } });
@@ -110,16 +143,16 @@ watch(activeTab, (tab) => {
 
 <template>
   <div>
-    <AppHeader refreshable :refreshing="status === 'pending'" :pending-updates="pendingUpdates" @refresh="refreshHome" />
+    <AppHeader refreshable :refreshing="status === 'pending' || refreshing" :pending-updates="pendingUpdates" @refresh="refreshHome" />
     <div v-if="status === 'pending'" class="content-width"><PageSkeleton /></div>
     <div v-else-if="error" class="content-width page-state"><EmptyState title="We lost the signal" message="The latest shows could not be loaded." action="Try again" @action="refreshHome" /></div>
     <template v-else-if="data">
       <section class="featured-strip" :style="{ '--feature-image': `url(${data.featured.backdropUrl})` }">
         <div class="featured-strip__content content-width">
-          <span class="live-label"><Flame :size="14" fill="currentColor" /> TRENDING #1 IN THE US</span>
+          <span class="live-label">FEATURED STORY</span>
           <h1>{{ data.featured.title }}</h1>
           <p>{{ data.featured.tagline }}</p>
-          <div class="featured-strip__meta"><span>{{ data.featured.genres.join(' · ') }}</span><span>{{ formatViews(data.featured.views) }} plays</span></div>
+          <div class="featured-strip__meta"><span>{{ data.featured.genres.join(' · ') }}</span></div>
           <NuxtLink class="button button--primary" :to="`/watch/${data.featured.slug}/1`" @click="track('card_click', { seriesId: data.featured.id, seriesTitle: data.featured.title, properties: { placement: 'featured' } })"><Play :size="18" fill="currentColor" /> Watch free</NuxtLink>
         </div>
       </section>
@@ -153,10 +186,9 @@ watch(activeTab, (tab) => {
           </section>
         </template>
         <template v-else>
-          <div class="now-playing-line"><span><i /> Now playing</span><strong>2,840 viewers watching</strong></div>
           <section v-for="(section, sectionIndex) in tabSections" :id="section.id" :key="section.id" class="content-section">
-            <SectionHeader :title="activeTab === 'Rankings' ? 'Top 10 this week' : section.title" :subtitle="activeTab === 'Rankings' ? 'The stories everyone is talking about' : section.subtitle" :to="`/explore?section=${section.id}`" />
-            <div class="poster-grid"><SeriesCard v-for="(series, index) in section.items" :key="series.id" :series="series" :section-id="section.id" :rank="activeTab === 'Rankings' || sectionIndex === 0 ? index + 1 : undefined" /></div>
+            <SectionHeader :title="section.title" :subtitle="section.subtitle" :to="section.id === 'new' ? '/explore?sort=Newest' : '/explore?sort=Popular'" />
+            <div class="poster-grid"><SeriesCard v-for="(series, index) in section.items" :key="series.id" :series="series" :section-id="section.id" :rank="section.id === 'popular' && series.views > 0 ? index + 1 : undefined" /></div>
             <NuxtLink v-if="sectionIndex === 0" class="section-inline-link" to="/explore">Explore every series <ChevronRight :size="17" /></NuxtLink>
           </section>
         </template>

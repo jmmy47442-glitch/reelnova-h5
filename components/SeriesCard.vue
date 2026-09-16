@@ -1,10 +1,8 @@
 <script setup lang="ts">
-import { Play } from 'lucide-vue-next';
 import type { Series } from '~/types/content';
 import { useAnalytics } from '~/composables/useAnalytics';
 
 const props = defineProps<{ series: Series; rank?: number; horizontal?: boolean; sectionId?: string }>();
-const { formatViews } = useFormatters();
 const { track } = useAnalytics();
 const card = ref<HTMLElement | null>(null);
 let observer: IntersectionObserver | undefined;
@@ -38,14 +36,13 @@ onBeforeUnmount(() => observer?.disconnect());
     class="series-card"
     :class="{ 'series-card--horizontal': horizontal }"
     :to="`/series/${series.slug}`"
-    :aria-label="`${series.title}, ${formatViews(series.views)} views`"
+    :aria-label="series.title"
     @click="cardClick"
   >
     <div ref="card" class="series-card__poster">
       <img :src="series.coverUrl || fallbackCoverUrl" :alt="`${series.title} poster`" loading="lazy" @error="useFallbackCover" />
       <span v-if="rank" class="series-card__rank">{{ rank }}</span>
       <span class="content-badge" :class="badgeClass">{{ series.badge }}</span>
-      <span class="series-card__views"><Play :size="12" fill="currentColor" />{{ formatViews(series.views) }}</span>
       <span v-if="series.purchased" class="series-card__owned">Owned</span>
     </div>
     <div class="series-card__body">

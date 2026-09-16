@@ -15,7 +15,7 @@ const isApplicationResource = (pathname: string) => pathname === '/api'
 export default defineEventHandler(async (event) => {
   if (event.method !== 'GET') return;
   const host = requestHostname(event);
-  if (!host) return;
+  if (!host || ['localhost', '127.0.0.1', '[::1]'].includes(host)) return;
   const requestUrl = getRequestURL(event);
   if (process.env.NODE_ENV === 'development' && host === '0.0.0.0' && !isApplicationResource(requestUrl.pathname)) {
     const port = requestUrl.port ? `:${requestUrl.port}` : '';

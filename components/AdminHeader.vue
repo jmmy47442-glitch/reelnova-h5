@@ -53,7 +53,6 @@ const handleCommand = async (command: string) => {
     ElMessage.success('已退出登录');
     return;
   }
-  ElMessage.info('当前为演示管理员会话');
 };
 const onKeydown = (event: KeyboardEvent) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); openCommand(); } };
 onMounted(() => {

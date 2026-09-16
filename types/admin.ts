@@ -213,6 +213,7 @@ export interface DomainConfig {
 }
 
 export interface PersistedOrder {
+  environment: 'production' | 'sandbox';
   orderNo: string;
   seriesId: string;
   seriesTitle: string;
@@ -243,6 +244,7 @@ export interface PersistedOrder {
 }
 
 export interface AdminOrdersResponse {
+  countries: string[];
   connected: true;
   generatedAt: string;
   items: PersistedOrder[];

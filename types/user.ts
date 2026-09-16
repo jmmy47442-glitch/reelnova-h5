@@ -16,11 +16,6 @@ export interface UserRegisterInput extends UserLoginInput {
   name: string;
 }
 
-export interface UserPasswordResetInput {
-  email: string;
-  password: string;
-}
-
 export type AccountLanguage = 'en' | 'es' | 'pt' | 'fr' | 'de';
 
 export interface AccountSettings {

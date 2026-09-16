@@ -23,7 +23,7 @@ export const useAdminApi = () => {
     refundOrder: (orderNo: string, reason: string, input: { amount?: string; method?: 'paypal_api' | 'manual' | 'reject' | 'cancel'; providerStatus?: string; paypalRefundId?: string } = {}) => request<{ orderNo: string; paypalRefundId?: string; status: 'pending' | 'processing' | 'refunding' | 'refunded' | 'paid' | 'failed' | 'rejected' | 'cancelled'; synchronized: boolean }>(`/admin/orders/${orderNo}/refund`, { method: 'POST', body: { reason, ...input } }),
     getRefund: (orderNo: string) => request<{ orderNo: string; requests: Array<Record<string, unknown>>; events: Array<Record<string, unknown>> }>(`/admin/orders/${orderNo}/refund`),
     retryPayPalWebhook: (eventId: string) => request<{ eventId: string; status: 'processed' | 'ignored'; retryCount: number }>(`/admin/paypal/webhooks/${encodeURIComponent(eventId)}/retry`, { method: 'POST' }),
-    getReconciliation: (days: number) => request<ReconciliationResponse>('/admin/reconciliation', { query: { days } }),
+    getReconciliation: (days: number, environment: 'production' | 'sandbox' = 'production') => request<ReconciliationResponse>('/admin/reconciliation', { query: { days, environment } }),
     getConnection: () => request<{
       checkedAt: string;
       cloudflare: {

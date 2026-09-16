@@ -82,9 +82,7 @@ const faqQuery = ref('');
 const openFaq = ref(0);
 const openTerm = ref(0);
 const privacy = reactive({
-  recommendations: settings.value.recommendations,
   analytics: settings.value.analytics,
-  marketing: settings.value.marketing,
 });
 const exporting = ref(false);
 const deleteVisible = ref(false);
@@ -297,7 +295,7 @@ onBeforeUnmount(() => { if (noticeTimer.value) clearTimeout(noticeTimer.value); 
       </template>
 
       <template v-else-if="section === 'language'">
-        <div class="account-section-label"><span>{{ t('language.display') }}</span><small>{{ t('language.more') }}</small></div>
+        <div class="account-section-label"><span>{{ t('language.display') }}</span></div>
         <div class="language-list" role="radiogroup" aria-label="Display language">
           <button v-for="item in languages" :key="item.code" type="button" role="radio" :aria-checked="language === item.code" :class="{ 'is-selected': language === item.code }" @click="language = item.code">
             <span class="language-code">{{ item.code.toUpperCase() }}</span><span><strong>{{ item.name }}</strong><small>{{ item.native }}</small></span><span class="language-check"><Check v-if="language === item.code" :size="15" /></span>
@@ -310,9 +308,7 @@ onBeforeUnmount(() => { if (noticeTimer.value) clearTimeout(noticeTimer.value); 
       <template v-else-if="section === 'privacy'">
         <div class="account-section-label"><span>{{ t('privacy.controls') }}</span><small>{{ t('privacy.applied') }}</small></div>
         <section class="preference-list">
-          <label><span><strong>{{ t('privacy.recommendations') }}</strong><small>{{ t('privacy.recommendationsDesc') }}</small></span><input v-model="privacy.recommendations" type="checkbox" @change="savePrivacy" /><i /></label>
           <label><span><strong>{{ t('privacy.analytics') }}</strong><small>{{ t('privacy.analyticsDesc') }}</small></span><input v-model="privacy.analytics" type="checkbox" @change="savePrivacy" /><i /></label>
-          <label><span><strong>{{ t('privacy.marketing') }}</strong><small>{{ t('privacy.marketingDesc') }}</small></span><input v-model="privacy.marketing" type="checkbox" @change="savePrivacy" /><i /></label>
         </section>
         <div class="account-section-label account-section-label--spaced"><span>{{ t('privacy.information') }}</span></div>
         <section class="account-action-list">
@@ -343,7 +339,7 @@ onBeforeUnmount(() => { if (noticeTimer.value) clearTimeout(noticeTimer.value); 
           </article>
         </div>
         <div v-else class="account-empty account-empty--compact"><span><Search :size="24" /></span><h2>No matching answers</h2><p>Try a broader search or contact the support team.</p></div>
-        <section class="support-band"><span><MessageCircle :size="21" /></span><div><strong>Still need help?</strong><p>Support usually replies within one business day.</p></div><a href="mailto:support@iseedrama.com">Email support <ExternalLink :size="14" /></a></section>
+        <section class="support-band"><span><MessageCircle :size="21" /></span><div><strong>Still need help?</strong><p>Contact us about your account or purchases.</p></div><a href="mailto:support@iseedrama.com">Email support <ExternalLink :size="14" /></a></section>
       </template>
     </main>
 

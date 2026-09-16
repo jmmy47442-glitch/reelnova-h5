@@ -1,8 +1,11 @@
+import { reportingOrders, capturedOrders, parseReportingEnvironment } from '~/server/utils/reporting-orders';
 import { ok } from '~/server/utils/response';
 import { d1All, d1First } from '~/server/utils/cloudflare-d1';
 import type { AdminOrdersResponse, PersistedOrder } from '~/types/admin';
 
 interface OrderRow {
+  paypal_environment: 'production' | 'sandbox';
+  completed_refund_cents: number;
   order_no: string; series_id: string; series_title: string; email: string | null; country: string | null;
   amount_cents: number; fee_cents: number; status: PersistedOrder['status']; paypal_order_id: string | null;
   payment_method: 'paypal' | 'card' | 'apple_pay' | null;
@@ -16,9 +19,10 @@ interface OrderRow {
 interface CountRow { value: number }
 
 const mapOrder = (row: OrderRow): PersistedOrder => ({
-  orderNo: row.order_no, seriesId: row.series_id, seriesTitle: row.series_title, email: row.email, country: row.country,
+  environment: row.paypal_environment, orderNo: row.order_no, seriesId: row.series_id, seriesTitle: row.series_title, email: row.email, country: row.country,
   amount: Number(row.amount_cents) / 100, currency: 'USD', fee: Number(row.fee_cents) / 100,
-  netAmount: (Number(row.amount_cents) - Number(row.fee_cents)) / 100, status: row.status,
+  netAmount: (['paid', 'refunding', 'refunded'].includes(row.status) && row.capture_id
+    ? Number(row.amount_cents) - Number(row.fee_cents) - Number(row.completed_refund_cents || 0) : 0) / 100, status: row.status,
   paypalOrderId: row.paypal_order_id, captureId: row.capture_id, createdAt: row.created_at, callbackAt: row.callback_at,
   paymentMethod: row.payment_method,
   entitlement: row.entitlement_status === 'granted' ? 'granted' : row.entitlement_status === 'revoked' ? 'revoked' : 'pending',
@@ -37,9 +41,10 @@ const mapOrder = (row: OrderRow): PersistedOrder => ({
 
 export default defineEventHandler(async (event) => {
   const query = getQuery(event);
+  const environment = parseReportingEnvironment(query.environment);
   const page = Math.max(1, Number(query.page) || 1);
   const pageSize = Math.min(100, Math.max(1, Number(query.pageSize) || 20));
-  const conditions: string[] = [];
+  const conditions: string[] = [reportingOrders('o', environment)];
   const params: unknown[] = [];
   if (query.status) { conditions.push('o.status = ?'); params.push(String(query.status)); }
   if (query.refundStatus) {
@@ -57,8 +62,8 @@ export default defineEventHandler(async (event) => {
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const today = new Date();
   const todayIso = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())).toISOString();
-  const [rows, total, todayOrders, paidAmount, pending, exceptions] = await Promise.all([
-    d1All<OrderRow>(event, `SELECT o.*, e.status AS entitlement_status,
+  const [rows, total, todayOrders, paidAmount, pending, exceptions, countries] = await Promise.all([
+    d1All<OrderRow>(event, `SELECT o.*, (SELECT COALESCE(SUM(r.amount_cents), 0) FROM refund_requests r WHERE r.order_no = o.order_no AND r.status = 'completed') AS completed_refund_cents, e.status AS entitlement_status,
       rr.status AS refund_status, rr.amount_cents AS refund_amount_cents, rr.paypal_refund_id, rr.request_source AS refund_source,
       rr.entitlement_revoke_status, rr.error_message AS refund_error_message, rr.updated_at AS refund_updated_at,
       cre.actor AS customer_user_id, cu.display_name AS customer_name, cu.email AS customer_email,
@@ -68,16 +73,17 @@ export default defineEventHandler(async (event) => {
       LEFT JOIN refund_events cre ON cre.id = 'customer_refund_' || o.order_no AND cre.event_type = 'customer_refund_requested'
       LEFT JOIN users cu ON cu.user_id = cre.actor
       LEFT JOIN refund_requests rr ON rr.order_no = o.order_no
-        AND rr.created_at = (SELECT MAX(rr2.created_at) FROM refund_requests rr2 WHERE rr2.order_no = o.order_no)
+        AND rr.id = (SELECT rr2.id FROM refund_requests rr2 WHERE rr2.order_no = o.order_no ORDER BY rr2.created_at DESC, rr2.id DESC LIMIT 1)
       ${where} ORDER BY o.created_at DESC LIMIT ? OFFSET ?`, [...params, pageSize, (page - 1) * pageSize]),
     d1First<CountRow>(event, `SELECT COUNT(*) AS value FROM orders o ${where}`, params),
-    d1First<CountRow>(event, 'SELECT COUNT(*) AS value FROM orders WHERE created_at >= ?', [todayIso]),
-    d1First<CountRow>(event, "SELECT COALESCE(SUM(amount_cents), 0) AS value FROM orders WHERE status = 'paid' AND callback_at >= ?", [todayIso]),
-    d1First<CountRow>(event, "SELECT COUNT(*) AS value FROM orders WHERE status IN ('pending', 'processing', 'refunding')"),
-    d1First<CountRow>(event, "SELECT COUNT(*) AS value FROM orders WHERE status IN ('failed', 'risk_review')"),
+    d1First<CountRow>(event, `SELECT COUNT(*) AS value FROM orders o WHERE ${reportingOrders('o', environment)} AND created_at >= ?`, [todayIso]),
+    d1First<CountRow>(event, `SELECT COALESCE(SUM(amount_cents), 0) AS value FROM orders o WHERE ${reportingOrders('o', environment)} AND ${capturedOrders()} AND callback_at >= ?`, [todayIso]),
+    d1First<CountRow>(event, `SELECT COUNT(*) AS value FROM orders o WHERE ${reportingOrders('o', environment)} AND status IN ('pending', 'processing', 'refunding')`),
+    d1First<CountRow>(event, `SELECT COUNT(*) AS value FROM orders o WHERE ${reportingOrders('o', environment)} AND status IN ('failed', 'risk_review')`),
+    d1All<{ country: string }>(event, `SELECT DISTINCT o.country FROM orders o WHERE ${reportingOrders('o', environment)} AND o.country IS NOT NULL AND o.country != '' ORDER BY o.country`),
   ]);
   const data: AdminOrdersResponse = {
-    connected: true, generatedAt: new Date().toISOString(), items: rows.map(mapOrder), total: Number(total?.value || 0),
+    connected: true, countries: countries.map((row) => row.country), generatedAt: new Date().toISOString(), items: rows.map(mapOrder), total: Number(total?.value || 0),
     summary: { todayOrders: Number(todayOrders?.value || 0), paidAmount: Number(paidAmount?.value || 0) / 100, pending: Number(pending?.value || 0), exceptions: Number(exceptions?.value || 0) },
   };
   return ok(data);

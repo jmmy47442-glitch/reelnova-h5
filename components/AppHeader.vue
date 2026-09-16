@@ -17,18 +17,11 @@ defineEmits<{ refresh: [] }>();
       <span>REELNOVA</span>
     </NuxtLink>
     <div class="app-header__actions">
-      <button
-        v-if="refreshable && pendingUpdates > 0 && !refreshing"
-        class="header-update-notice"
-        type="button"
-        aria-label="Refresh updated page data"
-        @click="$emit('refresh')"
-      >
-        <RefreshCw :size="16" aria-hidden="true" />
-        <span>{{ pendingUpdates }} updates · Refresh</span>
+      <button v-if="refreshable && pendingUpdates > 0 && !refreshing" class="header-update-notice" type="button" aria-label="Refresh updated page data" @click="$emit('refresh')">
+        <RefreshCw :size="16" aria-hidden="true" /><span aria-live="polite">{{ pendingUpdates }} {{ pendingUpdates === 1 ? 'update' : 'updates' }} · Refresh</span>
       </button>
       <button
-        v-if="refreshable && (pendingUpdates <= 0 || refreshing)"
+        v-if="refreshable && (pendingUpdates === 0 || refreshing)"
         class="icon-button"
         :class="{ 'is-spinning': refreshing }"
         type="button"
