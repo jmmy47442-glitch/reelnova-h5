@@ -495,7 +495,7 @@ onBeforeUnmount(dispose);
             <div v-if="error && methodSelected" class="inline-error" role="alert"><CircleAlert :size="18" /><span>{{ error }} <a href="mailto:support@iseedrama.com?subject=Payment%20support">Contact support</a></span></div>
             <div class="paypal-slot" :aria-busy="selectedMethodLoading || processing">
               <template v-if="purchasable">
-                <div v-if="false" class="payment-methods" role="group" aria-label="Payment method">
+                <div class="payment-methods" role="group" aria-label="Payment method">
                   <button v-for="(label, method) in methodLabels" :key="method" type="button" :aria-label="label" :disabled="processing" :aria-pressed="methodSelected && paymentMethod === method" :class="['payment-method', { 'is-active': methodSelected && paymentMethod === method }]" @click="selectMethod(method)">
                     <img v-if="method === 'paypal'" class="payment-method__brand" src="/payment/paypal-mark.svg" width="20" height="20" alt="" aria-hidden="true" />
                     <CreditCard v-else-if="method === 'card'" :size="16" aria-hidden="true" />
@@ -503,7 +503,6 @@ onBeforeUnmount(dispose);
                     <span v-if="method !== 'apple_pay'">{{ label }}</span>
                   </button>
                 </div>
-                <p v-if="false" class="checkout-hint">Choose how you would like to pay.</p>
                 <div v-if="selectedMethodLoading" class="checkout-loading" role="status" aria-live="polite">
                   <LoaderCircle class="spin" :size="18" aria-hidden="true" />
                   <div><strong>Preparing {{ methodLabels[paymentMethod] }}…</strong><p>{{ slowPayment ? 'Taking longer than usual. You can choose another payment method.' : 'Connecting securely. You have not been charged.' }}</p></div>
