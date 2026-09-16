@@ -2,7 +2,7 @@
 import { Check, CircleAlert, Clock3, CreditCard, LoaderCircle, ShieldCheck, X } from 'lucide-vue-next';
 import { useUserAuth } from '~/composables/useUserAuth';
 import { useAnalytics } from '~/composables/useAnalytics';
-import { loadPayPalSdk } from '~/utils/paypal-sdk';
+import { loadPayPalSdk, prepareApplePay, supportsApplePay } from '~/utils/paypal-sdk';
 import type { Order, OrderStatus, Series } from '~/types/content';
 
 type PaymentMethod = 'paypal' | 'card' | 'apple_pay';
@@ -13,7 +13,14 @@ const { track } = useAnalytics();
 const { formatPrice } = useFormatters();
 const route = useRoute();
 const { isAuthenticated } = useUserAuth();
-const { data: paymentConfig, refresh: refreshPaymentConfig, error: paymentConfigError } = await useAsyncData('paypal-checkout-config', () => api.getPayPalConfig());
+const cachedPaymentConfig = useState<(Awaited<ReturnType<typeof api.getPayPalConfig>> & { fetchedAt: number }) | null>('paypal-preparation-config', () => null);
+const { data: paymentConfig, refresh: refreshPaymentConfig, error: paymentConfigError } = useAsyncData('paypal-checkout-config', async () => {
+  const cached = cachedPaymentConfig.value;
+  if (cached?.available && Date.now() - cached.fetchedAt < 60_000) return cached;
+  const config = { ...await api.getPayPalConfig(), fetchedAt: Date.now() };
+  cachedPaymentConfig.value = config;
+  return config;
+}, { server: false, lazy: true, dedupe: 'defer' });
 const status = ref<OrderStatus>('pending');
 const error = ref('');
 const paymentMethod = ref<PaymentMethod>('paypal');
@@ -30,14 +37,19 @@ const cardValidationMessage = ref('');
 const cardFieldErrors = ref<Record<string, string>>({});
 const appleReady = ref(false);
 const appleMessage = ref('');
+const appleLoading = ref(false);
+const appleRetryable = ref(false);
+const slowPayment = ref(false);
 const activeOrder = shallowRef<Order | null>(null);
 const conflictPayPalId = ref('');
 const checkoutKey = ref('');
 const paypalAvailable = computed(() => Boolean(paymentConfig.value?.available && paymentConfig.value.clientId));
 // Only show progress for the selected method; other providers may still be loading.
-const selectedMethodLoading = computed(() => loading.value && (paymentMethod.value === 'paypal'
-  ? !paypalReady.value && !sdkFailed.value
-  : paymentMethod.value === 'card' ? !cardReady.value && !cardMessage.value : !appleReady.value && !appleMessage.value));
+const selectedMethodLoading = computed(() => {
+  if (paymentMethod.value === 'apple_pay') return appleLoading.value || (loading.value && !appleReady.value && !appleMessage.value);
+  if (paymentMethod.value === 'card') return loading.value && !cardReady.value && !cardMessage.value;
+  return loading.value && !paypalReady.value && !sdkFailed.value;
+});
 const withPaymentTimeout = async <T,>(task: Promise<T>): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -53,7 +65,7 @@ const applePayLoadFailureMessage = () => {
   const isLocalhost = hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1';
   return isLocalhost
     ? 'Apple Pay cannot be tested on localhost. Open the verified HTTPS site in Safari with a card in Wallet.'
-    : 'Apple Pay could not be loaded. Please use card or PayPal.';
+    : 'Apple Pay could not connect. Try again, or open this page in Safari with a card in Wallet. You can also pay by card or PayPal.';
 };
 let generation = 0;
 let buttons: any;
@@ -63,6 +75,7 @@ let applepay: any;
 let appleConfig: any;
 let appleSession: any;
 let pollTimer: ReturnType<typeof setTimeout> | undefined;
+let slowPaymentTimer: ReturnType<typeof setTimeout> | undefined;
 let polls = 0;
 let capturePromise: Promise<void> | undefined;
 // Payment method changes should feel instant. Keep cancellation in flight and
@@ -276,6 +289,29 @@ const startApplePay = () => {
     session.begin();
   } catch (reason) { appleSession = null; busy.value = false; showFailure(reason, 'Apple Pay could not be opened on this device.'); }
 };
+const initializeApplePay = async () => {
+  if (appleLoading.value || !paymentConfig.value?.clientId) return;
+  const currentGeneration = generation;
+  appleLoading.value = true;
+  appleMessage.value = '';
+  appleRetryable.value = false;
+  try {
+    if (!supportsApplePay()) {
+      appleMessage.value = 'Use a compatible Apple device with a card in Wallet to pay with Apple Pay. If you are in an app browser, open this page in Safari, or use card or PayPal here.';
+      return;
+    }
+    const setup = await prepareApplePay(paymentConfig.value.clientId);
+    if (currentGeneration !== generation) return;
+    applepay = setup.applepay;
+    appleConfig = setup.config;
+    appleReady.value = Boolean(appleConfig.isEligible);
+    if (!appleReady.value) appleMessage.value = 'Apple Pay is unavailable for this checkout. Please use card or PayPal.';
+  } catch {
+    if (currentGeneration !== generation) return;
+    appleRetryable.value = true;
+    appleMessage.value = applePayLoadFailureMessage();
+  } finally { if (currentGeneration === generation) appleLoading.value = false; }
+};
 const initialize = async () => {
   if (!props.open || !isAuthenticated.value || !purchasable.value || loading.value) return;
   const currentGeneration = generation;
@@ -283,7 +319,10 @@ const initialize = async () => {
   sdkFailed.value = false;
   paypalReady.value = false;
   try {
-    await refreshPaymentConfig();
+    // Reuse recent configuration and any in-flight request from page entry.
+    if (!paymentConfig.value || paymentConfigError.value || Date.now() - paymentConfig.value.fetchedAt > 60_000) {
+      await refreshPaymentConfig({ dedupe: 'defer' });
+    }
     if (currentGeneration !== generation) return;
     if (paymentConfigError.value) throw paymentConfigError.value;
     if (!paypalAvailable.value) return;
@@ -333,19 +372,6 @@ const initialize = async () => {
         } else if (currentGeneration === generation) cardMessage.value = 'Direct card payment is unavailable for this checkout. You can still use PayPal.';
       } catch { if (currentGeneration === generation) cardMessage.value = 'Card fields could not be loaded. Please reopen checkout to retry or use PayPal.'; }
     };
-    const initializeApplePay = async () => {
-      try {
-        const ApplePaySession = (window as any).ApplePaySession;
-        if (window.isSecureContext && ApplePaySession?.supportsVersion(4) && ApplePaySession.canMakePayments()) {
-          applepay = paypal.Applepay();
-          const config = await withPaymentTimeout<any>(applepay.config());
-          if (currentGeneration !== generation) return;
-          appleConfig = config;
-          appleReady.value = Boolean(appleConfig.isEligible);
-          if (!appleReady.value) appleMessage.value = 'Apple Pay is unavailable for this checkout. Please use card or PayPal.';
-        } else if (currentGeneration === generation) appleMessage.value = 'Use a compatible Apple device with a card in Wallet to pay with Apple Pay.';
-      } catch { if (currentGeneration === generation) appleMessage.value = applePayLoadFailureMessage(); }
-    };
     await Promise.all([
       initializePayPalButtons(),
       initializeCardFields(),
@@ -355,7 +381,8 @@ const initialize = async () => {
     if (currentGeneration !== generation) return;
     sdkFailed.value = true;
     cardMessage.value = 'Card payment could not be loaded. Please reopen checkout to retry.';
-    appleMessage.value = 'Apple Pay could not be loaded. Please reopen checkout to retry.';
+    appleMessage.value = applePayLoadFailureMessage();
+    appleRetryable.value = true;
     error.value = paypalAvailable.value
       ? 'Payment options could not be loaded. You can continue to secure PayPal checkout.'
       : 'Payment options could not be loaded. Please reopen checkout to try again.';
@@ -375,14 +402,35 @@ const checkout = async () => {
 const dispose = () => {
   generation++;
   clearTimeout(pollTimer);
+  clearTimeout(slowPaymentTimer);
   try { appleSession?.abort(); } catch { /* Session may already be complete. */ }
   appleSession = null;
   void Promise.resolve(buttons?.close()).catch(() => undefined);
   for (const field of renderedFields) { try { void Promise.resolve(field.close?.()).catch(() => undefined); } catch { /* Detached iframe. */ } }
   renderedFields = []; buttons = null; cardFields = null;
   loading.value = false; paypalReady.value = false; sdkFailed.value = false; cardReady.value = false; appleReady.value = false;
+  appleLoading.value = false; appleRetryable.value = false; slowPayment.value = false;
   cardValidationAttempted.value = false; cardValidationMessage.value = ''; cardFieldErrors.value = {};
 };
+const retryPaymentOptions = () => {
+  if (processing.value) return;
+  error.value = '';
+  if (paymentMethod.value === 'apple_pay' && paypalAvailable.value) { void initializeApplePay(); return; }
+  dispose();
+  cardMessage.value = ''; appleMessage.value = '';
+  void nextTick(initialize);
+};
+watch([selectedMethodLoading, paymentMethod], ([pending]) => {
+  clearTimeout(slowPaymentTimer);
+  slowPayment.value = false;
+  if (pending) slowPaymentTimer = setTimeout(() => { slowPayment.value = true; }, 2500);
+});
+watch([paymentConfig, isAuthenticated], () => {
+  if (!import.meta.client || props.open || !isAuthenticated.value || !purchasable.value || props.series.purchased || !paypalAvailable.value) return;
+  const clientId = paymentConfig.value!.clientId;
+  void loadPayPalSdk(clientId).catch(() => undefined);
+  if (supportsApplePay()) void prepareApplePay(clientId).catch(() => undefined);
+}, { immediate: true, flush: 'post' });
 const close = () => { if (!busy.value) emit('close'); };
 watch(() => props.open, (open) => {
   if (!import.meta.client) return;
@@ -454,10 +502,13 @@ onBeforeUnmount(dispose);
                     <span v-if="method !== 'apple_pay'">{{ label }}</span>
                   </button>
                 </div>
-                <p v-if="selectedMethodLoading" class="checkout-hint" role="status"><LoaderCircle class="spin" :size="16" /> Loading secure payment options…</p>
+                <div v-if="selectedMethodLoading" class="checkout-loading" role="status" aria-live="polite">
+                  <LoaderCircle class="spin" :size="18" aria-hidden="true" />
+                  <div><strong>Preparing {{ methodLabels[paymentMethod] }}…</strong><p>{{ slowPayment ? 'Taking longer than usual. You can choose another payment method.' : 'Connecting securely. You have not been charged.' }}</p></div>
+                </div>
                 <div v-show="paymentMethod === 'paypal'">
                   <div v-show="!sdkFailed" ref="paypalContainer" class="paypal-buttons" aria-label="PayPal checkout" />
-                  <button v-if="sdkFailed" class="button button--primary button--wide" type="button" :disabled="processing" @click="checkout">Continue to PayPal</button>
+                  <button v-if="sdkFailed || (selectedMethodLoading && slowPayment)" class="button button--primary button--wide" type="button" :disabled="processing" @click="checkout"><LoaderCircle v-if="busy" class="spin" :size="16" />{{ busy ? 'Opening PayPal…' : 'Continue to PayPal' }}</button>
                 </div>
                 <div v-show="paymentMethod === 'card'">
                   <div v-show="cardReady" ref="cardContainer" class="paypal-card-fields" aria-label="Credit or debit card checkout">
@@ -478,10 +529,15 @@ onBeforeUnmount(dispose);
                     <img class="apple-pay-button__logo" src="/payment/apple-pay-logo-white.svg" width="54" height="22" alt="" aria-hidden="true" />
                   </button>
                   <p v-if="appleMessage" class="checkout-hint" role="status">{{ appleMessage }}</p>
+                  <div v-if="appleMessage && !appleLoading" class="checkout-recovery">
+                    <button v-if="appleRetryable" class="button button--ghost" type="button" :disabled="processing" @click="retryPaymentOptions">Retry Apple Pay</button>
+                    <button class="button button--ghost" type="button" :disabled="processing" @click="selectMethod('card')">Use credit or debit card</button>
+                  </div>
                 </div>
                 <button v-if="conflictPayPalId || activeOrder?.paypalOrderId" class="checkout-cancel" type="button" :disabled="processing" @click="cancelCheckout">Cancel current checkout</button>
               </template>
-              <div v-else class="payment-unavailable" role="status"><Clock3 :size="19" /><div><strong>Checkout unavailable</strong><span>Please try again later.</span></div></div>
+              <div v-else-if="loading" class="checkout-loading" role="status"><LoaderCircle class="spin" :size="18" /><span>Preparing secure checkout…</span></div>
+              <div v-else class="payment-unavailable" role="status"><Clock3 :size="19" /><div><strong>Checkout unavailable</strong><span>Please try again later.</span><button class="checkout-cancel" type="button" @click="retryPaymentOptions">Retry payment options</button></div></div>
             </div>
             <p class="legal-copy">By continuing, you agree to our <NuxtLink to="/terms">Terms of Service</NuxtLink> and refund terms. Final access is granted after server confirmation.</p>
           </div>

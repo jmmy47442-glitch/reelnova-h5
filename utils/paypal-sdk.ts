@@ -34,3 +34,36 @@ export const loadPayPalSdk = (clientId: string): Promise<any> => {
   });
   return loading;
 };
+
+export const supportsApplePay = (): boolean => {
+  try {
+    const session = (window as any).ApplePaySession;
+    return Boolean(window.isSecureContext && session?.supportsVersion(4) && session.canMakePayments());
+  } catch { return false; }
+};
+
+// Warm eligibility while the customer reads the series page. Never open a
+// wallet, validate a merchant session, or create an order during preparation.
+let appleSetup: Promise<{ applepay: any; config: any }> | undefined;
+let appleClientId = '';
+let appleExpiresAt = 0;
+export const prepareApplePay = (clientId: string) => {
+  if (appleSetup && appleClientId === clientId && Date.now() < appleExpiresAt) return appleSetup;
+  appleClientId = clientId;
+  appleExpiresAt = Date.now() + 60_000;
+  const task = (async () => {
+    const paypal = await loadPayPalSdk(clientId);
+    const applepay = paypal.Applepay();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const config = await Promise.race([
+        applepay.config(),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Apple Pay configuration timed out.')), 10_000); }),
+      ]);
+      return { applepay, config };
+    } finally { clearTimeout(timer); }
+  })();
+  appleSetup = task;
+  void task.catch(() => { if (appleSetup === task) appleSetup = undefined; });
+  return task;
+};

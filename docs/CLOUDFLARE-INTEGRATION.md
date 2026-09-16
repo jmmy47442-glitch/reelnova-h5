@@ -185,6 +185,10 @@ Credit/debit card fields and Apple Pay use PayPal Advanced Checkout. Card detail
 3. Confirm `https://iseedrama.com/.well-known/apple-developer-merchantid-domain-association` now returns the Production association file with HTTP 200, no redirect, and `Content-Type: application/octet-stream`. Then add `iseedrama.com` in the Live App Apple Pay settings and complete PayPal's domain verification.
 4. Test Apple Pay in Safari on an eligible Apple device with a supported card in Wallet. Browsers and devices that are not eligible intentionally show card or PayPal as the alternative.
 
+Checkout prepares the PayPal SDK and supported-device Apple Pay configuration on authenticated, unpurchased series pages. Public configuration and Apple Pay eligibility are reused for up to 60 seconds; preparation never creates orders or opens a wallet. Hosted card fields and PayPal buttons still mount when the sheet opens. After 2.5 seconds of waiting for PayPal, customers can choose the server-created PayPal redirect without waiting for SDK timeout. Apple Pay connection failures can be retried in place.
+
+An “Apple Pay could not connect” message occurs during SDK/configuration loading, before merchant validation or payment authorization. Check the failing browser's network requests, then compare with Safari on the same iPhone. A successful domain-association file response and `Applepay().config().isEligible` do not prove that merchant validation or a real wallet payment will succeed. If validation fails after opening the wallet, use its PayPal support reference to investigate the Live App's domain registration.
+
 Run the mocked browser checkout regression locally without charging a card:
 
 ```bash
