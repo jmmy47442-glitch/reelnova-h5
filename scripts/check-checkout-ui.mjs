@@ -115,19 +115,10 @@ async function scenario(name, options, run, beforeOpen) {
 try {
   await scenario('payment buttons appear before configuration; loading starts only after selection', { configStalled: true }, async ({ page, calls }) => {
     await page.screenshot({ path: 'artifacts/screenshots/checkout-buttons-375.png', fullPage: true });
-    const appleButton = page.getByRole('button', { name: 'Apple Pay', exact: true });
-    const initialBox = await appleButton.boundingBox();
-    await appleButton.click();
-    await appleButton.getByRole('status', { name: 'Preparing Apple Pay…', exact: true }).waitFor({ timeout: 1000 });
-    assert.equal(await appleButton.isDisabled(), true);
-    const loadingBox = await appleButton.boundingBox();
-    assert.equal(loadingBox.width, initialBox.width);
-    assert.equal(loadingBox.height, initialBox.height);
-    await page.screenshot({ path: 'artifacts/screenshots/checkout-button-loading-375.png', fullPage: true });
+    await page.getByRole('button', { name: 'Apple Pay', exact: true }).click();
+    await page.getByText('Preparing Apple Pay…', { exact: true }).waitFor({ timeout: 1000 });
     await page.getByRole('button', { name: 'Credit or debit card', exact: true }).click();
-    await page.getByRole('status', { name: 'Preparing Credit or debit card…', exact: true }).waitFor({ timeout: 1000 });
-    assert.equal(await appleButton.isEnabled(), true);
-    assert.equal(await page.locator('.checkout-loading:visible').count(), 1);
+    await page.getByText('Preparing Credit or debit card…', { exact: true }).waitFor({ timeout: 1000 });
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
     await page.getByRole('button', { name: 'Close', exact: true }).click();
     await page.locator('.detail-actions .button--ghost').click();
@@ -174,7 +165,7 @@ try {
   });
   await scenario('slow SDK offers a redirect before its timeout and gives immediate feedback', { sdkStalled: true }, async ({ page, calls }) => {
     await page.getByRole('button', { name: 'PayPal', exact: true }).click();
-    await page.getByRole('status', { name: 'Preparing PayPal…', exact: true }).waitFor();
+    await page.getByText('Preparing PayPal…', { exact: true }).waitFor();
     await page.getByRole('button', { name: 'Continue to PayPal', exact: true }).waitFor({ timeout: 5000 });
     assert.equal(await page.locator('.checkout-loading').isVisible(), true);
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);

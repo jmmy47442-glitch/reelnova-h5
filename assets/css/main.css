@@ -418,10 +418,10 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 html[data-theme='light'] .card-field-error { color: #b91c1c; }
 .checkout-hint { display: flex; margin: 10px 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; gap: 8px; }
 .checkout-hint svg { flex-shrink: 0; }
-.payment-method { position: relative; }
-.payment-method.is-loading:disabled { opacity: 1; }
-.payment-method.is-loading > :not(.checkout-loading) { visibility: hidden; }
-.payment-method .checkout-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 6px; }
+.checkout-loading { display: flex; min-height: 76px; margin: 10px 0; padding: 14px; border: 1px solid var(--line); border-radius: 6px; align-items: center; gap: 12px; }
+.checkout-loading > svg { flex-shrink: 0; color: var(--signal); }
+.checkout-loading strong { font-size: 13px; }
+.checkout-loading p { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .checkout-recovery { display: flex; flex-wrap: wrap; gap: 8px; }
 .checkout-recovery .button { min-height: 44px; flex: 1 1 auto; font-size: 12px; }
 .checkout-cancel { display: block; min-height: 44px; margin: 8px auto 0; padding: 8px; background: transparent; color: var(--text-muted); text-decoration: underline; }
