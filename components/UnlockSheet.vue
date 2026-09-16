@@ -24,6 +24,8 @@ const { data: paymentConfig, refresh: refreshPaymentConfig, error: paymentConfig
 const status = ref<OrderStatus>('pending');
 const error = ref('');
 const paymentMethod = ref<PaymentMethod>('paypal');
+// Preparation stays silent until the customer chooses a payment button.
+const methodSelected = ref(false);
 const paypalContainer = ref<HTMLElement | null>(null);
 const cardContainer = ref<HTMLElement | null>(null);
 const loading = ref(false);
@@ -46,6 +48,7 @@ const checkoutKey = ref('');
 const paypalAvailable = computed(() => Boolean(paymentConfig.value?.available && paymentConfig.value.clientId));
 // Only show progress for the selected method; other providers may still be loading.
 const selectedMethodLoading = computed(() => {
+  if (!methodSelected.value) return false;
   if (paymentMethod.value === 'apple_pay') return appleLoading.value || (loading.value && !appleReady.value && !appleMessage.value);
   if (paymentMethod.value === 'card') return loading.value && !cardReady.value && !cardMessage.value;
   return loading.value && !paypalReady.value && !sdkFailed.value;
@@ -184,7 +187,9 @@ const cancelCheckout = async () => {
   finally { busy.value = false; }
 };
 const selectMethod = async (method: PaymentMethod) => {
-  if (processing.value || method === paymentMethod.value) return;
+  if (processing.value) return;
+  methodSelected.value = true;
+  if (method === paymentMethod.value) return;
   const id = conflictPayPalId.value || activeOrder.value?.paypalOrderId;
   if (id) {
     // Release the previous checkout without blocking the visible selection.
@@ -320,7 +325,7 @@ const initialize = async () => {
   paypalReady.value = false;
   try {
     // Reuse recent configuration and any in-flight request from page entry.
-    if (!paymentConfig.value || paymentConfigError.value || Date.now() - paymentConfig.value.fetchedAt > 60_000) {
+    if (!paypalAvailable.value || paymentConfigError.value || Date.now() - paymentConfig.value!.fetchedAt > 60_000) {
       await refreshPaymentConfig({ dedupe: 'defer' });
     }
     if (currentGeneration !== generation) return;
@@ -410,6 +415,7 @@ const dispose = () => {
   renderedFields = []; buttons = null; cardFields = null;
   loading.value = false; paypalReady.value = false; sdkFailed.value = false; cardReady.value = false; appleReady.value = false;
   appleLoading.value = false; appleRetryable.value = false; slowPayment.value = false;
+  methodSelected.value = false;
   cardValidationAttempted.value = false; cardValidationMessage.value = ''; cardFieldErrors.value = {};
 };
 const retryPaymentOptions = () => {
@@ -417,6 +423,7 @@ const retryPaymentOptions = () => {
   error.value = '';
   if (paymentMethod.value === 'apple_pay' && paypalAvailable.value) { void initializeApplePay(); return; }
   dispose();
+  methodSelected.value = true;
   cardMessage.value = ''; appleMessage.value = '';
   void nextTick(initialize);
 };
@@ -491,53 +498,53 @@ onBeforeUnmount(dispose);
               <li><Check :size="17" /> Keep access on restored devices</li>
               <li v-if="purchasable"><Check :size="17" /> Secure card and wallet checkout</li>
             </ul>
-            <div v-if="error" class="inline-error" role="alert"><CircleAlert :size="18" /><span>{{ error }} <a href="mailto:support@iseedrama.com?subject=Payment%20support">Contact support</a></span></div>
+            <div v-if="error && methodSelected" class="inline-error" role="alert"><CircleAlert :size="18" /><span>{{ error }} <a href="mailto:support@iseedrama.com?subject=Payment%20support">Contact support</a></span></div>
             <div class="paypal-slot" :aria-busy="selectedMethodLoading || processing">
-              <template v-if="purchasable && paypalAvailable">
+              <template v-if="purchasable">
                 <div class="payment-methods" role="group" aria-label="Payment method">
-                  <button v-for="(label, method) in methodLabels" :key="method" type="button" :aria-label="label" :disabled="processing" :aria-pressed="paymentMethod === method" :class="['payment-method', { 'is-active': paymentMethod === method }]" @click="selectMethod(method)">
+                  <button v-for="(label, method) in methodLabels" :key="method" type="button" :aria-label="label" :aria-busy="paymentMethod === method && selectedMethodLoading" :disabled="processing || (paymentMethod === method && selectedMethodLoading)" :aria-pressed="methodSelected && paymentMethod === method" :class="['payment-method', { 'is-active': methodSelected && paymentMethod === method, 'is-loading': paymentMethod === method && selectedMethodLoading }]" @click="selectMethod(method)">
                     <img v-if="method === 'paypal'" class="payment-method__brand" src="/payment/paypal-mark.svg" width="20" height="20" alt="" aria-hidden="true" />
                     <CreditCard v-else-if="method === 'card'" :size="16" aria-hidden="true" />
                     <img v-else class="payment-method__brand" src="/payment/apple-pay-mark.svg" width="44" height="28" alt="" aria-hidden="true" />
                     <span v-if="method !== 'apple_pay'">{{ label }}</span>
+                    <span v-if="paymentMethod === method && selectedMethodLoading" class="checkout-loading" role="status" :aria-label="`Preparing ${label}…`"><LoaderCircle class="spin" :size="16" aria-hidden="true" /><span>Loading…</span></span>
                   </button>
                 </div>
-                <div v-if="selectedMethodLoading" class="checkout-loading" role="status" aria-live="polite">
-                  <LoaderCircle class="spin" :size="18" aria-hidden="true" />
-                  <div><strong>Preparing {{ methodLabels[paymentMethod] }}…</strong><p>{{ slowPayment ? 'Taking longer than usual. You can choose another payment method.' : 'Connecting securely. You have not been charged.' }}</p></div>
-                </div>
-                <div v-show="paymentMethod === 'paypal'">
-                  <div v-show="!sdkFailed" ref="paypalContainer" class="paypal-buttons" aria-label="PayPal checkout" />
-                  <button v-if="sdkFailed || (selectedMethodLoading && slowPayment)" class="button button--primary button--wide" type="button" :disabled="processing" @click="checkout"><LoaderCircle v-if="busy" class="spin" :size="16" />{{ busy ? 'Opening PayPal…' : 'Continue to PayPal' }}</button>
-                </div>
-                <div v-show="paymentMethod === 'card'">
-                  <div v-show="cardReady" ref="cardContainer" class="paypal-card-fields" aria-label="Credit or debit card checkout">
-                    <label>Name on card <span data-card-name /><small v-if="cardFieldErrors.name" class="card-field-error">{{ cardFieldErrors.name }}</small></label>
-                    <label>Card number <span data-card-number /><small v-if="cardFieldErrors.number" class="card-field-error">{{ cardFieldErrors.number }}</small></label>
-                    <div class="card-fields-row">
-                      <label>Expiration date <span data-card-expiry /><small v-if="cardFieldErrors.expiry" class="card-field-error">{{ cardFieldErrors.expiry }}</small></label>
-                      <label>Security code <span data-card-cvv /><small v-if="cardFieldErrors.cvv" class="card-field-error">{{ cardFieldErrors.cvv }}</small></label>
+                <p v-if="!methodSelected" class="checkout-hint">Choose how you would like to pay.</p>
+                <p v-if="selectedMethodLoading && slowPayment" class="checkout-hint" role="status">Taking longer than usual. You can choose another payment method.</p>
+                <div v-show="methodSelected && paypalAvailable">
+                  <div v-show="paymentMethod === 'paypal'">
+                    <div v-show="!sdkFailed" ref="paypalContainer" class="paypal-buttons" aria-label="PayPal checkout" />
+                    <button v-if="sdkFailed || (selectedMethodLoading && slowPayment)" class="button button--primary button--wide" type="button" :disabled="processing" @click="checkout"><LoaderCircle v-if="busy" class="spin" :size="16" />{{ busy ? 'Opening PayPal…' : 'Continue to PayPal' }}</button>
+                  </div>
+                  <div v-show="paymentMethod === 'card'">
+                    <div v-show="cardReady" ref="cardContainer" class="paypal-card-fields" aria-label="Credit or debit card checkout">
+                      <label>Name on card <span data-card-name /><small v-if="cardFieldErrors.name" class="card-field-error">{{ cardFieldErrors.name }}</small></label>
+                      <label>Card number <span data-card-number /><small v-if="cardFieldErrors.number" class="card-field-error">{{ cardFieldErrors.number }}</small></label>
+                      <div class="card-fields-row">
+                        <label>Expiration date <span data-card-expiry /><small v-if="cardFieldErrors.expiry" class="card-field-error">{{ cardFieldErrors.expiry }}</small></label>
+                        <label>Security code <span data-card-cvv /><small v-if="cardFieldErrors.cvv" class="card-field-error">{{ cardFieldErrors.cvv }}</small></label>
+                      </div>
+                      <p v-if="cardValidationMessage" class="card-field-error" role="alert">{{ cardValidationMessage }}</p>
+                      <button class="button button--primary button--wide" type="button" :disabled="!cardReady || processing" @click="submitCard"><LoaderCircle v-if="busy" class="spin" :size="16" /> {{ busy ? 'Processing…' : `Pay ${formatPrice(series.price)} USD` }}</button>
+                      <p class="checkout-hint">Visa, Mastercard and other supported credit or debit cards. No PayPal account required.</p>
                     </div>
-                    <p v-if="cardValidationMessage" class="card-field-error" role="alert">{{ cardValidationMessage }}</p>
-                    <button class="button button--primary button--wide" type="button" :disabled="!cardReady || processing" @click="submitCard"><LoaderCircle v-if="busy" class="spin" :size="16" /> {{ busy ? 'Processing…' : `Pay ${formatPrice(series.price)} USD` }}</button>
-                    <p class="checkout-hint">Visa, Mastercard and other supported credit or debit cards. No PayPal account required.</p>
+                    <p v-if="cardMessage" class="checkout-hint" role="status">{{ cardMessage }}</p>
                   </div>
-                  <p v-if="cardMessage" class="checkout-hint" role="status">{{ cardMessage }}</p>
-                </div>
-                <div v-show="paymentMethod === 'apple_pay'">
-                  <button v-if="appleReady" class="apple-pay-button" type="button" aria-label="Buy with Apple Pay" :disabled="processing" @click="startApplePay">
-                    <img class="apple-pay-button__logo" src="/payment/apple-pay-logo-white.svg" width="54" height="22" alt="" aria-hidden="true" />
-                  </button>
-                  <p v-if="appleMessage" class="checkout-hint" role="status">{{ appleMessage }}</p>
-                  <div v-if="appleMessage && !appleLoading" class="checkout-recovery">
-                    <button v-if="appleRetryable" class="button button--ghost" type="button" :disabled="processing" @click="retryPaymentOptions">Retry Apple Pay</button>
-                    <button class="button button--ghost" type="button" :disabled="processing" @click="selectMethod('card')">Use credit or debit card</button>
+                  <div v-show="paymentMethod === 'apple_pay'">
+                    <button v-if="appleReady" class="apple-pay-button" type="button" aria-label="Buy with Apple Pay" :disabled="processing" @click="startApplePay">
+                      <img class="apple-pay-button__logo" src="/payment/apple-pay-logo-white.svg" width="54" height="22" alt="" aria-hidden="true" />
+                    </button>
+                    <p v-if="appleMessage" class="checkout-hint" role="status">{{ appleMessage }}</p>
+                    <div v-if="appleMessage && !appleLoading" class="checkout-recovery">
+                      <button v-if="appleRetryable" class="button button--ghost" type="button" :disabled="processing" @click="retryPaymentOptions">Retry Apple Pay</button>
+                      <button class="button button--ghost" type="button" :disabled="processing" @click="selectMethod('card')">Use credit or debit card</button>
+                    </div>
                   </div>
+                  <button v-if="conflictPayPalId || activeOrder?.paypalOrderId" class="checkout-cancel" type="button" :disabled="processing" @click="cancelCheckout">Cancel current checkout</button>
                 </div>
-                <button v-if="conflictPayPalId || activeOrder?.paypalOrderId" class="checkout-cancel" type="button" :disabled="processing" @click="cancelCheckout">Cancel current checkout</button>
+                <div v-if="methodSelected && !paypalAvailable && !loading" class="payment-unavailable" role="status"><Clock3 :size="19" /><div><strong>Checkout unavailable</strong><span>Please try again later.</span><button class="checkout-cancel" type="button" @click="retryPaymentOptions">Retry payment options</button></div></div>
               </template>
-              <div v-else-if="loading" class="checkout-loading" role="status"><LoaderCircle class="spin" :size="18" /><span>Preparing secure checkout…</span></div>
-              <div v-else class="payment-unavailable" role="status"><Clock3 :size="19" /><div><strong>Checkout unavailable</strong><span>Please try again later.</span><button class="checkout-cancel" type="button" @click="retryPaymentOptions">Retry payment options</button></div></div>
             </div>
             <p class="legal-copy">By continuing, you agree to our <NuxtLink to="/terms">Terms of Service</NuxtLink> and refund terms. Final access is granted after server confirmation.</p>
           </div>

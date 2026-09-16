@@ -69,7 +69,11 @@ async function scenario(name, options, run, beforeOpen) {
     const path = url.pathname; const body = request.postDataJSON();
     if (request.method() === 'POST') calls.push({ path, body });
     let data = {};
-    if (path === '/api/paypal/config') { configRequests++; data = { environment: 'sandbox', clientId: 'mock-client', available: true }; }
+    if (path === '/api/paypal/config') {
+      configRequests++;
+      if (options.configStalled) return;
+      data = { environment: 'sandbox', clientId: 'mock-client', available: options.configUnavailable !== true };
+    }
     else if (path === '/api/auth/session') data = { userId: 'test-user', email: 'test@example.com', name: 'Test' };
     else if (path.startsWith('/api/series/')) data = series;
     else if (path === '/api/orders') {
@@ -99,6 +103,9 @@ async function scenario(name, options, run, beforeOpen) {
       throw error;
     });
     await page.getByRole('dialog').waitFor();
+    assert.equal(await page.locator('.payment-methods button:visible').count(), 3);
+    assert.equal(await page.locator('.payment-method[aria-pressed="true"]').count(), 0);
+    assert.equal(await page.locator('.checkout-loading:visible, .paypal-buttons:visible, .paypal-card-fields:visible, .apple-pay-button:visible, .payment-unavailable:visible').count(), 0);
     await run({ page, calls, captures: () => captures, configRequests: () => configRequests, sdkRequests: () => sdkRequests });
     assert.deepEqual(errors, [], `Unexpected browser errors: ${errors.join('; ')}`);
     results.push({ name, passed: true });
@@ -106,6 +113,41 @@ async function scenario(name, options, run, beforeOpen) {
   } finally { await context.close(); }
 }
 try {
+  await scenario('payment buttons appear before configuration; loading starts only after selection', { configStalled: true }, async ({ page, calls }) => {
+    await page.screenshot({ path: 'artifacts/screenshots/checkout-buttons-375.png', fullPage: true });
+    const appleButton = page.getByRole('button', { name: 'Apple Pay', exact: true });
+    const initialBox = await appleButton.boundingBox();
+    await appleButton.click();
+    await appleButton.getByRole('status', { name: 'Preparing Apple Pay…', exact: true }).waitFor({ timeout: 1000 });
+    assert.equal(await appleButton.isDisabled(), true);
+    const loadingBox = await appleButton.boundingBox();
+    assert.equal(loadingBox.width, initialBox.width);
+    assert.equal(loadingBox.height, initialBox.height);
+    await page.screenshot({ path: 'artifacts/screenshots/checkout-button-loading-375.png', fullPage: true });
+    await page.getByRole('button', { name: 'Credit or debit card', exact: true }).click();
+    await page.getByRole('status', { name: 'Preparing Credit or debit card…', exact: true }).waitFor({ timeout: 1000 });
+    assert.equal(await appleButton.isEnabled(), true);
+    assert.equal(await page.locator('.checkout-loading:visible').count(), 1);
+    assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await page.locator('.detail-actions .button--ghost').click();
+    await page.getByText('Choose how you would like to pay.', { exact: true }).waitFor();
+    assert.equal(await page.locator('.checkout-loading:visible').count(), 0);
+  });
+  await scenario('ready background providers stay hidden until a payment button is clicked', {}, async ({ page, calls }) => {
+    await page.waitForFunction(() => Boolean(window.__appleConfigCalls && window.__correctCardDetails));
+    assert.equal(await page.locator('.paypal-buttons:visible, .paypal-card-fields:visible, .apple-pay-button:visible').count(), 0);
+    await page.getByRole('button', { name: 'PayPal', exact: true }).click();
+    await page.getByRole('button', { name: 'Mock PayPal checkout' }).waitFor();
+    assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
+  });
+  await scenario('unavailable configuration keeps initial buttons and explains failure after selection', { configUnavailable: true }, async ({ page, calls }) => {
+    await page.getByRole('button', { name: 'PayPal', exact: true }).click();
+    await page.getByText('Checkout unavailable', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Retry payment options' }).click();
+    await page.getByText('Checkout unavailable', { exact: true }).waitFor();
+    assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
+  });
   await scenario('page entry warms SDK and Apple Pay without an order; opening reuses preparation', {}, async ({ page, calls, configRequests, sdkRequests }) => {
     await page.getByRole('button', { name: 'Apple Pay', exact: true }).click();
     await page.getByRole('button', { name: 'Buy with Apple Pay' }).waitFor();
@@ -131,7 +173,8 @@ try {
     assert.equal(captures(), 1);
   });
   await scenario('slow SDK offers a redirect before its timeout and gives immediate feedback', { sdkStalled: true }, async ({ page, calls }) => {
-    await page.getByText('Preparing PayPal…', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'PayPal', exact: true }).click();
+    await page.getByRole('status', { name: 'Preparing PayPal…', exact: true }).waitFor();
     await page.getByRole('button', { name: 'Continue to PayPal', exact: true }).waitFor({ timeout: 5000 });
     assert.equal(await page.locator('.checkout-loading').isVisible(), true);
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
@@ -182,6 +225,7 @@ try {
     await page.locator('.checkout-loading').waitFor({ state: 'hidden' });
   });
   await scenario('stalled card and Apple Pay do not block a ready PayPal wallet', { slowCardRender: true, slowAppleConfig: true }, async ({ page }) => {
+    await page.getByRole('button', { name: 'PayPal', exact: true }).click();
     await page.getByRole('button', { name: 'Mock PayPal checkout' }).waitFor();
     await page.locator('.checkout-loading').waitFor({ state: 'hidden', timeout: 2000 });
     await page.getByRole('button', { name: 'Credit or debit card', exact: true }).click();
@@ -192,6 +236,7 @@ try {
     await page.locator('.checkout-loading').waitFor({ state: 'hidden' });
   });
   await scenario('stalled SDK offers PayPal redirect without creating an order automatically', { sdkStalled: true }, async ({ page, calls }) => {
+    await page.getByRole('button', { name: 'PayPal', exact: true }).click();
     await page.getByRole('button', { name: 'Continue to PayPal', exact: true }).waitFor({ timeout: 12_000 });
     await page.locator('.checkout-loading').waitFor({ state: 'hidden' });
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
@@ -202,6 +247,7 @@ try {
     assert.equal(calls.find((call) => call.path === '/api/orders').body.paymentMethod, 'paypal');
   });
   await scenario('PayPal wallet still creates and captures', {}, async ({ page, calls, captures }) => {
+    await page.getByRole('button', { name: 'PayPal', exact: true }).click();
     await page.getByRole('button', { name: 'Mock PayPal checkout' }).click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
     assert.equal(calls.find((call) => call.path === '/api/orders').body.paymentMethod, 'paypal');
@@ -260,6 +306,7 @@ try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   });
   await scenario('cancel and repeated reopen keep a working checkout', { cancel: true }, async ({ page, calls }) => {
+    await page.getByRole('button', { name: 'PayPal', exact: true }).click();
     await page.getByRole('button', { name: 'Mock PayPal checkout' }).click();
     await page.getByRole('alert').filter({ hasText: 'Checkout cancelled' }).waitFor();
     assert.equal(calls.filter((call) => call.path === '/api/paypal/cancel').length, 1);
