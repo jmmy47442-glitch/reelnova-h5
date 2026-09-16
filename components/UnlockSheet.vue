@@ -25,13 +25,15 @@ const status = ref<OrderStatus>('pending');
 const error = ref('');
 const paymentMethod = ref<PaymentMethod>('paypal');
 // Preparation stays silent until the customer chooses a payment button.
-const methodSelected = ref(false);
+const methodSelected = ref(true);
 const paypalContainer = ref<HTMLElement | null>(null);
 const cardContainer = ref<HTMLElement | null>(null);
 const loading = ref(false);
 const busy = ref(false);
 const sdkFailed = ref(false);
 const paypalReady = ref(false);
+// Keep partially rendered provider content hidden until it is ready.
+const paypalView = computed(() => sdkFailed.value ? 'failed' : paypalReady.value ? 'sdk' : 'loading');
 const cardReady = ref(false);
 const cardMessage = ref('');
 const cardValidationAttempted = ref(false);
@@ -51,7 +53,7 @@ const selectedMethodLoading = computed(() => {
   if (!methodSelected.value) return false;
   if (paymentMethod.value === 'apple_pay') return appleLoading.value || (loading.value && !appleReady.value && !appleMessage.value);
   if (paymentMethod.value === 'card') return loading.value && !cardReady.value && !cardMessage.value;
-  return loading.value && !paypalReady.value && !sdkFailed.value;
+  return loading.value && paypalView.value === 'loading';
 });
 const withPaymentTimeout = async <T,>(task: Promise<T>): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -388,21 +390,12 @@ const initialize = async () => {
     cardMessage.value = 'Card payment could not be loaded. Please reopen checkout to retry.';
     appleMessage.value = applePayLoadFailureMessage();
     appleRetryable.value = true;
-    error.value = paypalAvailable.value
-      ? 'Payment options could not be loaded. You can continue to secure PayPal checkout.'
-      : 'Payment options could not be loaded. Please reopen checkout to try again.';
+    error.value = paypalAvailable.value ? '' : 'Payment options could not be loaded. Please retry below.';
   } finally { if (currentGeneration === generation) loading.value = false; }
 };
 const checkout = async () => {
-  if (!isAuthenticated.value) { emit('close'); await navigateTo({ path: '/login', query: { redirect: route.fullPath } }); return; }
-  if (processing.value || !paypalAvailable.value) return;
-  busy.value = true;
-  try {
-    const order = await createOrder('paypal');
-    if (!order.approvalUrl) throw new Error('PayPal approval URL missing');
-    window.location.assign(order.approvalUrl);
-  } catch (reason) { showFailure(reason, 'Checkout could not be loaded. Check your connection and try again.'); }
-  finally { busy.value = false; }
+  emit('close');
+  await navigateTo({ path: '/login', query: { redirect: route.fullPath } });
 };
 const dispose = () => {
   generation++;
@@ -442,6 +435,7 @@ const close = () => { if (!busy.value) emit('close'); };
 watch(() => props.open, (open) => {
   if (!import.meta.client) return;
   if (!open) { dispose(); return; }
+  methodSelected.value = true;
   void track('payment_sheet_open', { seriesId: props.series.id, seriesTitle: props.series.title });
   if (status.value === 'processing') { polls = 0; void checkPayment(); }
   else if (status.value !== 'paid') { error.value = ''; status.value = 'pending'; }
@@ -501,7 +495,7 @@ onBeforeUnmount(dispose);
             <div v-if="error && methodSelected" class="inline-error" role="alert"><CircleAlert :size="18" /><span>{{ error }} <a href="mailto:support@iseedrama.com?subject=Payment%20support">Contact support</a></span></div>
             <div class="paypal-slot" :aria-busy="selectedMethodLoading || processing">
               <template v-if="purchasable">
-                <div class="payment-methods" role="group" aria-label="Payment method">
+                <div v-if="false" class="payment-methods" role="group" aria-label="Payment method">
                   <button v-for="(label, method) in methodLabels" :key="method" type="button" :aria-label="label" :disabled="processing" :aria-pressed="methodSelected && paymentMethod === method" :class="['payment-method', { 'is-active': methodSelected && paymentMethod === method }]" @click="selectMethod(method)">
                     <img v-if="method === 'paypal'" class="payment-method__brand" src="/payment/paypal-mark.svg" width="20" height="20" alt="" aria-hidden="true" />
                     <CreditCard v-else-if="method === 'card'" :size="16" aria-hidden="true" />
@@ -509,15 +503,18 @@ onBeforeUnmount(dispose);
                     <span v-if="method !== 'apple_pay'">{{ label }}</span>
                   </button>
                 </div>
-                <p v-if="!methodSelected" class="checkout-hint">Choose how you would like to pay.</p>
+                <p v-if="false" class="checkout-hint">Choose how you would like to pay.</p>
                 <div v-if="selectedMethodLoading" class="checkout-loading" role="status" aria-live="polite">
                   <LoaderCircle class="spin" :size="18" aria-hidden="true" />
                   <div><strong>Preparing {{ methodLabels[paymentMethod] }}…</strong><p>{{ slowPayment ? 'Taking longer than usual. You can choose another payment method.' : 'Connecting securely. You have not been charged.' }}</p></div>
                 </div>
                 <div v-show="methodSelected && paypalAvailable">
                   <div v-show="paymentMethod === 'paypal'">
-                    <div v-show="!sdkFailed" ref="paypalContainer" class="paypal-buttons" aria-label="PayPal checkout" />
-                    <button v-if="sdkFailed || (selectedMethodLoading && slowPayment)" class="button button--primary button--wide" type="button" :disabled="processing" @click="checkout"><LoaderCircle v-if="busy" class="spin" :size="16" />{{ busy ? 'Opening PayPal…' : 'Continue to PayPal' }}</button>
+                    <div v-show="paypalView === 'sdk'" ref="paypalContainer" class="paypal-buttons" aria-label="PayPal checkout" />
+                    <div v-if="paypalView === 'failed'">
+                      <p class="checkout-hint" role="status">PayPal could not be loaded. Please retry or choose another payment method.</p>
+                      <button class="button button--ghost button--wide" type="button" :disabled="processing" @click="retryPaymentOptions">Retry PayPal</button>
+                    </div>
                   </div>
                   <div v-show="paymentMethod === 'card'">
                     <div v-show="cardReady" ref="cardContainer" class="paypal-card-fields" aria-label="Credit or debit card checkout">
@@ -545,7 +542,7 @@ onBeforeUnmount(dispose);
                   </div>
                   <button v-if="conflictPayPalId || activeOrder?.paypalOrderId" class="checkout-cancel" type="button" :disabled="processing" @click="cancelCheckout">Cancel current checkout</button>
                 </div>
-                <div v-if="methodSelected && !paypalAvailable && !loading" class="payment-unavailable" role="status"><Clock3 :size="19" /><div><strong>Checkout unavailable</strong><span>Please try again later.</span><button class="checkout-cancel" type="button" @click="retryPaymentOptions">Retry payment options</button></div></div>
+                <div v-if="methodSelected && !paypalAvailable && !loading" class="payment-unavailable" role="status"><Clock3 :size="19" /><div><strong>PayPal unavailable</strong><span>Please try again later.</span><button class="button button--ghost" type="button" @click="retryPaymentOptions">Retry PayPal</button></div></div>
               </template>
             </div>
             <p class="legal-copy">By continuing, you agree to our <NuxtLink to="/terms">Terms of Service</NuxtLink> and refund terms. Final access is granted after server confirmation.</p>

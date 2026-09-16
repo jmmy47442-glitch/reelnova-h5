@@ -13,6 +13,7 @@ async function scenario(name, options, run, beforeOpen) {
   const context = await browser.newContext({ viewport: { width: 375, height: 812 }, reducedMotion: 'reduce' });
   const page = await context.newPage();
   const calls = []; let captures = 0; let createdOrder; let configRequests = 0; let sdkRequests = 0;
+  const stalledSdkRoutes = [];
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.addInitScript((options) => {
@@ -33,15 +34,15 @@ async function scenario(name, options, run, beforeOpen) {
       };
     }
   }, options);
-  await page.route('https://www.paypal.com/sdk/js?**', (route) => {
+  await page.route('https://www.paypal.com/sdk/js?**', async (route) => {
     sdkRequests++;
     if (options.sdkFailure) return route.abort();
-    if (options.sdkStalled) return;
+    if (options.sdkStalled && await page.evaluate(() => window.__testOptions.sdkStalled)) { stalledSdkRoutes.push(route); return; }
     return route.fulfill({ contentType: 'application/javascript', body: `
       window.paypal = {
         FUNDING: { PAYPAL: 'paypal' },
         Buttons: (callbacks) => ({
-          render: async (host) => { const button = document.createElement('button'); button.textContent = 'Mock PayPal checkout'; button.onclick = async () => { try { const orderID = await callbacks.createOrder(); if (window.__testOptions.cancel) await callbacks.onCancel(); else await callbacks.onApprove({ orderID }); } catch (error) { callbacks.onError(error); } }; host.appendChild(button); if (window.__testOptions.slowPayPalRender) await new Promise(() => {}); }, close: () => {},
+          render: async (host) => { const button = document.createElement('button'); button.textContent = 'Mock PayPal checkout'; button.onclick = async () => { try { const orderID = await callbacks.createOrder(); if (window.__testOptions.cancel) await callbacks.onCancel(); else await callbacks.onApprove({ orderID }); } catch (error) { callbacks.onError(error); } }; host.appendChild(button); if (window.__testOptions.slowPayPalRender) await new Promise(resolve => { window.__finishPayPalRender = resolve; }); }, close: () => {},
         }),
         CardFields: (callbacks) => {
           const getState = () => window.__testOptions.missingCardDetails ? {
@@ -106,7 +107,7 @@ async function scenario(name, options, run, beforeOpen) {
     assert.equal(await page.locator('.payment-methods button:visible').count(), 3);
     assert.equal(await page.locator('.payment-method[aria-pressed="true"]').count(), 0);
     assert.equal(await page.locator('.checkout-loading:visible, .paypal-buttons:visible, .paypal-card-fields:visible, .apple-pay-button:visible, .payment-unavailable:visible').count(), 0);
-    await run({ page, calls, captures: () => captures, configRequests: () => configRequests, sdkRequests: () => sdkRequests });
+    await run({ page, calls, captures: () => captures, configRequests: () => configRequests, sdkRequests: () => sdkRequests, releaseStalledSdk: () => Promise.all(stalledSdkRoutes.splice(0).map(route => route.abort())) });
     assert.deepEqual(errors, [], `Unexpected browser errors: ${errors.join('; ')}`);
     results.push({ name, passed: true });
     console.log(`PASS ${name}`);
@@ -163,11 +164,13 @@ try {
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
     assert.equal(captures(), 1);
   });
-  await scenario('slow SDK offers a redirect before its timeout and gives immediate feedback', { sdkStalled: true }, async ({ page, calls }) => {
+  await scenario('slow SDK keeps feedback without adding a second PayPal payment button', { sdkStalled: true }, async ({ page, calls }) => {
     await page.getByRole('button', { name: 'PayPal', exact: true }).click();
     await page.getByText('Preparing PayPal…', { exact: true }).waitFor();
-    await page.getByRole('button', { name: 'Continue to PayPal', exact: true }).waitFor({ timeout: 5000 });
+    await page.getByText('Taking longer than usual.', { exact: false }).waitFor({ timeout: 5000 });
     assert.equal(await page.locator('.checkout-loading').isVisible(), true);
+    assert.equal(await page.locator('.paypal-buttons').isVisible(), false);
+    assert.equal(await page.getByRole('button', { name: 'Continue to PayPal', exact: true }).count(), 0);
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
     await page.screenshot({ path: 'artifacts/screenshots/checkout-loading-375.png', fullPage: true });
   });
@@ -206,19 +209,50 @@ try {
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 1);
     assert.equal(captures(), 1);
   });
+  await scenario('partially rendered PayPal stays hidden until only its official button is ready', { slowPayPalRender: true }, async ({ page, calls, captures }) => {
+    await page.getByRole('button', { name: 'PayPal', exact: true }).click();
+    await page.waitForFunction(() => typeof window.__finishPayPalRender === 'function');
+    const sdkButton = page.locator('.paypal-buttons button');
+    assert.equal(await sdkButton.count(), 1, 'SDK already inserted its button');
+    assert.equal(await sdkButton.isVisible(), false, 'partial SDK content stays hidden');
+    await page.getByText('Taking longer than usual.', { exact: false }).waitFor({ timeout: 5000 });
+    assert.equal(await page.getByRole('button', { name: 'Continue to PayPal', exact: true }).count(), 0);
+    assert.equal(await sdkButton.isVisible(), false);
+    await page.evaluate(() => window.__finishPayPalRender());
+    await sdkButton.waitFor();
+    await page.locator('.checkout-loading').waitFor({ state: 'hidden' });
+    assert.equal(await page.getByRole('button', { name: 'Retry PayPal', exact: true }).count(), 0);
+    assert.equal(await sdkButton.count(), 1);
+    await page.getByRole('button', { name: 'Credit or debit card', exact: true }).click();
+    await page.getByRole('button', { name: 'Pay $9.99 USD', exact: true }).waitFor();
+    await page.getByRole('button', { name: 'PayPal', exact: true }).click();
+    assert.equal(await sdkButton.isVisible(), true);
+    assert.equal(await page.locator('.checkout-loading').count(), 0);
+    assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
+    await page.screenshot({ path: 'artifacts/screenshots/checkout-paypal-single-action-375.png', fullPage: true });
+    await sdkButton.click();
+    await page.getByRole('dialog').waitFor({ state: 'hidden' });
+    assert.equal(calls.filter((call) => call.path === '/api/orders').length, 1);
+    assert.equal(captures(), 1);
+  });
   await scenario('slow PayPal rendering does not block card fields', { slowPayPalRender: true }, async ({ page }) => {
     await page.getByRole('button', { name: 'Credit or debit card', exact: true }).click();
     await page.getByRole('button', { name: 'Pay $9.99 USD', exact: true }).waitFor();
     assert.equal(await page.locator('.paypal-card-fields input').count(), 4);
     await page.locator('.checkout-loading').waitFor({ state: 'hidden', timeout: 2000 });
     await page.getByRole('button', { name: 'PayPal', exact: true }).click();
-    await page.getByRole('button', { name: 'Continue to PayPal', exact: true }).waitFor({ timeout: 12_000 });
+    await page.getByRole('button', { name: 'Retry PayPal', exact: true }).waitFor({ timeout: 12_000 });
     await page.locator('.checkout-loading').waitFor({ state: 'hidden' });
+    await page.evaluate(() => window.__finishPayPalRender());
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.locator('.paypal-buttons').isVisible(), false);
+    assert.equal(await page.getByRole('button', { name: 'Retry PayPal', exact: true }).isVisible(), true);
   });
   await scenario('stalled card and Apple Pay do not block a ready PayPal wallet', { slowCardRender: true, slowAppleConfig: true }, async ({ page }) => {
     await page.getByRole('button', { name: 'PayPal', exact: true }).click();
     await page.getByRole('button', { name: 'Mock PayPal checkout' }).waitFor();
     await page.locator('.checkout-loading').waitFor({ state: 'hidden', timeout: 2000 });
+    assert.equal(await page.getByRole('button', { name: 'Continue to PayPal', exact: true }).count(), 0);
     await page.getByRole('button', { name: 'Credit or debit card', exact: true }).click();
     await page.getByText('Card fields could not be loaded.', { exact: false }).waitFor({ timeout: 12_000 });
     await page.locator('.checkout-loading').waitFor({ state: 'hidden' });
@@ -226,16 +260,24 @@ try {
     await page.getByText('Apple Pay cannot be tested on localhost', { exact: false }).waitFor();
     await page.locator('.checkout-loading').waitFor({ state: 'hidden' });
   });
-  await scenario('stalled SDK offers PayPal redirect without creating an order automatically', { sdkStalled: true }, async ({ page, calls }) => {
+  await scenario('stalled SDK retries to an official button without creating an order automatically', { sdkStalled: true }, async ({ page, calls, captures, releaseStalledSdk }) => {
     await page.getByRole('button', { name: 'PayPal', exact: true }).click();
-    await page.getByRole('button', { name: 'Continue to PayPal', exact: true }).waitFor({ timeout: 12_000 });
+    await page.getByRole('button', { name: 'Retry PayPal', exact: true }).waitFor({ timeout: 12_000 });
     await page.locator('.checkout-loading').waitFor({ state: 'hidden' });
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
-    await page.route('https://www.sandbox.paypal.com/checkoutnow?**', (route) => route.fulfill({ contentType: 'text/html', body: 'Mock PayPal redirect' }));
-    await page.getByRole('button', { name: 'Continue to PayPal', exact: true }).click();
-    await page.waitForURL('https://www.sandbox.paypal.com/checkoutnow?token=PP-TEST');
+    assert.equal(await page.getByRole('button', { name: 'Continue to PayPal', exact: true }).count(), 0);
+    // Let the next SDK request succeed; retry prepares controls, not an order.
+    await page.evaluate(() => { window.__testOptions.sdkStalled = false; });
+    await releaseStalledSdk();
+    await page.getByRole('button', { name: 'Retry PayPal', exact: true }).click();
+    await page.getByRole('button', { name: 'Mock PayPal checkout' }).waitFor();
+    assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
+    assert.equal(await page.locator('.paypal-buttons button').count(), 1);
+    assert.equal(await page.getByRole('button', { name: 'Retry PayPal', exact: true }).count(), 0);
+    await page.getByRole('button', { name: 'Mock PayPal checkout' }).click();
+    await page.getByRole('dialog').waitFor({ state: 'hidden' });
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 1);
-    assert.equal(calls.find((call) => call.path === '/api/orders').body.paymentMethod, 'paypal');
+    assert.equal(captures(), 1);
   });
   await scenario('PayPal wallet still creates and captures', {}, async ({ page, calls, captures }) => {
     await page.getByRole('button', { name: 'PayPal', exact: true }).click();
