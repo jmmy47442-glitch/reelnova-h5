@@ -21,10 +21,15 @@
 
 当前仓库包含 Vue 3 + Nuxt 3 用户端 H5，以及基于 Art Design Pro / Element Plus 设计规范的后台管理 UI。业务接口由 Nuxt/Nitro 提供，内容、订单、观看记录与配置存储于 Cloudflare D1。`NUXT_PUBLIC_API_BASE` 可用于指定 API 地址。
 
+使用 `.nvmrc` 指定的 Node.js 22.22.0 和 npm 10.9.2，与 Cloudflare Pages 构建环境保持一致。
+
 ```bash
-npm install
+nvm use
+npm ci
 npm run dev
 ```
+
+修改依赖时使用 npm 10.9.2 执行 `npm install`，并一起提交 `package.json` 和 `package-lock.json`。提交前执行 `npm ci` 和 `npm run build:cloudflare`；Cloudflare Pages 自动安装依赖时会校验锁文件，缺失或不匹配的条目会导致部署在构建前失败。
 
 - 用户端：登录 `/login`，注册 `/register`，首页 `/`，探索 `/explore`，片库 `/library`，个人中心 `/profile`。用户必须注册或登录后才能进入用户端界面。
 - 核心流程：详情 `/series/{slug}`，分集播放 `/watch/{slug}/{episode}`，使用后台已上架的真实短剧。
