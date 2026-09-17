@@ -191,7 +191,13 @@ const cancelCheckout = async () => {
 const selectMethod = async (method: PaymentMethod) => {
   if (processing.value) return;
   methodSelected.value = true;
-  if (method === paymentMethod.value) return;
+  // A provider error belongs to the previously selected method. Clear it even
+  // when the user taps the already highlighted PayPal button to recover.
+  error.value = '';
+  if (method === paymentMethod.value) {
+    status.value = 'pending';
+    return;
+  }
   const id = conflictPayPalId.value || activeOrder.value?.paypalOrderId;
   if (id) {
     // Release the previous checkout without blocking the visible selection.
@@ -210,7 +216,6 @@ const selectMethod = async (method: PaymentMethod) => {
   paymentMethod.value = method;
   status.value = 'pending';
   checkoutKey.value = '';
-  error.value = '';
 };
 const validateCardState = (state: any) => {
   const messages: Record<string, string> = {};
