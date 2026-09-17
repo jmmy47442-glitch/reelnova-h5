@@ -234,6 +234,41 @@ test('refund retry after an uncertain provider response keeps the amount and ide
   } finally { h.db.close(); }
 });
 
+for (const issue of ['INSUFFICIENT_FUNDS', 'REFUND_FAILED_INSUFFICIENT_FUNDS', 'REFUND_NOT_ALLOWED']) {
+  for (const source of ['data', 'response']) test(`refund rejection ${issue} via ${source} reports the correct admin message`, async () => {
+    const payload = { details: [{ issue: 'OTHER_DETAIL' }, { issue }] };
+    const h = harness({ beforeRefund: () => {
+      throw Object.assign(new Error('Refund rejected'), source === 'data'
+        ? { statusCode: 422, data: payload }
+        : { response: { status: 422, _data: payload } });
+    } });
+    try {
+      const order = await paidOrder(h);
+      const insufficientFunds = issue !== 'REFUND_NOT_ALLOWED';
+      const message = 'PayPal 商户账户余额不足，无法完成退款。请补足余额后重试。';
+      await assert.rejects(h.refund({ params: { orderNo: order.orderNo }, body: { amount: '9.99', reason: 'Customer requested refund' } }), (error) => {
+        assert.equal(error.statusCode, 502);
+        assert.equal(error.data.code, insufficientFunds ? 'PAYPAL_REFUND_INSUFFICIENT_FUNDS' : 'PAYPAL_PROVIDER_ERROR');
+        assert.equal(error.data.message, insufficientFunds ? message : undefined);
+        assert.equal(error.data.providerStatus, 422);
+        assert.equal(error.data.providerDetail, `OTHER_DETAIL; ${issue}`);
+        return true;
+      });
+      const refund = h.db.prepare('SELECT status, provider_status, error_message FROM refund_requests').get();
+      assert.equal(refund.status, 'failed');
+      assert.equal(refund.provider_status, 'REQUEST_REJECTED');
+      if (insufficientFunds) {
+        assert.equal(refund.error_message, message);
+        assert.equal(h.db.prepare("SELECT detail FROM refund_events WHERE event_type = 'refund_attempt_failed'").get().detail, message);
+        assert.equal((await h.adminOrders({ query: { environment: 'sandbox' } })).data.items[0].refund.errorMessage, message);
+      }
+      assert.equal(h.db.prepare('SELECT status FROM orders').get().status, 'paid');
+      assert.equal(h.db.prepare('SELECT status FROM entitlements').get().status, 'granted');
+      assert.equal(h.providerRefunds.size, 0);
+    } finally { h.db.close(); }
+  });
+}
+
 for (const amount of ['9.99', '0.66']) test(`cancel a rejected refund and reopen the same paid order for ${amount}`, async () => {
   let reject = true;
   const keys = [];

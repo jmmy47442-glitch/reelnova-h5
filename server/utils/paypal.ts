@@ -72,12 +72,19 @@ const paypalRequest = async <T>(
         || (error as { response?: { _data?: { name?: string; message?: string; details?: Array<{ issue?: string; description?: string }> } } }).response?._data;
       const detail = payload?.details?.map((item) => item.issue || item.description).filter(Boolean).join('; ')
         || payload?.message || payload?.name;
+      const insufficientRefundFunds = operation === 'refund' && payload?.details?.some((item) =>
+        ['INSUFFICIENT_FUNDS', 'REFUND_FAILED_INSUFFICIENT_FUNDS'].includes(item.issue || ''));
       throw createError({
         statusCode: 502,
         statusMessage: providerStatus === 401
           ? 'PayPal rejected the configured credentials'
           : `PayPal rejected the ${operation} request${detail ? `: ${detail}` : ''}`,
-        data: { code: providerStatus === 401 ? 'PAYPAL_CREDENTIALS_REJECTED' : 'PAYPAL_PROVIDER_ERROR', providerStatus, providerDetail: detail || null },
+        data: {
+          code: insufficientRefundFunds ? 'PAYPAL_REFUND_INSUFFICIENT_FUNDS' : providerStatus === 401 ? 'PAYPAL_CREDENTIALS_REJECTED' : 'PAYPAL_PROVIDER_ERROR',
+          providerStatus,
+          providerDetail: detail || null,
+          ...(insufficientRefundFunds ? { message: 'PayPal 商户账户余额不足，无法完成退款。请补足余额后重试。' } : {}),
+        },
       });
     }
     throw createError({

@@ -10,6 +10,7 @@ try {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     const submissions = [];
     let refundMode = 'success';
+    const insufficientFundsMessage = 'PayPal 商户账户余额不足，无法完成退款。请补足余额后重试。';
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     page.on('console', (message) => { if (message.type() === 'error') console.log(message.text()); });
@@ -28,6 +29,10 @@ try {
       else if (path.endsWith('/refund')) {
         const input = route.request().postDataJSON();
         submissions.push(input);
+        if (refundMode === 'insufficient-funds') return route.fulfill({ status: 502, json: {
+          statusMessage: 'PayPal rejected the refund request: REFUND_FAILED_INSUFFICIENT_FUNDS',
+          data: { code: 'PAYPAL_REFUND_INSUFFICIENT_FUNDS', providerStatus: 422, providerDetail: 'REFUND_FAILED_INSUFFICIENT_FUNDS', message: insufficientFundsMessage },
+        } });
         if (refundMode === 'uncertain') return route.fulfill({ status: 409, json: { data: { code: 'REFUND_RECONCILIATION_REQUIRED', message: '上一笔退款结果尚未确认，请先核验退款。', originalAmount: '9.99' } } });
         if (input.method === 'cancel') {
           order.refund.status = 'cancelled';
@@ -110,8 +115,21 @@ try {
     await dialog.waitFor({ state: 'hidden' });
     assert.equal(submissions.at(-1).amount, '0.66');
     assert.equal(submissions.at(-1).method, 'paypal_api');
+    await page.getByRole('button', { name: '退款', exact: true }).click();
+    await amount.fill('0.66');
+    await dialog.getByRole('textbox', { name: '退款原因', exact: true }).fill('Customer requested refund with insufficient balance');
+    refundMode = 'insufficient-funds';
+    await dialog.getByRole('button', { name: '确认退款', exact: true }).click();
+    await dialog.getByText(insufficientFundsMessage, { exact: true }).waitFor();
+    assert.equal(await amount.inputValue(), '0.66');
+    await page.screenshot({ path: `artifacts/screenshots/refund-insufficient-funds-${width}.png` });
+    const insufficientFundsBounds = await dialog.boundingBox();
+    assert.ok(insufficientFundsBounds.x >= 0 && insufficientFundsBounds.x + insufficientFundsBounds.width <= width && insufficientFundsBounds.y >= 0 && insufficientFundsBounds.y + insufficientFundsBounds.height <= 900);
+    refundMode = 'success';
+    await dialog.getByRole('button', { name: '确认退款', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
     assert.deepEqual(errors, []);
-    console.log(`Refund UI passed at ${width}px: validation, submission, manual recording, reconciliation, cancellation and reapplication`);
+    console.log(`Refund UI passed at ${width}px: validation, submission, manual recording, reconciliation, cancellation, reapplication and insufficient funds`);
     await page.close();
   }
 } finally {

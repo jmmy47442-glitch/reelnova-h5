@@ -175,9 +175,9 @@ export default defineEventHandler(async (event) => {
     }
     applied = await applyVerifiedRefund(event, { paypalRefundId: refund.id, captureId: order.capture_id, status: refund.status, source: 'paypal_api', actor: admin.email, detail: `PayPal API refund: ${refund.status}` });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'PayPal refund failed';
+    const providerError = error as { data?: { providerStatus?: number; code?: string; message?: string } };
+    const message = providerError.data?.message || (error instanceof Error ? error.message : 'PayPal refund failed');
     const failedAt = new Date().toISOString();
-    const providerError = error as { data?: { providerStatus?: number; code?: string } };
     const rejected = [400, 401, 403, 404, 422].includes(providerError.data?.providerStatus || 0);
     await d1Run(event, "UPDATE refund_requests SET status = 'failed', error_message = ?, provider_status = ?, updated_at = ? WHERE id = ?", [message, rejected ? 'REQUEST_REJECTED' : 'UNKNOWN', failedAt, requestId]);
     await d1Run(event, "UPDATE orders SET status = 'paid', note = ?, updated_at = ? WHERE order_no = ? AND status = 'refunding'", [`Refund failed: ${message}`, failedAt, orderNo]);
