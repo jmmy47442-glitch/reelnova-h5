@@ -1,3 +1,4 @@
+import { checkMediaHealth } from './check-media-health.mjs';
 import { existsSync, readFileSync } from 'node:fs';
 
 const parseEnv = (file) => {
@@ -13,7 +14,6 @@ const parseEnv = (file) => {
 const envFile = process.env.PRODUCTION_ENV_FILE || '.env';
 const env = { ...(existsSync(envFile) ? parseEnv(envFile) : {}), ...process.env };
 const appBaseUrl = String(env.APP_BASE_URL || 'https://iseedrama.com').replace(/\/$/, '');
-const expectedWebhookUrl = env.CLOUDFLARE_STREAM_WEBHOOK_URL || 'https://iseedrama.com/api/media/stream-webhook';
 const expectedPayPalWebhookUrl = env.PAYPAL_WEBHOOK_URL || 'https://iseedrama.com/api/paypal/webhook';
 const requiredPayPalWebhookEvents = [
   'PAYMENT.CAPTURE.COMPLETED',
@@ -102,26 +102,12 @@ if (localPayPalPartiallyConfigured) {
   }
 }
 
-const cloudflareKeys = ['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_STREAM_WEBHOOK_SECRET'];
-const missingCloudflare = required(cloudflareKeys);
-report('Stream Webhook Secret and API access', missingCloudflare.length === 0,
-  missingCloudflare.length ? `missing ${missingCloudflare.join(', ')}` : 'secrets present');
-blocked ||= missingCloudflare.length > 0;
-if (!missingCloudflare.length) {
-  try {
-    const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID)}/stream/webhook`, {
-      headers: { Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}` },
-    });
-    const payload = await response.json().catch(() => ({}));
-    const remoteUrl = String(payload?.result?.notification_url || payload?.result?.notificationUrl || '').replace(/\/$/, '');
-    const callbackReady = Boolean(response.ok && payload?.success && remoteUrl === expectedWebhookUrl.replace(/\/$/, ''));
-    report('Stream Webhook callback URL', callbackReady,
-      remoteUrl ? `configured=${remoteUrl}` : `HTTP ${response.status}`);
-    blocked ||= !callbackReady;
-  } catch (error) {
-    report('Stream Webhook callback URL', false, error instanceof Error ? error.message : 'request failed');
-    blocked = true;
-  }
+const missingMedia = required(['CLOUDFLARE_MEDIA_WORKER_URL', 'CLOUDFLARE_MEDIA_WORKER_SECRET', 'CLOUDFLARE_MEDIA_SIGNING_SECRET']);
+report('R2 MP4 configuration', missingMedia.length === 0, missingMedia.length ? `missing ${missingMedia.join(', ')}` : 'configured');
+blocked ||= missingMedia.length > 0;
+if (!missingMedia.length) {
+  try { await checkMediaHealth(env); report('R2 MP4 media Worker', true); }
+  catch (error) { report('R2 MP4 media Worker', false, error.message); blocked = true; }
 }
 
 const cloudflareForSaasEnabled = String(env.CLOUDFLARE_FOR_SAAS_ENABLED || '').trim().toLowerCase() === 'true';

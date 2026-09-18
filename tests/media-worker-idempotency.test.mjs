@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { inspectDirectMp4 } from '../shared/direct-mp4.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import worker from '../workers/media-worker.mjs';
 
+const fixture = (name = 'compatible') => new Uint8Array(readFileSync(new URL(`./fixtures/media/${name}.mp4`, import.meta.url)));
 const encoder = new TextEncoder();
 const secret = 'test-media-worker-secret';
 
@@ -40,6 +43,7 @@ const createBucket = () => {
     return withMetadata({
       ...value,
       body,
+      async arrayBuffer() { return body.slice().buffer; },
       async json() { return JSON.parse(new TextDecoder().decode(bytes)); },
     });
   };
@@ -49,7 +53,7 @@ const createBucket = () => {
     async createMultipartUpload(key, options) {
       creates += 1;
       const uploadId = `r2-upload-${creates}`;
-      const state = { key, uploadId, options, aborted: false };
+      const state = { key, uploadId, options, aborted: false, parts: new Map() };
       uploads.set(uploadId, state);
       return {
         uploadId,
@@ -60,11 +64,12 @@ const createBucket = () => {
       const state = uploads.get(uploadId);
       if (!state || state.key !== key || state.aborted) throw new Error('No such upload');
       return {
-        async uploadPart(partNumber) { return { partNumber, etag: `etag-${partNumber}` }; },
+        async uploadPart(partNumber, body) { state.parts.set(partNumber, new Uint8Array(await new Response(body).arrayBuffer())); return { partNumber, etag: `etag-${partNumber}` }; },
         async complete() {
+          const bytes = new Uint8Array(Buffer.concat([...state.parts.entries()].sort((a,b) => a[0]-b[0]).map(([,part]) => part)));
           const object = {
             key, httpEtag: 'completed-etag', customMetadata: state.options.customMetadata,
-            httpMetadata: state.options.httpMetadata, uploaded: new Date(), body: new Uint8Array(), size: 0,
+            httpMetadata: state.options.httpMetadata, uploaded: new Date(), body: bytes, size: bytes.byteLength,
           };
           objects.set(key, object);
           uploads.delete(uploadId);
@@ -89,7 +94,7 @@ test('original playback tokens stream private source bytes with range support', 
   const bucket = createBucket();
   const assetId = 'media_11111111-1111-4111-8111-111111111111';
   const objectKey = `originals/series_1/episode_1/${assetId}/1-source.mp4`;
-  const source = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]);
+  const source = fixture();
   await bucket.put(objectKey, source, {
     httpMetadata: { contentType: 'video/mp4' },
     customMetadata: { managedBy: 'reelnova', assetId },
@@ -112,9 +117,9 @@ test('original playback tokens stream private source bytes with range support', 
   }), env);
   assert.equal(response.status, 206);
   assert.equal(response.headers.get('content-type'), 'video/mp4');
-  assert.equal(response.headers.get('content-range'), 'bytes 2-5/8');
+  assert.equal(response.headers.get('content-range'), `bytes 2-5/${fixture().length}`);
   assert.equal(response.headers.get('access-control-allow-origin'), 'https://app.example.test');
-  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), new Uint8Array([2, 3, 4, 5]));
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), fixture().slice(2, 6));
 });
 
 test('cancelling an upload aborts multipart state and removes its resume marker', async () => {
@@ -154,64 +159,43 @@ test('cancelling an upload aborts multipart state and removes its resume marker'
   assert.equal(bucket.createCount, 2);
 });
 
-test('repeated upload creation and completion reuse R2 and Stream resources', async () => {
+test('MP4 completion is idempotent and works without Stream credentials or network calls', async () => {
   const bucket = createBucket();
-  const videos = [];
-  let streamCopies = 0;
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input, options = {}) => {
-    const url = new URL(String(input));
-    if (url.hostname !== 'api.cloudflare.com') return originalFetch(input, options);
-    if (url.pathname.endsWith('/stream/copy')) {
-      streamCopies += 1;
-      const request = JSON.parse(String(options.body));
-      const video = { uid: `stream-${streamCopies}`, creator: request.creator, created: new Date().toISOString() };
-      videos.push(video);
-      return Response.json({ success: true, result: video });
-    }
-    if (url.pathname.endsWith('/stream')) {
-      const creator = url.searchParams.get('creator');
-      return Response.json({ success: true, result: videos.filter((video) => !creator || video.creator === creator) });
-    }
-    throw new Error(`Unexpected Cloudflare request: ${url}`);
+  const env = { MEDIA_BUCKET: bucket, MEDIA_WORKER_SECRET: secret };
+  const bytes = fixture();
+  const creation = {
+    idempotencyKey: 'upload:11111111-1111-4111-8111-111111111111',
+    sessionId: 'upload_session_1', completionKey: 'r2:upload_session_1',
+    objectKey: 'originals/series/episode/asset/video.mp4', contentType: 'video/mp4', fileSizeBytes: bytes.length,
+    metadata: { assetId: 'asset_1' },
   };
-
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = () => { throw new Error('Unexpected external request'); };
   try {
-    const env = {
-      MEDIA_BUCKET: bucket,
-      MEDIA_WORKER_SECRET: secret,
-      CLOUDFLARE_ACCOUNT_ID: 'account-id',
-      CLOUDFLARE_API_TOKEN: 'api-token',
-      PUBLIC_BASE_URL: 'https://media.example.test',
-      APP_ORIGINS: '',
-    };
-    const creation = {
-      idempotencyKey: 'upload:11111111-1111-4111-8111-111111111111',
-      sessionId: 'upload_session_1',
-      completionKey: 'r2:upload_session_1',
-      streamIdempotencyKey: 'reelnova:upload:upload_session_1',
-      objectKey: 'originals/series/episode/asset/video.mp4',
-      contentType: 'video/mp4',
-      fileSizeBytes: 1024,
-      metadata: { assetId: 'asset_1' },
-    };
     const first = await (await worker.fetch(await signedRequest('/uploads', creation), env)).json();
     const second = await (await worker.fetch(await signedRequest('/uploads', creation), env)).json();
     assert.equal(first.uploadId, second.uploadId);
     assert.equal(bucket.createCount, 1);
-
-    const completion = {
-      ...creation,
-      uploadId: first.uploadId,
-      parts: [{ partNumber: 1, etag: 'part-etag' }],
-    };
-    const firstCompletion = await (await worker.fetch(await signedRequest(`/uploads/${first.uploadId}/complete`, completion), env)).json();
-    const secondCompletion = await (await worker.fetch(await signedRequest(`/uploads/${first.uploadId}/complete`, completion), env)).json();
-    assert.equal(firstCompletion.streamUid, secondCompletion.streamUid);
-    assert.equal(streamCopies, 1);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+    const part = await worker.fetch(new Request(`${first.uploadUrl}/parts/1`, {
+      method: 'PUT', headers: { authorization: `Bearer ${first.uploadToken}` }, body: bytes,
+    }), env);
+    assert.equal(part.status, 200);
+    const completion = { ...creation, uploadId: first.uploadId, parts: [await part.json()] };
+    const one = await worker.fetch(await signedRequest(`/uploads/${first.uploadId}/complete`, completion), env);
+    const two = await worker.fetch(await signedRequest(`/uploads/${first.uploadId}/complete`, completion), env);
+    assert.equal(one.status, 200);
+    const result = await one.json();
+    assert.equal(result.valid, true);
+    assert.equal(result.media.width, 160);
+    assert.deepEqual(await two.json(), result);
+    const mismatch = await worker.fetch(await signedRequest(`/uploads/${first.uploadId}/complete`, { ...completion, fileSizeBytes: 1 }), env);
+    assert.equal(mismatch.status, 500);
+    const foreign = await worker.fetch(await signedRequest(`/uploads/${first.uploadId}/complete`, { ...completion, sessionId: 'foreign' }), env);
+    assert.equal(foreign.status, 500);
+    const cleanup = await worker.fetch(await signedRequest('/reconcile', { keepObjectKeys: [creation.objectKey] }), env);
+    assert.equal(cleanup.status, 200);
+    assert.deepEqual((await cleanup.json()).errors, []);
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test('private ingest supports metadata probes and byte ranges', async () => {
@@ -327,87 +311,53 @@ test('series cover uploads require a signed grant and become immutable public im
   assert.deepEqual([...new Uint8Array(await publicImage.arrayBuffer())], [...imageBytes]);
 });
 
-test('signed server requests can mint short-lived Stream tokens', async () => {
-  const originalFetch = globalThis.fetch;
-  let tokenRequest;
-  globalThis.fetch = async (input, options = {}) => {
-    const url = new URL(String(input));
-    if (url.hostname !== 'api.cloudflare.com') return originalFetch(input, options);
-    tokenRequest = { url, body: JSON.parse(String(options.body)) };
-    return Response.json({ success: true, result: { token: 'signed-stream-token' } });
-  };
-
-  try {
-    const env = {
-      MEDIA_BUCKET: createBucket(),
-      MEDIA_WORKER_SECRET: secret,
-      CLOUDFLARE_ACCOUNT_ID: 'account-id',
-      CLOUDFLARE_API_TOKEN: 'api-token',
-      PUBLIC_BASE_URL: 'https://media.example.test',
-      APP_ORIGINS: '',
-    };
-    const uid = '91b12e3e2084c38e41cce9f9a480e552';
-    const response = await worker.fetch(await signedRequest('/stream/token', { uid, exp: Math.floor(Date.now() / 1000) + 600 }), env);
+test('invalid formats are rejected by the Worker even when browser validation is bypassed', async () => {
+  const bucket = createBucket();
+  const env = { MEDIA_BUCKET: bucket, MEDIA_WORKER_SECRET: secret };
+  for (const name of ['no-faststart', 'unsupported-video']) {
+    const key = `originals/series/episode/asset/${name}.mp4`;
+    await bucket.put(key, fixture(name), { httpMetadata: { contentType: 'video/mp4' }, customMetadata: { assetId: 'asset' } });
+    const response = await worker.fetch(await signedRequest('/videos/verify', { objectKey: key, assetId: 'asset' }), env);
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { token: 'signed-stream-token' });
-    assert.equal(tokenRequest.url.pathname, `/client/v4/accounts/account-id/stream/${uid}/token`);
-    assert.ok(tokenRequest.body.exp > Math.floor(Date.now() / 1000));
-
-    const invalid = await worker.fetch(await signedRequest('/stream/token', { uid: '../other-video' }), env);
-    assert.equal(invalid.status, 400);
-  } finally {
-    globalThis.fetch = originalFetch;
+    assert.equal((await response.json()).valid, false);
   }
+  assert.throws(() => inspectDirectMp4(new ArrayBuffer(32)), /MP4/);
 });
 
-test('application-validated playback grants can mint Stream tokens without the upload secret', async () => {
-  const originalFetch = globalThis.fetch;
-  let validationRequests = 0;
-  let tokenRequests = 0;
-  const uid = '91b12e3e2084c38e41cce9f9a480e552';
-  const exp = Math.floor(Date.now() / 1000) + 600;
-  globalThis.fetch = async (input, options = {}) => {
-    const url = new URL(String(input));
-    if (url.hostname === 'app.example.test' && url.pathname === '/api/internal/media/playback-grant') {
-      validationRequests += 1;
-      const body = JSON.parse(String(options.body));
-      if (body.grant !== 'valid-grant') return Response.json({ message: 'Unauthorized' }, { status: 401 });
-      return Response.json({ data: { authorized: true, uid: body.uid, expires: body.exp } });
-    }
-    if (url.hostname === 'api.cloudflare.com') {
-      tokenRequests += 1;
-      return Response.json({ success: true, result: { token: 'grant-stream-token' } });
-    }
-    return originalFetch(input, options);
-  };
+test('private playback rejects expired and tampered tokens and supports HEAD and ranges', async () => {
+  const bucket = createBucket();
+  const env = { MEDIA_BUCKET: bucket, MEDIA_WORKER_SECRET: secret };
+  const assetId = 'media_11111111-1111-4111-8111-111111111111';
+  const key = `originals/series_1/episode_1/${assetId}/1-video.mp4`;
+  const bytes = fixture();
+  await bucket.put(key, bytes, { httpMetadata: { contentType: 'video/mp4' }, customMetadata: { assetId } });
+  const minted = await worker.fetch(await signedRequest('/original/token', { key, assetId }), env);
+  assert.equal(minted.status, 200);
+  const { url } = await minted.json();
+  const head = await worker.fetch(new Request(url, { method: 'HEAD' }), env);
+  assert.equal(head.status, 200);
+  assert.equal(head.headers.get('content-length'), String(bytes.length));
+  assert.equal(head.headers.get('cache-control'), 'private, max-age=0');
+  const suffix = await worker.fetch(new Request(url, { headers: { range: 'bytes=-4' } }), env);
+  assert.equal(suffix.status, 206);
+  assert.deepEqual(new Uint8Array(await suffix.arrayBuffer()), bytes.slice(-4));
+  const invalid = await worker.fetch(new Request(url, { headers: { range: 'bytes=999999-' } }), env);
+  assert.equal(invalid.status, 416);
+  assert.equal((await worker.fetch(new Request(`${url}x`), env)).status, 403);
+  const realNow = Date.now;
+  Date.now = () => realNow() + 20 * 60 * 1000;
+  try { assert.equal((await worker.fetch(new Request(url), env)).status, 403); }
+  finally { Date.now = realNow; }
+  const unsigned = new Request('https://media.example.test/original/token', { method: 'POST', body: JSON.stringify({ key, assetId }) });
+  assert.equal((await worker.fetch(unsigned, env)).status, 401);
+  assert.equal((await worker.fetch(new Request(`https://media.example.test/${key}`), env)).status, 404);
+});
 
-  try {
-    const env = {
-      MEDIA_BUCKET: createBucket(),
-      MEDIA_WORKER_SECRET: secret,
-      CLOUDFLARE_ACCOUNT_ID: 'account-id',
-      CLOUDFLARE_API_TOKEN: 'api-token',
-      APP_BASE_URL: 'https://app.example.test',
-      PUBLIC_BASE_URL: 'https://media.example.test',
-      APP_ORIGINS: '',
-    };
-    const valid = new Request('https://media.example.test/stream/token', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ uid, exp, grant: 'valid-grant' }),
-    });
-    const validResponse = await worker.fetch(valid, env);
-    assert.equal(validResponse.status, 200);
-    assert.deepEqual(await validResponse.json(), { token: 'grant-stream-token' });
-
-    const forged = new Request('https://media.example.test/stream/token', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ uid, exp, grant: 'forged-grant' }),
-    });
-    const forgedResponse = await worker.fetch(forged, env);
-    assert.equal(forgedResponse.status, 401);
-    assert.equal(validationRequests, 2);
-    assert.equal(tokenRequests, 1);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+test('health checks verify the private R2 binding with server authentication', async () => {
+  const env = { MEDIA_BUCKET: createBucket(), MEDIA_WORKER_SECRET: secret };
+  const response = await worker.fetch(await signedRequest('/health', {}), env);
+  assert.deepEqual(await response.json(), { ready: true, delivery: 'r2-mp4' });
+  const unsigned = new Request('https://media.example.test/health', { method: 'POST', body: '{}' });
+  assert.equal((await worker.fetch(unsigned, env)).status, 401);
+  assert.equal((await worker.fetch(await signedRequest('/stream/token', {}), env)).status, 404);
 });

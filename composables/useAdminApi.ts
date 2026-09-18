@@ -29,11 +29,11 @@ export const useAdminApi = () => {
       cloudflare: {
         database: boolean; databaseError: string | null; mode: string; accountConfigured: boolean; databaseConfigured: boolean; apiTokenConfigured: boolean;
         databaseSchema: { healthy: boolean; latestRequiredMigration: number; latestAppliedMigration: number; migrationHistoryValid: boolean; migrationError: string | null; missing: { tables: string[]; columns: string[]; indexes: string[]; triggers: string[] } } | null;
-        streamApiConfigured: boolean; streamApiError: string | null; streamCustomerCodeConfigured: boolean; streamWebhookConfigured: boolean; streamWebhookUrl: string; streamWebhookRemoteUrl: string | null; streamWebhookRemoteConfigured: boolean; streamWebhookError: string | null;
-        uploadConfigured: boolean; mediaConfigured: boolean; mediaWorkerConfigured: boolean; streamConfigured: boolean; mediaSigningConfigured: boolean; customHostnamesConfigured: boolean;
+        delivery: 'r2-mp4'; mediaWorkerReady: boolean; mediaWorkerError: string | null;
+        uploadConfigured: boolean; mediaConfigured: boolean; mediaWorkerConfigured: boolean; mediaSigningConfigured: boolean; customHostnamesConfigured: boolean;
         customHostnamesMissingFields: Array<'zoneId' | 'apiToken' | 'cnameTarget'>;
         domainMode: 'custom-domains-mvp' | 'cloudflare-saas'; cloudflareForSaasEnabled: boolean; cloudflareForSaasStatus: '已开通' | '待 Cloudflare for SaaS 开通';
-        missingFields: { streamApi: string[]; mediaWorker: string[]; playback: string[]; streamWebhook: string[] };
+        missingFields: { mediaWorker: string[]; playback: string[] };
       };
       paypal: { connected: boolean; ready: boolean; error: string | null; environment: 'sandbox' | 'production'; environmentValid: boolean; credentialsConfigured: boolean; browserClientConfigured: boolean; clientIdsMatch: boolean; webhookConfigured: boolean; environments: Record<'sandbox' | 'production', { credentialsConfigured: boolean; browserClientConfigured: boolean; clientIdsMatch: boolean; webhookConfigured: boolean }>; lastWebhookAt: string | null; failedWebhooks: Array<{ eventId: string; eventType: string; errorMessage: string | null; receivedAt: string; retryCount: number; replayable: boolean }> };
     }>('/admin/connection'),
@@ -64,8 +64,8 @@ export const useAdminApi = () => {
     reportUploadProgress: (uploadId: string, uploadedBytes: number) => request<{ uploadedBytes: number; fileSizeBytes: number }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}/progress`, { method: 'PATCH', body: { uploadedBytes } }),
     getEpisodeUpload: (uploadId: string) => request<{ uploadId: string; mediaAssetId: string; status: string; uploadedBytes: number; fileSizeBytes: number; r2Completed: boolean; streamUid: string | null; recoverable: boolean; errorMessage: string | null; updatedAt: string | null }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}`),
     cancelEpisodeUpload: (uploadId: string) => request<{ uploadId: string; mediaAssetId: string; episodeId: string; status: 'aborted'; cleanupPending: boolean }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' }),
-    completeEpisodeUpload: (uploadId: string, parts: MediaUploadPart[]) => request<{ uploadId: string; mediaAssetId: string; streamUid: string | null; status: 'processing' | 'completing'; errorMessage?: string }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}/complete`, { method: 'POST', body: { parts } }),
-    retryTranscode: (assetId: string) => request<{ assetId: string; streamUid: string; attempt: number; status: 'processing' }>(`/admin/media/${encodeURIComponent(assetId)}/retry`, { method: 'POST' }),
+    completeEpisodeUpload: (uploadId: string, parts: MediaUploadPart[]) => request<{ uploadId: string; mediaAssetId: string; streamUid: string | null; status: 'ready' | 'failed'; errorMessage?: string }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}/complete`, { method: 'POST', body: { parts } }),
+    retryTranscode: (assetId: string) => request<{ assetId: string; status: 'ready' | 'failed'; errorMessage?: string }>(`/admin/media/${encodeURIComponent(assetId)}/retry`, { method: 'POST' }),
     getTaxonomy: () => request<{ items: TaxonomyItem[] }>('/admin/taxonomy'),
     saveTaxonomy: (items: TaxonomyItem[]) => request<{ items: TaxonomyItem[] }>('/admin/taxonomy', { method: 'PUT', body: { items } }),
     getDomains: () => request<{

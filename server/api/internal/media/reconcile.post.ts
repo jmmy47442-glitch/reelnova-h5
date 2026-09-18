@@ -13,7 +13,6 @@ interface ExpiredUpload {
 interface CleanupResult {
   abortedSessionIds: string[];
   deletedObjectKeys: string[];
-  deletedStreamUids: string[];
   deletedMarkerKeys: string[];
   errors: Array<{ resource: string; message: string }>;
 }
@@ -32,7 +31,7 @@ export default defineEventHandler(async (event) => {
     if (!upload) continue;
     try {
       const completion = await completeMediaUpload(event, upload, [], false);
-      if (completion.status === 'processing') recovered.push(item.id);
+      if (completion.status === 'ready') recovered.push(item.id);
     } catch (error) {
       recoveryErrors.push({ uploadId: item.id, message: error instanceof Error ? error.message : 'Upload recovery failed' });
     }
@@ -46,9 +45,6 @@ export default defineEventHandler(async (event) => {
       AND NOT EXISTS (SELECT 1 FROM media_upload_sessions u WHERE u.media_asset_id = media_assets.id
         AND (u.status IN ('aborted', 'expired') OR (u.status IN ('created', 'uploading') AND u.expires_at < ?)))
     `, [now]);
-  const keepStreams = await d1All<{ value: string }>(event, `SELECT stream_uid AS value FROM media_assets
-    WHERE stream_uid IS NOT NULL AND deleted_at IS NULL AND status <> 'superseded'
-    UNION SELECT stream_uid AS value FROM media_upload_sessions WHERE stream_uid IS NOT NULL AND status = 'completing'`);
   const keepSessions = await d1All<{ value: string }>(event, `SELECT id AS value FROM media_upload_sessions
     WHERE status IN ('created', 'uploading', 'completing') AND (expires_at >= ? OR status = 'completing')`, [now]);
 
@@ -58,7 +54,6 @@ export default defineEventHandler(async (event) => {
       sessionId: upload.id, uploadId: upload.provider_upload_id, objectKey: upload.object_key, idempotencyKey: upload.idempotency_key,
     })),
     keepObjectKeys: keepObjects.map((item) => item.value),
-    keepStreamUids: keepStreams.map((item) => item.value),
     keepSessionIds: keepSessions.map((item) => item.value),
   });
 

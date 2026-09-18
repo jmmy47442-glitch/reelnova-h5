@@ -17,7 +17,7 @@ export default defineEventHandler(async (event) => {
 
   const now = new Date().toISOString();
   const previousAsset = await d1First<{ id: string }>(event, `SELECT id FROM media_assets
-    WHERE episode_id = ? AND id <> ? AND stream_uid IS NOT NULL AND validation_status = 'valid'
+    WHERE episode_id = ? AND id <> ? AND source_object_key IS NOT NULL AND validation_status = 'valid'
     ORDER BY created_at DESC LIMIT 1`, [upload.episode_id, upload.media_asset_id]);
   await d1Run(event, `UPDATE media_upload_sessions SET status = 'aborted', last_error = 'Upload cancelled by administrator',
     reconciled_at = ?, updated_at = ? WHERE id = ? AND status IN ('created', 'uploading')`, [now, now, upload.id]);

@@ -1,7 +1,7 @@
 import type { H3Event } from 'h3';
 import type { MediaUploadPart } from '~/types/admin';
 import { recordAdminAudit } from './admin-audit';
-import { d1First, d1Run } from './cloudflare-d1';
+import { d1Batch, d1First, d1Run } from './cloudflare-d1';
 import { mediaWorkerRequest } from './media-pipeline';
 
 export interface MediaUploadStateRow {
@@ -24,6 +24,8 @@ export interface MediaUploadStateRow {
   r2_completion_key: string;
   stream_idempotency_key: string;
   asset_stream_uid: string | null;
+  asset_status: string;
+  asset_error: string | null;
   episode_id: string;
   episode_no: number;
   series_id: string;
@@ -34,18 +36,42 @@ export interface UploadCompletionResult {
   uploadId: string;
   mediaAssetId: string;
   streamUid: string | null;
-  status: 'processing' | 'completing';
+  status: 'ready' | 'failed';
   errorMessage?: string;
 }
 
-interface WorkerCompletion {
+export interface WorkerCompletion {
   etag: string;
-  streamUid: string | null;
-  streamError?: string;
+  valid: boolean;
+  errorMessage?: string;
+  media?: { width: number; height: number; durationSeconds: number };
 }
 
+// Commit validation and episode state together. Stale completion/retry requests
+// must never reactivate a replaced or deleted asset.
+export const applyDirectMediaValidation = async (event: H3Event, assetId: string, result: WorkerCompletion) => {
+  const now = new Date().toISOString();
+  const valid = result.valid && Boolean(result.media);
+  await d1Batch(event, [
+    { sql: `UPDATE media_assets SET source_etag = ?, status = ?, validation_status = ?, validation_error = ?,
+        width = COALESCE(?, width), height = COALESCE(?, height), duration_seconds = COALESCE(?, duration_seconds),
+        has_video = ?, has_audio = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL AND status <> 'superseded'`,
+      params: [result.etag, valid ? 'ready' : 'failed', valid ? 'valid' : 'invalid', valid ? null : result.errorMessage || 'Invalid MP4',
+        result.media?.width ?? null, result.media?.height ?? null, result.media?.durationSeconds ?? null, valid ? 1 : 0, valid ? 1 : 0, now, assetId] },
+    { sql: `UPDATE episodes SET video_status = ?, duration_seconds = COALESCE(?, duration_seconds), updated_at = ?
+        WHERE active_media_asset_id = ? AND deleted_at IS NULL
+        AND EXISTS (SELECT 1 FROM media_assets WHERE id = ? AND deleted_at IS NULL AND status <> 'superseded')`,
+      params: [valid ? 'ready' : 'failed', valid ? Math.round(result.media!.durationSeconds) : null, now, assetId, assetId] },
+    { sql: `UPDATE transcode_jobs SET status = 'cancelled', updated_at = ? WHERE media_asset_id = ? AND status IN ('queued', 'processing', 'failed')`, params: [now, assetId] },
+    { sql: `UPDATE series SET status = 'draft', updated_at = ? WHERE status = 'processing'
+        AND id = (SELECT series_id FROM episodes WHERE active_media_asset_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = series.id AND e.deleted_at IS NULL
+          AND e.video_status IN ('uploading', 'validating', 'processing'))`, params: [now, assetId] },
+  ]);
+};
+
 export const getMediaUploadState = (event: H3Event, uploadId: string) => d1First<MediaUploadStateRow>(event, `SELECT
-    u.*, a.stream_uid AS asset_stream_uid, a.episode_id, e.episode_no, e.series_id, s.title AS series_title
+    u.*, a.stream_uid AS asset_stream_uid, a.status AS asset_status, a.validation_error AS asset_error, a.episode_id, e.episode_no, e.series_id, s.title AS series_title
   FROM media_upload_sessions u
   JOIN media_assets a ON a.id = u.media_asset_id
   JOIN episodes e ON e.id = a.episode_id
@@ -76,10 +102,11 @@ export const completeMediaUpload = async (
   submittedParts: MediaUploadPart[] = [],
   audit = true,
 ): Promise<UploadCompletionResult> => {
-  if (initial.status === 'completed') {
-    return { uploadId: initial.id, mediaAssetId: initial.media_asset_id, streamUid: initial.stream_uid || initial.asset_stream_uid, status: 'processing' };
+  if (initial.status === 'completed' && ['ready', 'failed'].includes(initial.asset_status)) {
+    return { uploadId: initial.id, mediaAssetId: initial.media_asset_id, streamUid: null,
+      status: initial.asset_status === 'ready' ? 'ready' : 'failed', errorMessage: initial.asset_error || undefined };
   }
-  if (!['created', 'uploading', 'completing', 'failed'].includes(initial.status)) {
+  if (!['created', 'uploading', 'completing', 'failed', 'completed'].includes(initial.status)) {
     throw createError({ statusCode: 409, statusMessage: 'Upload cannot be completed in its current state' });
   }
   if (initial.provider_upload_id.startsWith('pending:')) {
@@ -100,69 +127,28 @@ export const completeMediaUpload = async (
   const upload = await getMediaUploadState(event, initial.id);
   if (!upload) throw createError({ statusCode: 404, statusMessage: 'Upload session not found' });
   try {
-    let result: WorkerCompletion;
-    if (upload.source_etag && upload.stream_uid) {
-      result = { etag: upload.source_etag, streamUid: upload.stream_uid };
-    } else {
-      result = await mediaWorkerRequest<WorkerCompletion>(event,
-        `/uploads/${encodeURIComponent(upload.provider_upload_id)}/complete`, {
-          uploadId: upload.provider_upload_id,
-          sessionId: upload.id,
-          completionKey: upload.r2_completion_key,
-          streamIdempotencyKey: upload.stream_idempotency_key,
-          objectKey: upload.object_key,
-          parts,
-          metadata: { assetId: upload.media_asset_id, episodeId: upload.episode_id, seriesId: upload.series_id },
-        });
-    }
-
-    const externalSavedAt = new Date().toISOString();
-    await d1Run(event, `UPDATE media_upload_sessions SET uploaded_bytes = file_size_bytes, source_etag = ?, r2_completed_at = COALESCE(r2_completed_at, ?),
-      stream_uid = COALESCE(?, stream_uid), stream_created_at = CASE WHEN ? IS NULL THEN stream_created_at ELSE COALESCE(stream_created_at, ?) END,
+    const result = await mediaWorkerRequest<WorkerCompletion>(event,
+      `/uploads/${encodeURIComponent(upload.provider_upload_id)}/complete`, {
+        uploadId: upload.provider_upload_id, sessionId: upload.id,
+        completionKey: upload.r2_completion_key, objectKey: upload.object_key,
+        fileSizeBytes: upload.file_size_bytes, parts,
+        metadata: { assetId: upload.media_asset_id, episodeId: upload.episode_id, seriesId: upload.series_id },
+      });
+    const now = new Date().toISOString();
+    await applyDirectMediaValidation(event, upload.media_asset_id, result);
+    await d1Run(event, `UPDATE media_upload_sessions SET uploaded_bytes = file_size_bytes, source_etag = ?,
+      r2_completed_at = COALESCE(r2_completed_at, ?), status = ?, completed_at = COALESCE(completed_at, ?),
       last_error = ?, reconciled_at = ?, updated_at = ? WHERE id = ?`,
-    [result.etag, externalSavedAt, result.streamUid, result.streamUid, externalSavedAt,
-      result.streamUid ? null : (result.streamError || 'Cloudflare Stream copy is pending recovery'), externalSavedAt, externalSavedAt, upload.id]);
-
-    const saved = await getMediaUploadState(event, upload.id);
-    if (saved?.status === 'completed') {
-      return { uploadId: saved.id, mediaAssetId: saved.media_asset_id, streamUid: saved.stream_uid, status: 'processing' };
-    }
-    if (!result.streamUid && saved?.stream_uid) result = { etag: saved.source_etag || result.etag, streamUid: saved.stream_uid };
-
-    if (!result.streamUid) {
-      const message = result.streamError || 'R2 upload completed, but Stream copy is pending recovery';
-      await d1Run(event, `UPDATE media_assets SET source_etag = ?, status = 'uploaded', validation_status = 'pending',
-        validation_error = ?, updated_at = ? WHERE id = ?`, [result.etag, message, externalSavedAt, upload.media_asset_id]);
-      await d1Run(event, `UPDATE episodes SET video_status = 'validating', updated_at = ? WHERE id = ?`, [externalSavedAt, upload.episode_id]);
-      return { uploadId: upload.id, mediaAssetId: upload.media_asset_id, streamUid: null, status: 'completing', errorMessage: message };
-    }
-
-    // External resource identifiers are durable before the session reaches its terminal state.
-    await d1Run(event, `UPDATE media_assets SET source_etag = ?, stream_uid = ?, status = 'processing',
-      validation_status = 'pending', validation_error = NULL, updated_at = ? WHERE id = ?`,
-    [result.etag, result.streamUid, externalSavedAt, upload.media_asset_id]);
-    const jobId = `job_${upload.id}`;
-    await d1Run(event, `INSERT OR IGNORE INTO transcode_jobs
-      (id, media_asset_id, provider_job_id, attempt, status, progress, started_at, created_at, updated_at)
-      VALUES (?, ?, ?, 1, 'processing', 0, ?, ?, ?)`,
-    [jobId, upload.media_asset_id, result.streamUid, externalSavedAt, externalSavedAt, externalSavedAt]);
-    await d1Run(event, `UPDATE transcode_jobs SET provider_job_id = ?, status = 'processing', error_code = NULL,
-      error_message = NULL, started_at = COALESCE(started_at, ?), updated_at = ?
-      WHERE media_asset_id = ? AND (id = ? OR provider_job_id = ?)`,
-    [result.streamUid, externalSavedAt, externalSavedAt, upload.media_asset_id, jobId, result.streamUid]);
-    await d1Run(event, `UPDATE episodes SET active_media_asset_id = ?, video_status = 'processing', updated_at = ? WHERE id = ?`,
-      [upload.media_asset_id, externalSavedAt, upload.episode_id]);
-    await d1Run(event, `UPDATE media_upload_sessions SET uploaded_bytes = file_size_bytes, status = 'completed',
-      completed_at = COALESCE(completed_at, ?), last_error = NULL, reconciled_at = ?, updated_at = ? WHERE id = ?`,
-    [externalSavedAt, externalSavedAt, externalSavedAt, upload.id]);
-
+    [result.etag, now, result.valid ? 'completed' : 'failed', now, result.errorMessage || null, now, now, upload.id]);
     if (audit) {
       await recordAdminAudit(event, {
-        module: '短剧管理', action: '提交视频转码', target: `${upload.series_title} · Episode ${upload.episode_no}`,
-        detail: `Stream ${result.streamUid}`,
+        module: '短剧管理', action: result.valid ? '视频上传完成' : '视频校验失败',
+        target: `${upload.series_title} · Episode ${upload.episode_no}`,
+        detail: result.valid ? 'R2 MP4 签名直播放' : result.errorMessage || 'Invalid MP4',
       }).catch(() => undefined);
     }
-    return { uploadId: upload.id, mediaAssetId: upload.media_asset_id, streamUid: result.streamUid, status: 'processing' };
+    return { uploadId: upload.id, mediaAssetId: upload.media_asset_id, streamUid: null,
+      status: result.valid ? 'ready' : 'failed', errorMessage: result.errorMessage };
   } catch (error) {
     const now = new Date().toISOString();
     await d1Run(event, `UPDATE media_upload_sessions SET status = 'completing', last_error = ?, updated_at = ?

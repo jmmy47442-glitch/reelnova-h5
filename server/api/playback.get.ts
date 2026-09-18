@@ -3,7 +3,7 @@ import { d1First, hasD1Connection } from '~/server/utils/cloudflare-d1';
 import { assertUserEnabled, upsertUserProfile } from '~/server/utils/user-profile';
 import { getUserSession } from '~/server/utils/user-auth';
 import { getPublicSeries } from '~/server/utils/managed-content';
-import { createStreamManifestUrl, createStreamPlaybackToken, mediaWorkerRequest } from '~/server/utils/media-pipeline';
+import { mediaWorkerRequest } from '~/server/utils/media-pipeline';
 import { getPlaybackAuthorizationSecret, signPlaybackAuthorization } from '~/server/utils/playback-authorization';
 import { enforcePlaybackRateLimits, establishPlaybackSession, getPlaybackClientContext } from '~/server/utils/playback-security';
 
@@ -29,24 +29,23 @@ export default defineEventHandler(async (event) => {
   // its active asset, so keep this hot path to a single indexed query.
   let series: { id: string; title: string };
   let episode: { episodeNo: number; isFree: boolean; videoStatus: string };
-  let streamAsset: { id: string; stream_uid: string | null; hls_url: string | null; source_object_key: string | null; source_content_type: string | null } | null = null;
+  let mediaAsset: { id: string; source_object_key: string | null; source_content_type: string | null } | null = null;
   const userSessionPromise = getUserSession(event);
   if (hasD1Connection(event)) {
     const seriesSelector = seriesId ? 's.id = ?' : 's.slug = ?';
     const seriesIdentifier = seriesId || seriesSlug;
-    const row = await d1First<{ series_id: string; series_title: string; episode_no: number; is_free: number; video_status: string; asset_id: string | null; stream_uid: string | null; hls_url: string | null; source_object_key: string | null; source_content_type: string | null }>(event,
+    const row = await d1First<{ series_id: string; series_title: string; episode_no: number; is_free: number; video_status: string; asset_id: string | null; source_object_key: string | null; source_content_type: string | null }>(event,
       `SELECT s.id AS series_id, s.title AS series_title, e.episode_no, e.is_free, e.video_status,
-        a.id AS asset_id, a.stream_uid, a.hls_url, a.source_object_key, a.source_content_type
+        a.id AS asset_id, a.source_object_key, a.source_content_type
        FROM series s
        JOIN episodes e ON e.series_id = s.id AND e.deleted_at IS NULL
-       LEFT JOIN media_assets a ON a.id = e.active_media_asset_id AND a.status = 'ready'
+       LEFT JOIN media_assets a ON a.id = e.active_media_asset_id AND a.status = 'ready' AND a.deleted_at IS NULL
        WHERE ${seriesSelector} AND s.status = 'published' AND s.deleted_at IS NULL AND e.episode_no = ?
        LIMIT 1`, [seriesIdentifier, episodeNo]);
     if (!row) throw createError({ statusCode: 404, statusMessage: 'Episode not found' });
     series = { id: row.series_id, title: row.series_title };
     episode = { episodeNo: row.episode_no, isFree: Boolean(row.is_free), videoStatus: row.video_status };
-    streamAsset = row.asset_id ? { id: row.asset_id, stream_uid: row.stream_uid, hls_url: row.hls_url,
-      source_object_key: row.source_object_key, source_content_type: row.source_content_type } : null;
+    mediaAsset = row.asset_id ? { id: row.asset_id, source_object_key: row.source_object_key, source_content_type: row.source_content_type } : null;
   } else {
     const seriesList = await getPublicSeries(event);
     const localSeries = seriesList.find((item) => seriesId ? item.id === seriesId : item.slug === seriesSlug);
@@ -81,33 +80,21 @@ export default defineEventHandler(async (event) => {
     lastProgressPromise,
   ]);
   if (!entitlement) throw createError({ statusCode: 403, statusMessage: 'Entitlement required' });
-  const config = useRuntimeConfig(event);
-  const customerCode = String(config.cloudflareStreamCustomerCode || '');
-  const hasStreamSource = Boolean(streamAsset?.stream_uid && (streamAsset.hls_url || customerCode));
-  if (!hasStreamSource) throw createError({ statusCode: 503, statusMessage: 'Cloudflare Stream signed delivery is not configured' });
+  if (!mediaAsset?.source_object_key || episode.videoStatus !== 'ready') {
+    throw createError({ statusCode: 503, statusMessage: 'R2 MP4 playback is not ready' });
+  }
   const trackingSecret = getPlaybackAuthorizationSecret(event);
   const expires = Math.floor(Date.now() / 1000) + 10 * 60;
-  // The R2 object is the uploaded master. Keep it available for direct
-  // original-quality playback for every supported video container (MP4, MOV,
-  // and future video/* types), instead of silently falling back to Stream's
-  // adaptive renditions which may look softer than the upload.
-  const originalPlayback = streamAsset!.source_object_key
-    ? mediaWorkerRequest<{ url: string }>(event, '/original/token', {
-      key: streamAsset!.source_object_key, assetId: streamAsset!.id, exp: expires,
-    }).catch(() => null)
-    : Promise.resolve(null);
-  const [, trackingSignature, streamToken, original] = await Promise.all([
-    establishPlaybackSession(event, { sessionId, userId, seriesId: series.id, episodeNo: episode.episodeNo, context: playbackContext }),
+  await establishPlaybackSession(event, { sessionId, userId, seriesId: series.id, episodeNo: episode.episodeNo, context: playbackContext });
+  const [trackingSignature, original] = await Promise.all([
     signPlaybackAuthorization(`track:${userId}:${sessionId}:${series.id}:${episode.episodeNo}:${expires}`, trackingSecret),
-    createStreamPlaybackToken(event, streamAsset!.stream_uid!),
-    originalPlayback,
+    mediaWorkerRequest<{ url: string }>(event, '/original/token', {
+      key: mediaAsset.source_object_key, assetId: mediaAsset.id, exp: expires,
+    }),
   ]);
-  const signedUrl = createStreamManifestUrl(streamAsset!.stream_uid!, streamToken, streamAsset!.hls_url, customerCode);
-  if (!signedUrl) throw createError({ statusCode: 503, statusMessage: 'Cloudflare Stream signed delivery is not configured' });
-  return ok({ authorized: true, signedUrl, originalUrl: original?.url, expiresAt: new Date(expires * 1000).toISOString(), trackingToken: `${expires}.${trackingSignature}`,
+  setHeader(event, 'cache-control', 'no-store');
+  return ok({ authorized: true, signedUrl: original.url, originalUrl: original.url, delivery: 'mp4' as const, expiresAt: new Date(expires * 1000).toISOString(), trackingToken: `${expires}.${trackingSignature}`,
     // A completed episode should start from the beginning on the next visit.
-    // Keeping its terminal heartbeat here sends HLS clients straight to the
-    // final fragment, where a stale/incomplete buffer can fail to decode.
     resumePositionSeconds: lastProgress?.completed ? 0 : Math.max(0, Number(lastProgress?.position_seconds || 0)),
     resumeDurationSeconds: Math.max(0, Number(lastProgress?.duration_seconds || 0)) });
 });

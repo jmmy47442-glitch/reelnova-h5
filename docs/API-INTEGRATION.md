@@ -60,7 +60,7 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | Audit | `GET /api/admin/audit` |
 | Connection health | `GET /api/admin/connection` |
 
-Episode uploads use 10 MiB R2 multipart chunks. The browser may resume an unexpired upload session, while R2 and Stream credentials remain in the media Worker. A series cannot be published until every non-deleted episode has a `ready` media asset. Cloudflare Stream reports asynchronous progress through `POST /api/media/stream-webhook`; episode list polling also reconciles missed callbacks.
+Episode uploads use 10 MiB R2 multipart chunks. The browser may resume an unexpired upload session. Completion validates the actual private R2 object (H.264 + AAC-LC, non-fragmented faststart MP4) and returns `ready` or `failed` with `errorMessage`; transient failures remain recoverable by the hourly reconciliation job. No Stream subscription or callback is used. `/api/admin/media/:assetId/retry` revalidates the existing object. A series cannot be published until every non-deleted episode has a `ready` media asset. Playback authorization returns `delivery: "mp4"`; `signedUrl` and `originalUrl` are the same short-lived Worker URL. Cover images are uploaded separately. See [R2 MP4 deployment](./R2-MP4-DELIVERY.md).
 
 Order creation must use a server-side price snapshot. Playback requests must validate the user session and entitlement every time. PayPal approval in the browser is not proof of payment; only a verified capture or webhook may issue entitlement.
 

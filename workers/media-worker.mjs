@@ -1,3 +1,5 @@
+import { inspectDirectMp4, MP4_PROBE_BYTES } from '../shared/direct-mp4.mjs';
+
 const encoder = new TextEncoder();
 
 const bytesToHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -174,36 +176,6 @@ const servePublicImage = async (request, env, objectKey) => {
   return new Response(request.method === 'HEAD' ? null : object.body, { status: 200, headers });
 };
 
-const streamApi = async (env, path, options = {}) => {
-  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/stream${path}`, {
-    ...options,
-    headers: { authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`, 'content-type': 'application/json', ...(options.headers || {}) },
-  });
-  const payload = await response.json();
-  if (!response.ok || !payload.success) {
-    const details = [...(payload.errors || []), ...(payload.messages || [])]
-      .map((item) => item?.message)
-      .filter(Boolean)
-      .join('; ');
-    throw new Error(details || 'Cloudflare Stream request failed');
-  }
-  return payload.result;
-};
-
-const verifyPlaybackGrant = async (env, body) => {
-  if (!env.APP_BASE_URL || !body.grant) return false;
-  const response = await fetch(`${String(env.APP_BASE_URL).replace(/\/$/, '')}/api/internal/media/playback-grant`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ uid: body.uid, exp: body.exp, grant: body.grant }),
-  });
-  if (!response.ok) return false;
-  const payload = await response.json().catch(() => ({}));
-  return payload?.data?.authorized === true
-    && payload.data.uid === body.uid
-    && payload.data.expires === Math.floor(Number(body.exp));
-};
-
 const parseByteRange = (value, size) => {
   if (!value) return null;
   const match = /^bytes=(\d*)-(\d*)$/.exec(value.trim());
@@ -257,6 +229,28 @@ const serveIngestObject = async (request, env, encodedToken) => {
   return new Response(object.body, { status: range ? 206 : 200, headers });
 };
 
+const validateVideoObject = async (env, key, assetId, suppliedObject) => {
+  const object = suppliedObject || await env.MEDIA_BUCKET.head(key);
+  if (!object || object.customMetadata?.assetId !== assetId || !assetId) throw new Error('Video object not found');
+  if (object.httpMetadata?.contentType !== 'video/mp4' || !String(key).toLowerCase().endsWith('.mp4')) {
+    return { etag: object.httpEtag, valid: false, errorMessage: '仅支持 MP4，请重新上传 H.264 + AAC、faststart 视频' };
+  }
+  const markerKey = `validation/${assetId}/${encodeURIComponent(object.httpEtag)}.json`;
+  const cached = await env.MEDIA_BUCKET.get(markerKey);
+  if (cached) return { etag: object.httpEtag, valid: true, media: await cached.json() };
+  const source = await env.MEDIA_BUCKET.get(key, { range: { offset: 0, length: Math.min(object.size, MP4_PROBE_BYTES) } });
+  if (!source) throw new Error('Video object not found');
+  const bytes = await source.arrayBuffer();
+  let media;
+  try { media = inspectDirectMp4(bytes); }
+  catch (error) { return { etag: object.httpEtag, valid: false, errorMessage: error.message }; }
+  await env.MEDIA_BUCKET.put(markerKey, JSON.stringify(media), {
+    httpMetadata: { contentType: 'application/json' },
+    customMetadata: { managedBy: 'reelnova', kind: 'video-validation', assetId, objectKey: key },
+  });
+  return { etag: object.httpEtag, valid: true, media };
+};
+
 const createOriginalPlayback = async (env, origin, body) => {
   const key = String(body.key || '');
   const assetId = String(body.assetId || '');
@@ -265,6 +259,8 @@ const createOriginalPlayback = async (env, origin, body) => {
     || !/^media_[0-9a-f-]{36}$/i.test(assetId)) throw new Error('Invalid original playback request');
   const metadata = await env.MEDIA_BUCKET.head(key);
   if (!metadata || metadata.customMetadata?.assetId !== assetId) throw new Error('Original media object not found');
+  const validation = await validateVideoObject(env, key, assetId, metadata);
+  if (!validation.valid) throw new Error(validation.errorMessage);
   const expires = Math.min(now + 15 * 60, Math.max(now + 60, Math.floor(Number(body.exp) || now + 10 * 60)));
   const token = await createToken({ kind: 'original-playback', key, assetId, expires }, env.MEDIA_WORKER_SECRET);
   return { url: `${origin}/original/${encodeURIComponent(token)}`, expiresAt: new Date(expires * 1000).toISOString() };
@@ -297,31 +293,6 @@ const serveOriginalObject = async (request, env, encodedToken, requestCors) => {
   return new Response(object.body, { status: range ? 206 : 200, headers });
 };
 
-const findStreamCopy = async (env, idempotencyKey, metadata = {}) => {
-  const videos = await streamApi(env, `?creator=${encodeURIComponent(idempotencyKey)}&limit=10&asc=true`);
-  const exact = Array.isArray(videos) ? videos.find((video) => video.creator === idempotencyKey) : null;
-  if (exact) return exact;
-  // Pre-0017 copies did not set creator; recover those by their immutable asset metadata.
-  const assetId = String(metadata.assetId || '');
-  if (!assetId) return null;
-  const legacyVideos = await streamApi(env, `?search=${encodeURIComponent(assetId)}&limit=10&asc=true`);
-  return Array.isArray(legacyVideos)
-    ? legacyVideos.find((video) => String(video.meta?.assetId || '') === assetId) || null
-    : null;
-};
-
-const startStreamCopy = async (env, objectKey, metadata, idempotencyKey) => {
-  const existing = await findStreamCopy(env, idempotencyKey, metadata);
-  if (existing?.uid) return existing;
-  const ingestToken = await createToken({ key: objectKey, expires: Math.floor(Date.now() / 1000) + 3600 }, env.MEDIA_WORKER_SECRET);
-  const sourceUrl = `${env.PUBLIC_BASE_URL.replace(/\/$/, '')}/ingest/${encodeURIComponent(ingestToken)}`;
-  return streamApi(env, '/copy', {
-    method: 'POST',
-    headers: { 'Upload-Creator': idempotencyKey },
-    body: JSON.stringify({ url: sourceUrl, creator: idempotencyKey, meta: { ...metadata, idempotencyKey }, requireSignedURLs: true }),
-  });
-};
-
 const uploadMarkerKey = (idempotencyKey) => `_reelnova/upload-sessions/${idempotencyKey}.json`;
 
 const readUploadMarker = async (env, idempotencyKey) => {
@@ -332,7 +303,7 @@ const readUploadMarker = async (env, idempotencyKey) => {
 
 const createOrResumeUpload = async (env, origin, body) => {
   if (!/^upload:[0-9a-f-]{36}$/i.test(body.idempotencyKey || '') || !body.sessionId || !body.completionKey
-    || !body.streamIdempotencyKey || !body.objectKey
+    || !body.objectKey
     || !body.contentType || !Number.isFinite(body.fileSizeBytes)) throw new Error('Invalid upload request');
   const existing = await readUploadMarker(env, body.idempotencyKey);
   let uploadId = existing?.uploadId;
@@ -352,7 +323,7 @@ const createOrResumeUpload = async (env, origin, body) => {
     try {
       await env.MEDIA_BUCKET.put(uploadMarkerKey(body.idempotencyKey), JSON.stringify({
         uploadId, sessionId: body.sessionId, completionKey: body.completionKey,
-        streamIdempotencyKey: body.streamIdempotencyKey, objectKey: body.objectKey, contentType: body.contentType,
+        objectKey: body.objectKey, contentType: body.contentType,
         fileSizeBytes: body.fileSizeBytes, expiresAt: new Date(expires * 1000).toISOString(), createdAt: new Date().toISOString(),
       }), { httpMetadata: { contentType: 'application/json' }, customMetadata: { managedBy: 'reelnova', kind: 'upload-session', sessionId: body.sessionId } });
     } catch (error) {
@@ -372,7 +343,7 @@ const createOrResumeUpload = async (env, origin, body) => {
 };
 
 const completeUpload = async (env, body, uploadId) => {
-  if (body.uploadId !== uploadId || !body.sessionId || !body.completionKey || !body.streamIdempotencyKey
+  if (body.uploadId !== uploadId || !body.sessionId || !body.completionKey
     || !body.objectKey || !Array.isArray(body.parts) || !body.parts.length) throw new Error('Invalid completion request');
   let object = await env.MEDIA_BUCKET.head(body.objectKey);
   if (!object) {
@@ -383,13 +354,12 @@ const completeUpload = async (env, body, uploadId) => {
   } else if (object.customMetadata?.r2CompletionKey && object.customMetadata.r2CompletionKey !== body.completionKey) {
     throw new Error('R2 completion idempotency key conflict');
   }
-  try {
-    const stream = await startStreamCopy(env, body.objectKey, body.metadata || {}, body.streamIdempotencyKey);
-    if (!stream?.uid) throw new Error('Cloudflare Stream copy returned no UID');
-    return { etag: object.httpEtag, streamUid: stream.uid };
-  } catch (error) {
-    return { etag: object.httpEtag, streamUid: null, streamError: error instanceof Error ? error.message : 'Stream copy failed' };
-  }
+  if (object.customMetadata?.assetId !== body.metadata?.assetId
+    || object.customMetadata?.uploadSessionId !== body.sessionId
+    || object.customMetadata?.r2CompletionKey !== body.completionKey) throw new Error('R2 object ownership mismatch');
+  if (object.size !== body.fileSizeBytes) throw new Error('R2 object size does not match upload');
+  return validateVideoObject(env, body.objectKey, body.metadata.assetId, object);
+
 };
 
 const abortUpload = async (env, body, uploadId) => {
@@ -407,10 +377,9 @@ const abortUpload = async (env, body, uploadId) => {
 
 const reconcileResources = async (env, body) => {
   const keepObjectKeys = new Set(Array.isArray(body.keepObjectKeys) ? body.keepObjectKeys : []);
-  const keepStreamUids = new Set(Array.isArray(body.keepStreamUids) ? body.keepStreamUids : []);
   const keepSessionIds = new Set(Array.isArray(body.keepSessionIds) ? body.keepSessionIds : []);
   const cutoff = Date.now() - Math.max(24, Number(body.graceHours) || 24) * 60 * 60 * 1000;
-  const result = { abortedSessionIds: [], deletedObjectKeys: [], deletedStreamUids: [], deletedMarkerKeys: [], errors: [] };
+  const result = { abortedSessionIds: [], deletedObjectKeys: [], deletedMarkerKeys: [], errors: [] };
 
   for (const candidate of Array.isArray(body.abortUploads) ? body.abortUploads.slice(0, 100) : []) {
     try {
@@ -466,28 +435,6 @@ const reconcileResources = async (env, body) => {
     cursor = listed.truncated ? listed.cursor : undefined;
   } while (cursor);
 
-  try {
-    let start;
-    for (let page = 0; page < 100; page += 1) {
-      const videos = await streamApi(env, `?limit=1000&asc=true${start ? `&start=${encodeURIComponent(start)}` : ''}`);
-      const pageVideos = Array.isArray(videos) ? videos : [];
-      for (const video of pageVideos) {
-        if (!String(video.creator || '').startsWith('reelnova:') && !video.meta?.assetId) continue;
-        if (keepStreamUids.has(video.uid)
-          || !video.created || Date.parse(video.created) >= cutoff) continue;
-        try {
-          await streamApi(env, `/${encodeURIComponent(video.uid)}`, { method: 'DELETE' });
-          result.deletedStreamUids.push(video.uid);
-        } catch (error) {
-          result.errors.push({ resource: `stream:${video.uid}`, message: error instanceof Error ? error.message : 'Stream delete failed' });
-        }
-      }
-      if (pageVideos.length < 1000 || !pageVideos.at(-1)?.created) break;
-      start = new Date(Date.parse(pageVideos.at(-1).created) + 1).toISOString();
-    }
-  } catch (error) {
-    result.errors.push({ resource: 'stream:list', message: error instanceof Error ? error.message : 'Stream list failed' });
-  }
   return result;
 };
 
@@ -540,21 +487,6 @@ export default {
         return json(await verifyImage(env, url.origin, JSON.parse(rawBody)));
       }
 
-      if (request.method === 'POST' && url.pathname === '/stream/token') {
-        const rawBody = await request.text();
-        const body = JSON.parse(rawBody);
-        if (!/^[0-9a-f]{32}$/i.test(String(body.uid || ''))) return json({ error: 'Invalid Stream UID' }, 400);
-        const serverAuthorized = await verifyServerRequest(request, env, rawBody);
-        if (!serverAuthorized && !await verifyPlaybackGrant(env, body)) {
-          return json({ error: 'Invalid Stream playback authorization' }, 401);
-        }
-        const now = Math.floor(Date.now() / 1000);
-        const exp = Math.min(now + 15 * 60, Math.max(now + 60, Math.floor(Number(body.exp) || now + 10 * 60)));
-        return json(await streamApi(env, `/${encodeURIComponent(body.uid)}/token`, {
-          method: 'POST', body: JSON.stringify({ exp }),
-        }));
-      }
-
       const partMatch = url.pathname.match(/^\/uploads\/([^/]+)\/parts\/(\d+)$/);
       if (partMatch && request.method === 'PUT') {
         const token = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
@@ -585,13 +517,18 @@ export default {
         return json(await abortUpload(env, body, uploadId));
       }
 
-      if (url.pathname === '/transcodes' && request.method === 'POST') {
+      if (url.pathname === '/videos/verify' && request.method === 'POST') {
         const rawBody = await request.text();
         if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
         const body = JSON.parse(rawBody);
-        if (!body.objectKey || !body.streamIdempotencyKey) return json({ error: 'Object key and idempotency key are required' }, 400);
-        const stream = await startStreamCopy(env, body.objectKey, body.metadata || {}, body.streamIdempotencyKey);
-        return json({ streamUid: stream.uid });
+        return json(await validateVideoObject(env, body.objectKey, body.assetId));
+      }
+
+      if (url.pathname === '/health' && request.method === 'POST') {
+        const rawBody = await request.text();
+        if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
+        await env.MEDIA_BUCKET.list({ limit: 1 });
+        return json({ ready: true, delivery: 'r2-mp4' });
       }
 
       if (url.pathname === '/reconcile' && request.method === 'POST') {

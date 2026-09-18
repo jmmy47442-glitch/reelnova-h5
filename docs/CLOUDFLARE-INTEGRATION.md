@@ -17,9 +17,9 @@ The admin dashboard and administrator accounts never fall back to sample or in-m
 | Reconciliation | Cloudflare D1 aggregation | Paid amount minus PayPal fee and refunds |
 | Series and episodes | Cloudflare D1 normalized content tables | `series`, `episodes`, taxonomy associations and immutable version snapshots |
 | Original media | Private Cloudflare R2 bucket | Multipart source uploads; no public bucket URL |
-| Playback media | Cloudflare Stream | Private adaptive HLS authorized with short-lived Stream tokens |
+| Playback media | Private Cloudflare R2 + media Worker | Compatible MP4 with short-lived signed URLs and byte-range delivery |
 
-Playback delivery is intentionally Stream-only in production. The application no longer falls back to a legacy `/hls/...` media base URL unless a separately deployed edge verifier is added in the future; this avoids exposing a signed-looking URL whose segments are not enforced at the edge. Each playback grant creates or renews a D1 `playback_sessions` row bound to the signed user session and an HttpOnly playback-device cookie, limits active playback to two devices per account, applies D1-backed fixed-window rate limits, and records rejected or suspicious requests in `playback_security_events` using HMAC hashes rather than raw IP/device values.
+Playback uses private R2 MP4 objects. The Worker verifies a short-lived signature on every media request, including byte ranges. Each playback grant creates or renews a D1 `playback_sessions` row bound to the signed user session and an HttpOnly playback-device cookie, limits active playback to two devices per account, applies D1-backed fixed-window rate limits, and records rejected or suspicious requests in `playback_security_events` using HMAC hashes rather than raw IP/device values.
 
 Cloudflare Web Analytics request counts are not used as play counts. Page requests, bots, reloads and media segment requests do not represent a user starting an episode.
 
@@ -32,7 +32,7 @@ Keep the PayPal and media variables in `.env` empty. The application deliberatel
 - Catalog, account and content metadata continue to use D1.
 - H5 shows checkout as unavailable and does not call the order API.
 - Direct order/refund API calls return `503` before creating or changing payment records.
-- Admin content metadata remains editable, while original-video upload and transcoding controls are disabled.
+- Admin content metadata remains editable, while original-video upload and validation controls are disabled.
 - `/admin/system` reports each missing configuration item as `待配置` instead of treating it as a failed connection.
 
 No temporary PayPal or R2 mock credentials are required. After provisioning, fill the variables below, restart/redeploy the Nuxt application, deploy the media Worker, and re-run the checks on `/admin/system`.
@@ -52,7 +52,6 @@ Use a custom token scoped to the ReelNova account and the `iseedrama.com` zone. 
 - Account / D1 / Edit
 - Account / Workers Scripts / Edit
 - Account / Workers R2 Storage / Edit (when media uses R2)
-- Account / Stream / Edit
 - Account / Cloudflare Pages / Edit (when deploying to Pages)
 - Zone / Zone / Read
 - Zone / DNS / Edit (only when domain automation is required)
@@ -78,7 +77,7 @@ npm run db:migrate -- --apply --adopt-existing
 
 Adoption succeeds only when every required table, column, index and trigger in `database/schema-contract.json` already exists. It does not apply or conceal missing schema changes.
 
-已有数据库按尚未执行的编号顺序补齐迁移。`0010` 会把旧 `home_config` 中的 `managed-series` 和 `taxonomy` JSON 拆到规范化表；旧分集没有真实媒体资源，因此迁移后必须上传原片并完成 Stream 转码才可重新上架。`0012` 会保留每个用户同剧中最适合续付的一笔订单，将其余历史待支付订单标记为已取消，然后增加并发唯一约束和价格/活动快照字段。
+已有数据库按尚未执行的编号顺序补齐迁移。`0010` 会把旧 `home_config` 中的 `managed-series` 和 `taxonomy` JSON 拆到规范化表；旧分集没有真实媒体资源，因此迁移后必须上传兼容 MP4 并通过 R2 文件校验才可重新上架。`0012` 会保留每个用户同剧中最适合续付的一笔订单，将其余历史待支付订单标记为已取消，然后增加并发唯一约束和价格/活动快照字段。
 
 For Cloudflare Pages or Workers, add a D1 binding with variable name `DB`. For local Node deployment, set the REST fallback variables shown in `.env.example`:
 
@@ -107,13 +106,9 @@ PAYPAL_PRODUCTION_SECRET
 PAYPAL_PRODUCTION_WEBHOOK_ID
 NUXT_PUBLIC_PAYPAL_PRODUCTION_CLIENT_ID
 PAYPAL_WEBHOOK_URL=https://iseedrama.com/api/paypal/webhook
-CLOUDFLARE_MEDIA_BASE_URL
 CLOUDFLARE_MEDIA_SIGNING_SECRET
 CLOUDFLARE_MEDIA_WORKER_URL
 CLOUDFLARE_MEDIA_WORKER_SECRET
-CLOUDFLARE_STREAM_CUSTOMER_CODE
-CLOUDFLARE_STREAM_WEBHOOK_SECRET
-CLOUDFLARE_STREAM_WEBHOOK_URL=https://iseedrama.com/api/media/stream-webhook
 SUPER_ADMIN_EMAIL
 SUPER_ADMIN_PASSWORD
 SUPER_ADMIN_NAME
@@ -121,40 +116,28 @@ ADMIN_SESSION_SECRET
 ADMIN_CREDENTIAL_SECRET
 ```
 
-`CLOUDFLARE_MEDIA_BASE_URL` is retained for legacy R2 HLS playback. New media uses Stream tokens; `CLOUDFLARE_MEDIA_SIGNING_SECRET` still signs playback tracking authorization.
+`CLOUDFLARE_MEDIA_SIGNING_SECRET` signs playback tracking authorization. The media Worker uses its separate shared secret to sign short-lived MP4 playback URLs. Stream credentials are no longer required.
 `NUXT_PUBLIC_PAYPAL_CLIENT_ID` is intentionally public and must equal `PAYPAL_CLIENT_ID`. The same rule applies to `NUXT_PUBLIC_PAYPAL_PRODUCTION_CLIENT_ID` and `PAYPAL_PRODUCTION_CLIENT_ID`: these are two deployment variables containing the same Live App Client ID, not two separate credentials. Keep both empty until PayPal is available; setting only one leaves checkout disabled or marks the connection incomplete.
 The legacy `PAYPAL_*` values remain a fallback for the initial `PAYPAL_ENVIRONMENT`. Configure both named Sandbox and Production sets to enable environment switching from `/admin/system`. The selected environment is the only payment configuration stored in D1; Client Secrets remain encrypted deployment secrets. Each order also stores its immutable PayPal environment so later Capture, verification, refunds and Webhooks keep using the correct API after a switch. The first switch attributes pre-0016 orders to the currently active environment. A switch first verifies the target OAuth credentials and is blocked while pending payments, refunds, or risk-review orders exist.
 `SUPER_ADMIN_PASSWORD` initializes the preset super administrator on first use. `ADMIN_SESSION_SECRET` signs the HttpOnly admin session cookie. `ADMIN_CREDENTIAL_SECRET` encrypts the password verifier used by the low-CPU challenge login flow. Both secrets must be separate, stable, high-entropy production secrets; changing `ADMIN_CREDENTIAL_SECRET` requires resetting administrator credentials.
 
-## 4. Deploy the private media Worker
+## 4. Deploy the private R2 MP4 media Worker
 
-Create the R2 bucket, then configure the Worker secrets and deploy it:
+No Stream subscription, API permission, Customer Code or Webhook is required. Keep R2 private (disable public `r2.dev` and bucket custom-domain access).
 
 ```bash
 npx wrangler r2 bucket create reelnova-media-private
 npx wrangler secret put MEDIA_WORKER_SECRET --config wrangler.media.toml
-npx wrangler secret put CLOUDFLARE_ACCOUNT_ID --config wrangler.media.toml
-npx wrangler secret put CLOUDFLARE_API_TOKEN --config wrangler.media.toml
 npm run deploy:media-worker
 ```
 
-Set `PUBLIC_BASE_URL`, `APP_BASE_URL` and `APP_ORIGINS` in `wrangler.media.toml` to the deployed Worker URL, application URL and allowed admin origins. The Worker Cron trigger runs the signed reconciliation endpoint every hour. Use the same random `MEDIA_WORKER_SECRET` as the Nuxt `CLOUDFLARE_MEDIA_WORKER_SECRET`; never expose it through `NUXT_PUBLIC_*`.
+Set the application's `CLOUDFLARE_MEDIA_WORKER_URL=https://media.iseedrama.com`, `CLOUDFLARE_MEDIA_WORKER_SECRET` (same value as the Worker secret), and `CLOUDFLARE_MEDIA_SIGNING_SECRET` (separate random secret). The Worker only needs the `MEDIA_BUCKET` R2 binding and `MEDIA_WORKER_SECRET`; it no longer needs Cloudflare API credentials.
 
-This project declares `media.iseedrama.com` as the Worker's Cloudflare custom domain. `PUBLIC_BASE_URL` and the Nuxt application's `CLOUDFLARE_MEDIA_WORKER_URL` must both use `https://media.iseedrama.com`. The allowed origins include `https://admin.iseedrama.com` so browser multipart uploads from the admin subdomain pass CORS validation.
+Deploy the Worker before deploying the Nuxt application. `/admin/system` performs an authenticated Worker/R2 health check. Configure `PUBLIC_BASE_URL`, `APP_BASE_URL` and `APP_ORIGINS` in `wrangler.media.toml`; retain the admin origin for upload and preview CORS. Keep the hourly Cron: it recovers interrupted completions, cleans expired multipart uploads and invokes PayPal reconciliation.
 
-In Cloudflare Stream, set the notification URL to:
+Uploads must be H.264 8-bit + AAC-LC, non-fragmented MP4 with faststart, at most 20 GB and six hours. Both browser and Worker inspect metadata (within the first 16 MiB). The Worker verifies object ownership and byte count before completion. Successful validation is cached in private R2 by immutable object ETag. Only validated objects become playable; no online transcoding or adaptive quality is provided. Covers are uploaded independently.
 
-```text
-https://iseedrama.com/api/media/stream-webhook
-```
-
-Store the returned webhook signing secret in `CLOUDFLARE_STREAM_WEBHOOK_SECRET`. Copy the Stream customer code to `CLOUDFLARE_STREAM_CUSTOMER_CODE` when available; for new uploads the application can also use the HLS URL returned by Stream after the video becomes ready, so the customer code is a fallback rather than a hard requirement. The Worker keeps original objects private, exposes only a one-hour signed ingest URL to Stream, and creates every Stream video with `requireSignedURLs=true`.
-
-The production connection check treats `APP_BASE_URL` (default `https://iseedrama.com`) as the deployed source of truth and requires its public PayPal configuration endpoint to report Production checkout available. Live Secrets should remain in the deployment secret store. For a separate local deep audit, place all four named `PAYPAL_PRODUCTION_*`/public values in an ignored operator file and run `PRODUCTION_ENV_FILE=.env.production.local npm run check:production`; a partial local set blocks the check. The command also reads `CLOUDFLARE_STREAM_WEBHOOK_URL` and compares it with Cloudflare's active Stream Webhook. In MVP mode, Cloudflare for SaaS is optional.
-
-The same `CLOUDFLARE_API_TOKEN` used by the media Worker must include `Account / Stream / Edit`; otherwise R2 uploads can start, but Stream copy, status sync and signed playback token creation fail with a Cloudflare `403 Authentication error`.
-
-Upload sessions use a client-persisted idempotency key. D1 records the R2 completion key, Stream creator key, completion parts and every external resource ID. `GET /api/admin/media/uploads/:uploadId` exposes a `completing` session for recovery; repeating the completion request is safe even when the previous response was lost. The Worker stores an ownership marker on multipart-created objects, looks up Stream videos by the stable creator key before copying, and its hourly reconciliation job aborts expired multipart uploads and removes only stale, owned R2/Stream resources that are no longer referenced by D1.
+See [R2 MP4 delivery and migration](./R2-MP4-DELIVERY.md) for export commands, existing-video handling and deployment acceptance steps.
 
 ## 5. PayPal webhook
 
@@ -228,7 +211,7 @@ The same rule can be created or updated idempotently with the configured Zone ID
 npm run deploy:domain-redirect
 ```
 
-The token needs permission to edit zone rulesets. A token with only Zone Read and Stream access returns Cloudflare error `10000` and leaves the rule unchanged. The script only creates or updates the rule whose reference is `www-to-apex`; it preserves other rules in the phase.
+The token needs permission to edit zone rulesets. A token with only Zone Read access returns Cloudflare error `10000` and leaves the rule unchanged. The script only creates or updates the rule whose reference is `www-to-apex`; it preserves other rules in the phase.
 
 The Nuxt server also has the same path-and-query-preserving `301` as a fallback. The Cloudflare Redirect Rule remains the production traffic entry and should be verified from the public edge.
 
@@ -247,7 +230,7 @@ Configure the required hostnames as follows:
 | `iseedrama.com` | User H5 and same-origin API/Webhooks | Cloudflare Pages/Workers production application |
 | `www.iseedrama.com` | Compatibility entry | Cloudflare Redirect Rule permanently redirects to `https://iseedrama.com` |
 | `admin.iseedrama.com` | Operations console | Same application origin; `/` redirects to `/admin` |
-| `media.iseedrama.com` | R2/Stream media Worker | Wrangler custom domain declared in `wrangler.media.toml` |
+| `media.iseedrama.com` | R2 MP4 media Worker | Wrangler custom domain declared in `wrangler.media.toml` |
 
 Do not add a separate `api.iseedrama.com` for the MVP. The application uses same-origin `/api`, which keeps user/admin cookies, PayPal return handling, and CORS behavior consistent.
 
@@ -288,7 +271,7 @@ Visit `/admin/system`. D1, PayPal and media delivery are checked independently. 
 6. Heartbeats update `watch_history`, and a second device resumes the same episode at the stored second.
 7. Clearing watch history empties Library/Profile progress without removing `playback_events` analytics.
 8. A stopped multipart upload resumes from locally recorded completed parts.
-7. A ready Stream callback updates the episode to `ready`, generates a thumbnail, and enables publish preview.
+9. MP4 completion validates the stored bytes, updates the episode to `ready`, and enables preview and publication without any Stream request.
 
 The admin user page reads `GET /api/admin/users` from D1, the administrator page reads `GET /api/admin/administrators`, and the audit page reads `GET /api/admin/audit`. Run all migrations in numeric order before opening these pages; otherwise the UI will show the explicit database migration error state. Registration creates the `users` row, and authenticated playback or order activity refreshes its country, device and last-seen fields. Verified PayPal captures update order payer details and the user's country without replacing the login email. Administrator credentials and account state use `admin_accounts`; sessions are signed HttpOnly cookies and are revalidated against that table on every protected request.
 # Admin Access security

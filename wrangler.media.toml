@@ -20,5 +20,3 @@ crons = ["17 * * * *"]
 
 # Configure as encrypted Worker secrets:
 # MEDIA_WORKER_SECRET
-# CLOUDFLARE_ACCOUNT_ID
-# CLOUDFLARE_API_TOKEN

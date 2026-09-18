@@ -1,3 +1,4 @@
+import { checkMediaHealth } from './check-media-health.mjs';
 import { readFileSync } from 'node:fs';
 
 const parseEnv = (file) => {
@@ -24,8 +25,6 @@ const optional = [
   'CLOUDFLARE_ZONE_ID',
   'CLOUDFLARE_FOR_SAAS_ENABLED',
   'CLOUDFLARE_DOMAIN_CNAME_TARGET',
-  'CLOUDFLARE_STREAM_CUSTOMER_CODE',
-  'CLOUDFLARE_STREAM_WEBHOOK_SECRET',
 ];
 
 const status = (key) => env[key] ? 'SET' : 'MISSING';
@@ -44,7 +43,7 @@ const requestCloudflare = async (label, url) => {
 
 console.log('Cloudflare environment');
 for (const key of required) console.log(`- ${key}: ${status(key)}`);
-for (const key of optional) console.log(`- ${key}: ${status(key)}${['CLOUDFLARE_FOR_SAAS_ENABLED', 'CLOUDFLARE_DOMAIN_CNAME_TARGET', 'CLOUDFLARE_STREAM_CUSTOMER_CODE'].includes(key) ? ' (optional for MVP)' : ''}`);
+for (const key of optional) console.log(`- ${key}: ${status(key)}${['CLOUDFLARE_FOR_SAAS_ENABLED', 'CLOUDFLARE_DOMAIN_CNAME_TARGET'].includes(key) ? ' (optional for MVP)' : ''}`);
 
 const missingRequired = required.filter((key) => !env[key]);
 if (missingRequired.length) {
@@ -61,15 +60,11 @@ if (!tokenCheck.payload?.success) {
   process.exit();
 }
 
-const streamCheck = await requestCloudflare(
-  'Stream API',
-  `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID)}/stream`,
-);
-if (!streamCheck.payload?.success) {
-  const authenticationError = streamCheck.errors.some((message) => message.includes('Authentication error'));
-  console.log(authenticationError
-    ? 'Fix: the token is valid, but it cannot access Stream for this account. Check CLOUDFLARE_ACCOUNT_ID and add Account / Stream / Edit to the token.'
-    : 'Fix: check Cloudflare Stream permissions and account scope for CLOUDFLARE_API_TOKEN.');
+try {
+  await checkMediaHealth(env);
+  console.log('R2 MP4 media Worker: connected');
+} catch (error) {
+  console.log(error.message);
   process.exitCode = 1;
 }
 

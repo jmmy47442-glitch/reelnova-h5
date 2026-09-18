@@ -29,20 +29,6 @@ const query = async (sql, params = []) => {
   return payload.result?.[0]?.results || [];
 };
 
-const streamRequest = async (path, options = {}) => {
-  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/stream${path}`, {
-    ...options,
-    headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json', ...(options.headers || {}) },
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !payload.success) {
-    const details = [...(payload.errors || []), ...(payload.messages || [])]
-      .map((item) => item?.message).filter(Boolean).join('; ');
-    throw new Error(details || `Stream request failed (${response.status})`);
-  }
-  return payload.result;
-};
-
 const now = new Date().toISOString();
 const includeTransactionFixtures = process.argv.includes('--with-transactions')
   || process.env.ACCEPTANCE_INCLUDE_TRANSACTION_FIXTURES === 'true';
@@ -61,22 +47,14 @@ const series = [
 const categories = [...new Set(series.flatMap((item) => item.genres))];
 const tags = [...new Set(series.map((item) => item.badge))];
 const episodeTitles = ['Part 1: A quiet morning', 'Part 2: The troublemakers', 'Part 3: Bunny strikes back', 'Part 4', 'Part 5', 'Part 6'];
-const streamFixtures = [
-  { seriesId: 'sr-0da51aed', episodeNo: 3, creator: 'acc-big-buck-bunny-part-3-v2', fileName: 'Big_Buck_Bunny_closing_credits.webm', contentType: 'video/webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Big_Buck_Bunny_-_closing_credits.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/e/ec/Big_Buck_Bunny_-_closing_credits.webm', sourceSize: 23016129 },
-  { seriesId: 'acc-sintel', episodeNo: 1, creator: 'acc-sintel', fileName: 'Sintel_webm_extract.240p.vp9.webm', contentType: 'video/webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Sintel_webm_extract.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/transcoded/2/25/Sintel_webm_extract.webm/Sintel_webm_extract.webm.240p.vp9.webm', sourceSize: 7756199 },
-  { seriesId: 'acc-tears-of-steel', episodeNo: 1, creator: 'acc-tears-steel', fileName: 'VP9_low_bitrate_test_ToS.webm', contentType: 'video/webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:VP9_low_bitrate_test_ToS.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/a/ad/VP9_low_bitrate_test_ToS.webm', sourceSize: 852395 },
-  { seriesId: 'acc-elephants-dream', episodeNo: 1, creator: 'acc-elephants-dream', fileName: 'Elephants_Dream_120p.webm', contentType: 'video/webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Elephants_Dream_(2006).120p.vp9.opus.multichannel.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/d/d3/Elephants_Dream_%282006%29.120p.vp9.opus.multichannel.webm', sourceSize: 14327747 },
-  { seriesId: 'acc-cosmos-laundromat', episodeNo: 1, creator: 'acc-cosmos-laundromat-hd-v2', fileName: 'Cosmos_Laundromat_Official_Blender_Foundation_release.webm', contentType: 'video/webm', sourceUrl: 'https://commons.wikimedia.org/wiki/File:Cosmos_Laundromat_-_First_Cycle_-_Official_Blender_Foundation_release.webm', copyUrl: 'https://upload.wikimedia.org/wikipedia/commons/3/36/Cosmos_Laundromat_-_First_Cycle_-_Official_Blender_Foundation_release.webm', sourceSize: 594685641, minInputWidth: 1280 },
-];
-
 const run = (sql, params = []) => query(sql, params);
-const verify = async () => {
+const verify = async ({ requirePlayable = true } = {}) => {
   const [summary] = await query(`SELECT
     (SELECT COUNT(*) FROM series WHERE id LIKE 'acc-%' OR id = 'sr-0da51aed') AS series_count,
     (SELECT COUNT(*) FROM episodes WHERE series_id IN (SELECT id FROM series WHERE id LIKE 'acc-%' OR id = 'sr-0da51aed')) AS episode_count,
-    (SELECT COUNT(*) FROM media_assets a JOIN episodes e ON e.id = a.episode_id WHERE e.series_id = 'sr-0da51aed' AND a.status = 'ready') AS ready_asset_count,
+    (SELECT COUNT(*) FROM media_assets a JOIN episodes e ON e.id = a.episode_id WHERE e.series_id = 'sr-0da51aed' AND a.status = 'ready' AND a.source_object_key LIKE 'originals/%' AND a.source_content_type = 'video/mp4') AS ready_asset_count,
     (SELECT COUNT(DISTINCT e.series_id) FROM media_assets a JOIN episodes e ON e.id = a.episode_id
-      WHERE e.series_id IN (SELECT id FROM series WHERE id LIKE 'acc-%' OR id = 'sr-0da51aed') AND a.status = 'ready') AS ready_series_count,
+      WHERE e.series_id IN (SELECT id FROM series WHERE id LIKE 'acc-%' OR id = 'sr-0da51aed') AND a.status = 'ready' AND a.source_object_key LIKE 'originals/%' AND a.source_content_type = 'video/mp4') AS ready_series_count,
     (SELECT COUNT(*) FROM series WHERE (id LIKE 'acc-%' OR id = 'sr-0da51aed') AND copyright_notice <> '') AS licensed_series_count,
     (SELECT json_array_length(payload) FROM home_config WHERE id = 'home') AS section_count,
     (SELECT COUNT(*) FROM orders WHERE order_no LIKE 'RN-ACCEPT-%' AND status = 'paid') AS paid_count,
@@ -87,8 +65,8 @@ const verify = async () => {
   const transactionStateValid = includeTransactionFixtures
     ? result.paid_count >= 1 && result.refunded_count >= 1 && result.revoked_count >= 1 && result.history_count >= 1
     : result.paid_count === 0 && result.refunded_count === 0 && result.revoked_count === 0 && result.history_count === 0;
-  const valid = result.series_count >= 5 && result.episode_count >= 7 && result.ready_asset_count >= 3
-    && result.ready_series_count >= 5 && result.licensed_series_count >= 5
+  const valid = result.series_count >= 5 && result.episode_count >= 7
+    && (!requirePlayable || (result.ready_asset_count >= 3 && result.ready_series_count >= 5)) && result.licensed_series_count >= 5
     && result.section_count >= 5 && transactionStateValid;
   console.log(JSON.stringify(result, null, 2));
   if (!valid) throw new Error('Acceptance data is incomplete');
@@ -99,12 +77,8 @@ if (process.argv.includes('--check')) {
   process.exit(0);
 }
 
-// Keep the three existing ready Stream assets, but move their series into the
-// stable acceptance namespace so old orders remain attached to the same rows.
-await run(`UPDATE series SET id = ?, slug = ?, title = ?, tagline = ?, description = ?, cover_url = ?, backdrop_url = ?, badge = ?,
-  cast_json = ?, director = ?, copyright_notice = ?, free_episode_count = ?, price_cents = ?, original_price_cents = ?, status = 'published', published_at = COALESCE(published_at, ?), updated_at = ?
-  WHERE id = 'sr-0da51aed'`, [series[0].id, series[0].slug, series[0].title, series[0].tagline, series[0].description, series[0].cover, series[0].backdrop, series[0].badge, JSON.stringify(series[0].cast), series[0].director, series[0].copyright, series[0].free, series[0].price, series[0].original, now, now]);
-await run(`UPDATE episodes SET series_id = ? WHERE series_id = 'sr-0da51aed'`, [series[0].id]);
+// Catalogue-only seed. Videos must be uploaded through the normal validated
+// R2 MP4 pipeline; seeding never calls a video cloud or invents ready assets.
 await run(`UPDATE orders SET series_id = ?, series_slug = ?, series_title = ? WHERE series_id = 'sr-0da51aed'`, [series[0].id, series[0].slug, series[0].title]);
 
 for (const staleId of ['acc-heiress-returns', 'acc-faking-forever', 'acc-queen-mom', 'acc-goodbye-captain']) {
@@ -114,14 +88,14 @@ for (const staleId of ['acc-heiress-returns', 'acc-faking-forever', 'acc-queen-m
   await run('DELETE FROM series WHERE id = ?', [staleId]);
 }
 
-for (const item of series.slice(1)) {
+for (const item of series) {
   await run(`INSERT INTO series (id, slug, title, tagline, description, cover_url, backdrop_url, badge, target_region, language,
     subtitle_languages, cast_json, director, copyright_notice, free_episode_count, price_cents, original_price_cents, currency, status, published_at, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'United States', 'en', '[]', ?, ?, ?, ?, ?, ?, 'USD', 'published', ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'United States', 'en', '[]', ?, ?, ?, ?, ?, ?, 'USD', 'draft', ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET slug=excluded.slug, title=excluded.title, tagline=excluded.tagline, description=excluded.description,
       cover_url=excluded.cover_url, backdrop_url=excluded.backdrop_url, badge=excluded.badge, cast_json=excluded.cast_json, director=excluded.director, copyright_notice=excluded.copyright_notice,
       free_episode_count=excluded.free_episode_count, price_cents=excluded.price_cents, original_price_cents=excluded.original_price_cents,
-      status='published', published_at=excluded.published_at, updated_at=excluded.updated_at, deleted_at=NULL`,
+      status='draft', published_at=NULL, updated_at=excluded.updated_at, deleted_at=NULL`,
   [item.id, item.slug, item.title, item.tagline, item.description, item.cover, item.backdrop, item.badge, JSON.stringify(item.cast), item.director, item.copyright, item.free, item.price, item.original, now, now, now]);
 }
 
@@ -131,56 +105,10 @@ for (const item of series) {
     const episodeId = `acc-ep-${item.id.slice(4)}-${episodeNo}`;
     await run(`INSERT INTO episodes (id, series_id, episode_no, title, duration_seconds, is_free, video_status, thumbnail_url, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(series_id, episode_no) DO UPDATE SET title=excluded.title, duration_seconds=excluded.duration_seconds,
+      ON CONFLICT(series_id, episode_no) DO UPDATE SET title=excluded.title,
         is_free=excluded.is_free, thumbnail_url=excluded.thumbnail_url, updated_at=excluded.updated_at`,
-    [episodeId, item.id, episodeNo, item.id === series[0].id ? episodeTitles[episodeNo - 1] : `Episode ${episodeNo}`, item.id === series[0].id && episodeNo <= 3 ? 60 : 150 + episodeNo * 11, episodeNo <= item.free ? 1 : 0, item.id === series[0].id && episodeNo <= 3 ? 'ready' : 'waiting_upload', item.cover, now, now]);
+    [episodeId, item.id, episodeNo, item.id === series[0].id ? episodeTitles[episodeNo - 1] : `Episode ${episodeNo}`, 0, episodeNo <= item.free ? 1 : 0, 'waiting_upload', item.cover, now, now]);
   }
-}
-
-for (const fixture of streamFixtures) {
-  const existing = await streamRequest(`?creator=${encodeURIComponent(fixture.creator)}&limit=5`);
-  let video = existing?.find((candidate) => candidate.creator === fixture.creator);
-  if (!video) video = await streamRequest('/copy', {
-    method: 'POST',
-    headers: { 'Upload-Creator': fixture.creator },
-    body: JSON.stringify({ url: fixture.copyUrl, creator: fixture.creator, meta: { acceptanceFixture: 'P0-04', seriesId: fixture.seriesId }, requireSignedURLs: true }),
-  });
-  if (!video?.uid) throw new Error(`Cloudflare Stream fixture is missing: ${fixture.creator}`);
-  for (let attempt = 0; attempt < 120 && !video.readyToStream && video.status?.state !== 'ready'; attempt += 1) {
-    if (video.status?.state === 'error') throw new Error(`Cloudflare Stream fixture failed: ${fixture.creator}: ${video.status?.errorReasonText || 'unknown error'}`);
-    await new Promise((resolve) => setTimeout(resolve, 5_000));
-    video = await streamRequest(`/${encodeURIComponent(video.uid)}`);
-  }
-  const ready = Boolean(video.readyToStream || video.status?.state === 'ready');
-  if (!ready) throw new Error(`Timed out waiting for Cloudflare Stream fixture: ${fixture.creator}`);
-  const inputWidth = Number(video.input?.width || 0);
-  if (fixture.minInputWidth && inputWidth < fixture.minInputWidth) {
-    throw new Error(`Cloudflare Stream fixture is below the required resolution: ${fixture.creator} (${inputWidth}px < ${fixture.minInputWidth}px)`);
-  }
-  const fixtureKey = fixture.seriesId.slice(4);
-  const episodeKey = fixture.episodeNo === 1 ? fixtureKey : `${fixtureKey}-${fixture.episodeNo}`;
-  const assetId = `acc-media-${episodeKey}`;
-  const [episode] = await query('SELECT id FROM episodes WHERE series_id = ? AND episode_no = ?', [fixture.seriesId, fixture.episodeNo]);
-  if (!episode?.id) throw new Error(`Acceptance episode is missing: ${fixture.seriesId} episode ${fixture.episodeNo}`);
-  const episodeId = episode.id;
-  await run(`INSERT INTO media_assets (id, episode_id, kind, storage_provider, source_object_key, stream_uid, source_file_name, source_content_type,
-    source_size_bytes, width, height, duration_seconds, has_video, has_audio, validation_status, hls_url, dash_url, thumbnail_url, status, created_at, updated_at)
-    VALUES (?, ?, 'video', 'stream', ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET source_object_key=excluded.source_object_key, stream_uid=excluded.stream_uid,
-      source_file_name=excluded.source_file_name, source_content_type=excluded.source_content_type, source_size_bytes=excluded.source_size_bytes,
-      width=excluded.width, height=excluded.height, duration_seconds=excluded.duration_seconds,
-      validation_status=excluded.validation_status, hls_url=excluded.hls_url, dash_url=excluded.dash_url, thumbnail_url=excluded.thumbnail_url,
-      status=excluded.status, updated_at=excluded.updated_at, deleted_at=NULL`,
-  [assetId, episodeId, fixture.sourceUrl, video.uid, fixture.fileName, fixture.contentType, fixture.sourceSize, Number(video.input?.width || 0) || null,
-    Number(video.input?.height || 0) || null, Number(video.duration || 0) || null, ready ? 'valid' : 'pending', video.playback?.hls || null,
-    video.playback?.dash || null, video.thumbnail || null, ready ? 'ready' : 'processing', now, now]);
-  await run(`INSERT INTO transcode_jobs (id, media_asset_id, provider_job_id, attempt, status, progress, started_at, completed_at, created_at, updated_at)
-    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET provider_job_id=excluded.provider_job_id, status=excluded.status,
-      progress=excluded.progress, completed_at=excluded.completed_at, updated_at=excluded.updated_at`,
-  [`acc-job-${episodeKey}`, assetId, video.uid, ready ? 'ready' : 'processing', ready ? 100 : 50, now, ready ? now : null, now, now]);
-  await run(`UPDATE episodes SET active_media_asset_id = CASE WHEN ? THEN ? ELSE active_media_asset_id END, video_status = ?,
-    duration_seconds = CASE WHEN ? > 0 THEN ? ELSE duration_seconds END, thumbnail_url = COALESCE(?, thumbnail_url), updated_at = ? WHERE id = ?`,
-  [ready ? 1 : 0, assetId, ready ? 'ready' : 'processing', Number(video.duration || 0), Math.round(Number(video.duration || 0)), video.thumbnail || null, now, episodeId]);
 }
 
 for (let index = 0; index < categories.length; index += 1) {
@@ -260,4 +188,5 @@ await run(`INSERT INTO watch_history (user_id, series_id, episode_no, position_s
 }
 
 console.log(`Seeded ${series.length} acceptance series and ${sections.length} home sections${includeTransactionFixtures ? ', with opt-in transaction fixtures' : ''}.`);
-await verify();
+console.log('Catalogue is in draft. Upload compatible MP4 videos and covers in admin, then publish and run --check.');
+await verify({ requirePlayable: false });

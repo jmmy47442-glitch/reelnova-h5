@@ -1,3 +1,4 @@
+import { mediaWorkerRequest } from '~/server/utils/media-pipeline';
 import { ok } from '~/server/utils/response';
 import { d1All, d1First } from '~/server/utils/cloudflare-d1';
 import {
@@ -10,12 +11,7 @@ import { getCloudflareDomainAutomationStatus } from '~/server/utils/cloudflare-d
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig(event);
-  const streamWebhookUrl = String(config.cloudflareStreamWebhookUrl || '').trim().replace(/\/$/, '');
   const missingCloudflareFields = {
-    streamApi: [
-      !config.cloudflareAccountId ? 'CLOUDFLARE_ACCOUNT_ID' : '',
-      !config.cloudflareApiToken ? 'CLOUDFLARE_API_TOKEN' : '',
-    ].filter(Boolean),
     mediaWorker: [
       !config.cloudflareMediaWorkerUrl ? 'CLOUDFLARE_MEDIA_WORKER_URL' : '',
       !config.cloudflareMediaWorkerSecret ? 'CLOUDFLARE_MEDIA_WORKER_SECRET' : '',
@@ -23,21 +19,14 @@ export default defineEventHandler(async (event) => {
     playback: [
       !config.cloudflareMediaSigningSecret ? 'CLOUDFLARE_MEDIA_SIGNING_SECRET' : '',
     ].filter(Boolean),
-    streamWebhook: [
-      !config.cloudflareStreamWebhookSecret ? 'CLOUDFLARE_STREAM_WEBHOOK_SECRET' : '',
-      !streamWebhookUrl ? 'CLOUDFLARE_STREAM_WEBHOOK_URL' : '',
-    ].filter(Boolean),
   };
   let database = false;
   let databaseError: string | null = null;
   let databaseSchema: DatabaseSchemaHealth | null = null;
   let paypal = false;
   let paypalError: string | null = null;
-  let streamApi = false;
-  let streamApiError: string | null = null;
-  let streamWebhookRemoteUrl: string | null = null;
-  let streamWebhookError: string | null = null;
-  let streamWebhookRemoteConfigured = false;
+  let mediaWorkerReady = false;
+  let mediaWorkerError: string | null = null;
   let lastWebhookAt: string | null = null;
   let failedWebhooks: Array<{ eventId: string; eventType: string; errorMessage: string | null; receivedAt: string; retryCount: number; replayable: boolean }> = [];
   const paypalConfiguration = await getPayPalConfigurationStatus(event);
@@ -56,65 +45,24 @@ export default defineEventHandler(async (event) => {
     try { paypal = await testPayPalConnection(event); }
     catch (error) { paypalError = error instanceof Error ? error.message : 'PayPal connection failed'; }
   }
-  if (config.cloudflareAccountId && config.cloudflareApiToken) {
+  if (database && !missingCloudflareFields.mediaWorker.length) {
     try {
-      const response = await $fetch<{ success?: boolean; errors?: Array<{ message?: string }> }>(
-        `https://api.cloudflare.com/client/v4/accounts/${config.cloudflareAccountId}/stream`,
-        { headers: { Authorization: `Bearer ${config.cloudflareApiToken}` }, timeout: 8_000 },
-      );
-      streamApi = Boolean(response.success);
-      if (!streamApi) streamApiError = response.errors?.map((item) => item.message).filter(Boolean).join('; ') || 'Cloudflare Stream API validation failed';
-    } catch (error) {
-      const value = error as { data?: { errors?: Array<{ message?: string }> }; statusMessage?: string };
-      const detail = value.data?.errors?.map((item) => item.message).filter(Boolean).join('; ')
-        || value.statusMessage || (error instanceof Error ? error.message : 'Cloudflare Stream API validation failed');
-      streamApiError = detail === 'Authentication error'
-        ? 'Authentication error：Token 有效但无权访问此账号的 Stream API，请检查 Account ID 是否匹配，并给 Token 添加 Account / Stream / Edit 权限'
-        : detail;
-    }
-  } else if (missingCloudflareFields.streamApi.length) {
-    streamApiError = `缺少 ${missingCloudflareFields.streamApi.join(' / ')}`;
+      const health = await mediaWorkerRequest<{ ready: boolean; delivery: string }>(event, '/health', {});
+      mediaWorkerReady = health.ready && health.delivery === 'r2-mp4';
+      if (!mediaWorkerReady) mediaWorkerError = '请部署最新的 R2 MP4 媒体 Worker';
+    } catch (error) { mediaWorkerError = error instanceof Error ? error.message : 'Media Worker connection failed'; }
   }
-  if (config.cloudflareAccountId && config.cloudflareApiToken) {
-    try {
-      const response = await $fetch<{ success?: boolean; result?: { notification_url?: string; notificationUrl?: string }; errors?: Array<{ message?: string }> }>(
-        `https://api.cloudflare.com/client/v4/accounts/${config.cloudflareAccountId}/stream/webhook`,
-        { headers: { Authorization: `Bearer ${config.cloudflareApiToken}` }, timeout: 8_000 },
-      );
-      streamWebhookRemoteUrl = String(response.result?.notification_url || response.result?.notificationUrl || '').trim().replace(/\/$/, '') || null;
-      streamWebhookRemoteConfigured = Boolean(streamWebhookRemoteUrl && streamWebhookUrl && streamWebhookRemoteUrl === streamWebhookUrl);
-      if (!streamWebhookRemoteConfigured) streamWebhookError = streamWebhookRemoteUrl
-        ? `Cloudflare Webhook URL 不匹配：${streamWebhookRemoteUrl}`
-        : 'Cloudflare Stream 尚未配置 Webhook';
-      if (!response.success && !streamWebhookError) streamWebhookError = response.errors?.map((item) => item.message).filter(Boolean).join('; ') || 'Cloudflare Stream Webhook 查询失败';
-    } catch (error) {
-      const value = error as { data?: { errors?: Array<{ message?: string }> }; statusMessage?: string };
-      streamWebhookError = value.data?.errors?.map((item) => item.message).filter(Boolean).join('; ')
-        || value.statusMessage || (error instanceof Error ? error.message : 'Cloudflare Stream Webhook 查询失败');
-    }
-  } else if (missingCloudflareFields.streamApi.length) {
-    streamWebhookError = `缺少 ${missingCloudflareFields.streamApi.join(' / ')}`;
-  }
-  const streamWebhookConfigured = Boolean(config.cloudflareStreamWebhookSecret && streamWebhookUrl && streamWebhookRemoteConfigured);
   return ok({
     checkedAt: new Date().toISOString(),
     cloudflare: {
       database, databaseError, databaseSchema,
       mode: (event.context.cloudflare as { env?: { DB?: unknown } } | undefined)?.env?.DB ? 'D1 binding' : 'Cloudflare REST API',
       accountConfigured: Boolean(config.cloudflareAccountId), databaseConfigured: Boolean(config.cloudflareD1DatabaseId), apiTokenConfigured: Boolean(config.cloudflareApiToken),
-      streamApiConfigured: streamApi,
-      streamApiError,
-      streamCustomerCodeConfigured: Boolean(config.cloudflareStreamCustomerCode),
-      streamWebhookConfigured,
-      streamWebhookUrl,
-      streamWebhookRemoteUrl,
-      streamWebhookRemoteConfigured,
-      streamWebhookError,
-      uploadConfigured: Boolean(database && config.cloudflareMediaWorkerUrl && config.cloudflareMediaWorkerSecret && streamApi),
-      mediaConfigured: Boolean(config.cloudflareMediaWorkerUrl && config.cloudflareMediaWorkerSecret
-        && streamApi && config.cloudflareMediaSigningSecret && streamWebhookConfigured),
+      delivery: 'r2-mp4',
+      mediaWorkerReady, mediaWorkerError,
+      uploadConfigured: Boolean(database && mediaWorkerReady),
+      mediaConfigured: Boolean(database && mediaWorkerReady && config.cloudflareMediaSigningSecret),
       mediaWorkerConfigured: Boolean(config.cloudflareMediaWorkerUrl && config.cloudflareMediaWorkerSecret),
-      streamConfigured: streamApi,
       mediaSigningConfigured: Boolean(config.cloudflareMediaSigningSecret),
       customHostnamesConfigured: domainAutomation.automationConfigured,
       customHostnamesMissingFields: domainAutomation.missingFields,

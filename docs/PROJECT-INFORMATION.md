@@ -32,7 +32,7 @@
 | Cloudflare Zone | 已存在且为 `active` |
 | Cloudflare Zone ID | `195dc8829b5b019c7d2ea29d8fe14101` |
 | API Token 基础验证 | 通过 |
-| D1、Stream 与 Zone 读取 | 通过 |
+| D1、Stream 与 Zone 读取（历史检查） | 当时通过；当前不再使用 Stream |
 | Redirect Rules API | 当前 Token 返回 `10000 Authentication error`，需增加 Rulesets/Redirect Rules 编辑权限 |
 | Cloudflare for SaaS / Custom Hostnames | MVP 不启用；动态备用域名待 Cloudflare for SaaS 开通 |
 | `iseedrama.com` DNS/证书 | 已解析并签发，2026-08-20 验收通过 |
@@ -40,7 +40,7 @@
 | `media.iseedrama.com` DNS/证书 | 已解析并签发，当前指向媒体 Worker |
 | `www.iseedrama.com` DNS/证书 | 已解析并签发；Redirect Rule 尚未创建，当前错误进入 Nuxt 登录跳转 |
 | SaaS CNAME 接入目标 | MVP 不需要；开通 Cloudflare for SaaS 后填写 |
-| Stream Webhook Secret | 尚未配置 |
+| 媒体方案 | R2 MP4 签名直播放，Stream 已停用 |
 
 ## 3. 正式业务入口
 
@@ -52,9 +52,9 @@
 | API 根路径 | `https://iseedrama.com/api` |
 | PayPal Webhook | `https://iseedrama.com/api/paypal/webhook` |
 | PayPal return URL | `https://iseedrama.com/api/paypal/return` |
-| Cloudflare Stream Webhook | `https://iseedrama.com/api/media/stream-webhook` |
+| 媒体校验 | R2 上传完成后校验 MP4，无转码回调 |
 
-PayPal Developer Dashboard、Cloudflare Stream 和所有来源白名单必须使用 HTTPS 正式地址。不要把 `localhost`、预览域名或媒体 Worker 地址配置为生产支付回调。
+PayPal Developer Dashboard 和所有来源白名单必须使用 HTTPS 正式地址。不要把 `localhost`、预览域名或媒体 Worker 地址配置为生产支付回调。
 
 ## 4. 域名与 DNS 策略
 
@@ -64,7 +64,7 @@ PayPal Developer Dashboard、Cloudflare Stream 和所有来源白名单必须使
 - `media.iseedrama.com` 绑定媒体 Worker，用于分片上传、私有原片摄取和媒体任务接口。
 - MVP 不单独配置 `api.iseedrama.com`，避免跨域 Cookie、CORS 和 PayPal return URL 增加额外复杂度。
 - DNS 托管、HTTPS、WAF 和当前自有 Custom Domains 统一由 Cloudflare 管理。
-- 主域名切换前必须同步检查 PayPal Webhook、Stream Webhook、媒体 Worker CORS、Cloudflare Access 和缓存规则。
+- 主域名切换前必须同步检查 PayPal Webhook、媒体 Worker CORS、Cloudflare Access 和缓存规则。
 - MVP 不启用 Cloudflare for SaaS，后台动态添加第三方备用域名标记为“待 Cloudflare for SaaS 开通”。
 - `CLOUDFLARE_DOMAIN_CNAME_TARGET` 仅在后续 SaaS 模式下使用，是 Cloudflare 分配的接入目标，不等同于公开主域名，不能凭空填写。
 
@@ -80,7 +80,7 @@ PayPal Developer Dashboard、Cloudflare Stream 和所有来源白名单必须使
 | `admin.iseedrama.com` Pages/Workers 自定义域名 | Cloudflare 项目 | 已绑定并签发证书；最新代码待发布 |
 | `media.iseedrama.com` Worker 自定义域名 | `wrangler.media.toml` | 已发布，Worker 版本 `2dba0524-6574-4ae7-96a7-099f536843ac` |
 | 媒体 Worker 正式地址与 Secret | Cloudflare Worker Secret | 待部署/配置 |
-| Stream customer code 与 Webhook secret | 部署 Secret | 待开通/配置 |
+| R2 MP4 Worker | R2 binding + 共享签名 Secret | 按新方案部署并验证 |
 | PayPal Sandbox/Production Client ID、Secret、Webhook ID | 部署 Secret | 待商户后台确认 |
 | 公司主体、注册地址、税务与 PayPal 商户信息 | 合规资料 | 待业务方提供 |
 | Terms、Privacy、Refund Policy 最终法律文本 | 法务资料 | 待审核 |
@@ -95,7 +95,7 @@ PayPal Developer Dashboard、Cloudflare Stream 和所有来源白名单必须使
 - `admin.iseedrama.com` 根路径进入 `/admin`，登录和 `/api/admin/*` 均通过 Cloudflare Access。
 - `media.iseedrama.com` 可访问且只允许清单中的 H5/后台来源跨域调用。
 - PayPal 生产 Webhook 已注册并完成官方签名验证，支付成功后只发放一次权益。
-- Stream Webhook 可更新转码状态，已购用户获取短时签名播放地址。
+- 上传完成后校验兼容 MP4，已购用户获取短时签名 R2 播放地址；见 [部署说明](./R2-MP4-DELIVERY.md)。
 - 媒体 Worker 的 `APP_BASE_URL` 为 `https://iseedrama.com`，允许源包含根域名和 `www`。
 - `support@iseedrama.com` 与 `privacy@iseedrama.com` 已创建并完成收发测试。
 - 生产环境已覆盖默认管理员密码和会话密钥，并开启 Cloudflare Access。

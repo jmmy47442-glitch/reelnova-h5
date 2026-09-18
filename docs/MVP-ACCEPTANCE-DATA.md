@@ -1,3 +1,5 @@
+> 媒体方案更新：当前使用私有 R2 MP4 直播放。`db:seed:acceptance` 仅创建/更新草稿目录，不再向 Stream 导入视频。请在后台上传 H.264 + AAC-LC、faststart MP4 和独立封面，校验并上架后再运行 `check:acceptance-data`。下文旧 Stream 验收记录仅供历史参考，不能作为新部署通过的依据。参见 [R2 部署与迁移](./R2-MP4-DELIVERY.md)。
+
 # MVP acceptance data
 
 The D1 acceptance fixture is maintained by `scripts/seed-acceptance-data.mjs`.

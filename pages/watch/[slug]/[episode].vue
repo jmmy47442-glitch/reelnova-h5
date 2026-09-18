@@ -10,7 +10,6 @@ import { normalizeVideoQualityLevels, parseHlsQualityManifest, resolveVideoQuali
 definePageMeta({ hideBottomNav: true });
 const route = useRoute();
 const api = useContentApi();
-const runtimeConfig = useRuntimeConfig();
 const goBack = useSafeBack(() => `/series/${String(route.params.slug)}`);
 const { track } = useAnalytics();
 const episodeNo = computed(() => Number(route.params.episode || 1));
@@ -25,6 +24,7 @@ const showUnlock = ref(false);
 const locallyUnlocked = ref(false);
 const signedUrl = ref('');
 const originalUrl = ref('');
+const directMp4 = ref(false);
 const trackingToken = ref('');
 const sessionId = ref('');
 const expiresAt = ref(0);
@@ -101,17 +101,6 @@ const networkSamples: Array<{ bytes: number; durationMs: number; latencyMs: numb
 const measuredResourceKeys = new Set<string>();
 const resumeFallbackWindowSeconds = 5;
 const seekRecoveryWindowMs = 8_000;
-const streamOrigin = runtimeConfig.public.streamCustomerCode
-  ? `https://customer-${runtimeConfig.public.streamCustomerCode}.cloudflarestream.com`
-  : '';
-
-useHead({
-  link: streamOrigin ? [
-    { rel: 'dns-prefetch', href: streamOrigin },
-    { rel: 'preconnect', href: streamOrigin, crossorigin: 'anonymous' },
-  ] : [],
-});
-
 const networkSpeedLabel = computed(() => {
   if (networkSpeedMbps.value !== null) return `${networkSpeedMbps.value.toFixed(networkSpeedMbps.value >= 10 ? 0 : 1)} Mbps`;
   return 'Measuring connection';
@@ -195,7 +184,7 @@ const qualityControlLabel = computed(() => {
   return `${qualityPreference.value}P`;
 });
 
-const qualityOptions = computed(() => [
+const qualityOptions = computed(() => directMp4.value ? [{ value: 'original', label: 'Original', detail: 'Source quality' }] : [
   { value: 'auto', label: 'Auto', detail: 'Adjusts to your connection' },
   ...(canUseOriginalSource.value || (!nativeQualityOnly.value && qualityLevels.value.length)
     ? [{ value: 'original', label: canUseOriginalSource.value ? 'Original' : 'Highest', detail: canUseOriginalSource.value ? 'Source quality' : 'Highest available quality' }] : []),
@@ -254,6 +243,7 @@ const scheduleRenewal = () => {
   renewTimer = setTimeout(() => { void authorize(true); }, wait);
 };
 const loadSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
+  if (directMp4.value) { loadOriginalSource(source, restoreAt, shouldPlay); return; }
   if (!video.value) return;
   // Replacing an MSE source can briefly emit a native `error` event even when
   // the new manifest is valid. Keep that transient event from blanking a
@@ -369,7 +359,7 @@ const loadOriginalSource = (source: string, restoreAt: number, shouldPlay: boole
   media.load();
 };
 const loadPreferredSource = (restoreAt: number, shouldPlay: boolean) => {
-  if (qualityPreference.value === 'original' && canUseOriginalSource.value) {
+  if (directMp4.value || (qualityPreference.value === 'original' && canUseOriginalSource.value)) {
     loadOriginalSource(originalUrl.value, restoreAt, shouldPlay);
   } else if (signedUrl.value) {
     loadSource(signedUrl.value, restoreAt, shouldPlay);
@@ -390,7 +380,9 @@ const authorize = async (renew = false) => {
     if (!authorization.signedUrl) throw new Error('No playable source');
     signedUrl.value = authorization.signedUrl;
     originalUrl.value = authorization.originalUrl || '';
-    void inspectQualityLevels(authorization.signedUrl);
+    directMp4.value = authorization.delivery === 'mp4';
+    if (directMp4.value) { qualityPreference.value = 'original'; qualityLevels.value = []; }
+    else void inspectQualityLevels(authorization.signedUrl);
     trackingToken.value = authorization.trackingToken;
     expiresAt.value = Date.parse(authorization.expiresAt || '') || Date.now() + 9 * 60_000;
     if (!renew && !started.value && !resumePromptResolved.value) {
@@ -543,7 +535,7 @@ const onVideoError = () => {
     isPlaying.value = Boolean(video.value && !video.value.paused);
     return;
   }
-  if (originalPlayback.value && signedUrl.value && !originalFallbackAttempted.value) {
+  if (!directMp4.value && originalPlayback.value && signedUrl.value && !originalFallbackAttempted.value) {
     originalFallbackAttempted.value = true;
     // Keep the highest-quality preference even when manifest discovery has
     // not finished. Renewals must also keep using HLS after a source failure.
@@ -839,7 +831,7 @@ onBeforeUnmount(() => {
     <section v-if="!canPlay" class="watch-lock" @click.stop><span><LockKeyhole :size="28" /></span><p>Episode {{ episodeNo }} is locked</p><h1>{{ purchasable ? 'Keep the story going' : 'Episode unavailable' }}</h1><button v-if="purchasable" class="button button--primary button--wide" type="button" @click="track('lock_trigger', { seriesId: series.id, seriesTitle: series.title, episodeNo, properties: { source: 'watch_lock' } }); showUnlock = true">Unlock full series</button><button class="watch-lock__secondary" type="button" @click="returnToSeries">Choose another episode</button></section>
     <section v-if="playbackError" class="watch-lock" @click.stop><span><RotateCcw :size="27" /></span><h1>Connection interrupted</h1><p>{{ playbackError }}</p><button class="button button--primary" type="button" @click="retry">Retry playback</button></section>
     <Transition name="resume-modal"><div v-if="showResumePrompt" class="resume-modal-backdrop" @click.stop><section class="resume-modal" role="dialog" aria-modal="true" aria-labelledby="resume-modal-title" aria-describedby="resume-modal-copy" @click.stop @keydown.tab="trapResumePromptFocus" @keydown.esc="dismissResumePrompt"><button ref="resumeCloseButton" class="resume-modal__close" type="button" aria-label="Close continue watching dialog" title="Close" @click="dismissResumePrompt"><X :size="20" /></button><div class="resume-modal__icon"><History :size="22" /></div><p class="resume-modal__eyebrow">Welcome back</p><h2 id="resume-modal-title">Continue watching?</h2><p id="resume-modal-copy" class="resume-modal__copy">Pick up {{ series.title }} where you left off, or start this episode again.</p><div class="resume-modal__progress"><span>Episode {{ episodeNo }}</span><strong>{{ formatTime(resumePromptPosition) }} watched</strong></div><div class="resume-modal__actions"><button ref="resumeContinueButton" class="button button--primary button--wide" type="button" @click="chooseResume('resume')"><Play :size="17" fill="currentColor" />Continue from {{ formatTime(resumePromptPosition) }}</button><button ref="resumeRestartButton" class="button button--secondary button--wide" type="button" @click="chooseResume('restart')"><RotateCcw :size="17" />Start from beginning</button></div></section></div></Transition>
-    <Transition name="fade"><div v-if="showControls && canPlay && signedUrl && !showResumePrompt" class="watch-bottom" @click.stop><p v-if="fullscreenError" class="watch-fullscreen-error" role="status">{{ fullscreenError }}</p><div class="watch-progress" :style="{ '--played-progress': `${progress}%` }"><div class="watch-progress__track" aria-hidden="true"><span v-for="(segment, index) in bufferedSegments" :key="index" class="watch-progress__buffered" :style="{ left: `${segment.left}%`, width: `${segment.width}%` }" /><i class="watch-progress__played" /></div><input class="watch-progress-input" type="range" min="0" max="100" step="0.1" :value="progress" :aria-valuetext="`${formatTime(currentTime)} of ${durationLabel}`" aria-label="Seek" @input="seek" @change="persistSeek" /></div><div class="watch-time"><span>{{ formatTime(currentTime) }}</span><span>{{ durationLabel }}</span></div><div class="watch-controls"><PlayerVolumeControl :media="video" /><button type="button" aria-label="Playback speed" @click="cycleSpeed"><Gauge :size="22" /><span>{{ speed }}×</span></button><button ref="qualityTrigger" type="button" class="watch-quality" :class="{ 'is-disabled': !qualityLevels.length && !originalUrl }" :disabled="!qualityLevels.length && !originalUrl" aria-label="Video quality" aria-haspopup="dialog" :aria-expanded="showQualityDrawer" @click="openQualityDrawer"><Settings2 :size="21" aria-hidden="true" /><span>{{ qualityControlLabel }}</span></button><button type="button" :aria-label="isFullscreen ? 'Exit fullscreen' : 'Fullscreen'" :disabled="fullscreenPending" @click="fullscreen"><Minimize2 v-if="isFullscreen" :size="21" /><Maximize2 v-else :size="21" /></button><button type="button" aria-label="Next episode" @click="nextEpisode"><SkipForward :size="22" /><span>Next</span></button></div><button v-if="episodeNo < series.episodeCount" class="up-next" type="button" @click="nextEpisode"><span>UP NEXT</span><strong>Episode {{ episodeNo + 1 }}</strong><ChevronRight :size="20" /></button></div></Transition>
+    <Transition name="fade"><div v-if="showControls && canPlay && signedUrl && !showResumePrompt" class="watch-bottom" @click.stop><p v-if="fullscreenError" class="watch-fullscreen-error" role="status">{{ fullscreenError }}</p><div class="watch-progress" :style="{ '--played-progress': `${progress}%` }"><div class="watch-progress__track" aria-hidden="true"><span v-for="(segment, index) in bufferedSegments" :key="index" class="watch-progress__buffered" :style="{ left: `${segment.left}%`, width: `${segment.width}%` }" /><i class="watch-progress__played" /></div><input class="watch-progress-input" type="range" min="0" max="100" step="0.1" :value="progress" :aria-valuetext="`${formatTime(currentTime)} of ${durationLabel}`" aria-label="Seek" @input="seek" @change="persistSeek" /></div><div class="watch-time"><span>{{ formatTime(currentTime) }}</span><span>{{ durationLabel }}</span></div><div class="watch-controls"><PlayerVolumeControl :media="video" /><button type="button" aria-label="Playback speed" @click="cycleSpeed"><Gauge :size="22" /><span>{{ speed }}×</span></button><button ref="qualityTrigger" type="button" class="watch-quality" :class="{ 'is-disabled': directMp4 || (!qualityLevels.length && !originalUrl) }" :disabled="directMp4 || (!qualityLevels.length && !originalUrl)" aria-label="Video quality" aria-haspopup="dialog" :aria-expanded="showQualityDrawer" @click="openQualityDrawer"><Settings2 :size="21" aria-hidden="true" /><span>{{ qualityControlLabel }}</span></button><button type="button" :aria-label="isFullscreen ? 'Exit fullscreen' : 'Fullscreen'" :disabled="fullscreenPending" @click="fullscreen"><Minimize2 v-if="isFullscreen" :size="21" /><Maximize2 v-else :size="21" /></button><button type="button" aria-label="Next episode" @click="nextEpisode"><SkipForward :size="22" /><span>Next</span></button></div><button v-if="episodeNo < series.episodeCount" class="up-next" type="button" @click="nextEpisode"><span>UP NEXT</span><strong>Episode {{ episodeNo + 1 }}</strong><ChevronRight :size="20" /></button></div></Transition>
     <Transition name="sheet">
       <div v-if="showQualityDrawer" class="quality-drawer-backdrop" @click.stop="closeQualityDrawer">
         <section ref="qualityDrawer" class="quality-drawer" role="dialog" aria-modal="true" aria-labelledby="quality-drawer-title" @click.stop @keydown.esc.stop="closeQualityDrawer" @keydown.tab="trapQualityFocus">

@@ -3,8 +3,8 @@ import { recordAdminAudit } from '~/server/utils/admin-audit';
 import { d1First, d1Run } from '~/server/utils/cloudflare-d1';
 import { mediaWorkerRequest, requireMediaPipeline } from '~/server/utils/media-pipeline';
 
-const allowedTypes = new Set(['video/mp4', 'video/quicktime']);
-const allowedExtensions = new Set(['mp4', 'mov']);
+const allowedTypes = new Set(['video/mp4']);
+const allowedExtensions = new Set(['mp4']);
 
 interface WorkerUpload {
   uploadId: string;
@@ -48,7 +48,7 @@ export default defineEventHandler(async (event) => {
     || !Number.isSafeInteger(fileSizeBytes) || fileSizeBytes < 1024 || fileSizeBytes > 20 * 1024 * 1024 * 1024
     || !Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 6 * 60 * 60
     || !Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0 || body?.hasVideo !== true || body?.hasAudio !== true) {
-    throw createError({ statusCode: 400, statusMessage: 'Only MP4/MOV videos up to 20 GB are accepted' });
+    throw createError({ statusCode: 400, statusMessage: 'Only H.264/AAC faststart MP4 videos up to 20 GB are accepted' });
   }
 
   const previous = await d1First<ExistingUpload>(event, `SELECT u.id, u.provider_upload_id AS uploadId, u.object_key AS objectKey,
@@ -64,7 +64,7 @@ export default defineEventHandler(async (event) => {
     }
     const worker = await mediaWorkerRequest<WorkerUpload>(event, '/uploads', {
       idempotencyKey, sessionId: previous.id, completionKey: `r2:${previous.id}`,
-      streamIdempotencyKey: `reelnova:upload:${previous.id}`, objectKey: previous.objectKey, contentType, fileSizeBytes,
+      objectKey: previous.objectKey, contentType, fileSizeBytes,
       metadata: { assetId: previous.media_asset_id, episodeId: previous.episode_id, seriesId },
     });
     await d1Run(event, `UPDATE media_upload_sessions SET provider_upload_id = ?, part_size_bytes = ?, expires_at = ?,
@@ -90,7 +90,7 @@ export default defineEventHandler(async (event) => {
 
   if (existing) {
     // Keep replaced media out of the active catalogue and reconciliation set.
-    // The new asset becomes active only after its Stream job is submitted.
+    // The new asset becomes active only after the stored MP4 passes validation.
     await d1Run(event, `UPDATE media_assets SET status = 'superseded', deleted_at = COALESCE(deleted_at, ?), updated_at = ?
       WHERE episode_id = ? AND deleted_at IS NULL AND status <> 'superseded'`, [now, now, episodeId]);
     await d1Run(event, `UPDATE episodes SET title = ?, video_status = 'uploading', active_media_asset_id = NULL,
@@ -116,7 +116,7 @@ export default defineEventHandler(async (event) => {
   let worker: WorkerUpload;
   try {
     worker = await mediaWorkerRequest<WorkerUpload>(event, '/uploads', {
-      idempotencyKey, sessionId, completionKey: `r2:${sessionId}`, streamIdempotencyKey: `reelnova:upload:${sessionId}`,
+      idempotencyKey, sessionId, completionKey: `r2:${sessionId}`,
       objectKey, contentType, fileSizeBytes, metadata: { assetId, episodeId, seriesId },
     });
     await d1Run(event, `UPDATE media_upload_sessions SET provider_upload_id = ?, object_key = ?, part_size_bytes = ?, expires_at = ?,

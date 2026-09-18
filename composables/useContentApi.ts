@@ -4,6 +4,7 @@ type PlaybackAuthorization = {
   authorized: boolean;
   signedUrl?: string;
   originalUrl?: string;
+  delivery?: 'mp4' | 'hls';
   expiresAt?: string;
   trackingToken: string;
   resumePositionSeconds?: number;

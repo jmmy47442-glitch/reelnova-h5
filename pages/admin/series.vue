@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { CloudOff, Download, Eye, Film, FileVideo, GripVertical, ImagePlus, Plus, RefreshCw, Search, Trash2, Upload, X } from 'lucide-vue-next';
-import Hls from 'hls.js';
-import { createFile as createMp4File } from 'mp4box';
+import { inspectDirectMp4, MP4_PROBE_BYTES } from '~/shared/direct-mp4.mjs';
 import Sortable from 'sortablejs';
 import { ElMessage, ElMessageBox, type UploadFile, type UploadFiles, type UploadInstance } from 'element-plus';
 import type { AdminEpisode, MediaUploadPart, MediaUploadSession, SeriesCoverUploadSession } from '~/types/admin';
@@ -62,7 +61,6 @@ const previewVisible = ref(false);
 const previewVideo = ref<HTMLVideoElement | null>(null);
 const previewEpisode = ref<AdminEpisode | null>(null);
 let episodePoll: ReturnType<typeof setInterval> | undefined;
-let previewHls: Hls | undefined;
 let episodeSortable: Sortable | undefined;
 let episodeLoadRequestId = 0;
 const statuses: PublishStatus[] = ['已上架', '处理中', '草稿', '待发布', '已下架', '版权冻结'];
@@ -255,7 +253,7 @@ const saveSeries = async () => {
 const updateStatus = async (rows: AdminSeries[], next: PublishStatus) => {
   if (!rows.length) return ElMessage.warning('请先选择短剧');
   if (next === '已上架' && rows.some((row) => row.episodeCount === 0 || row.transcodeProgress < 100)) {
-    return ElMessage.warning('存在未上传分集或转码未完成的短剧，无法上架');
+    return ElMessage.warning('存在未上传分集或校验未完成的短剧，无法上架');
   }
   if (next === '已上架' && rows.some((row) => row.episodeCount > row.freeEpisodeCount && row.price <= 0)) {
     return ElMessage.warning('存在零价但仍有锁定分集的短剧，请先设置解锁价格');
@@ -311,10 +309,10 @@ const mediaStatus = (episode: AdminEpisode) => episode.videoStatus === 'validati
   ? ['待恢复', 'danger'] as [string, string]
   : ({
   waiting_upload: ['待上传', 'info'], uploading: ['上传中', 'warning'], validating: ['校验中', 'warning'],
-  processing: [`转码 ${episode.transcodeProgress}%`, 'warning'], ready: ['可发布', 'success'], failed: ['处理失败', 'danger'],
+  processing: ['校验中', 'warning'], ready: ['可发布', 'success'], failed: ['处理失败', 'danger'],
 }[episode.videoStatus] || ['未知', 'info']) as [string, string];
 const mediaErrorMessage = (message: string) => /Bad Request: The request was invalid/i.test(message)
-  ? 'Stream 无法读取原片，请重试转码；如仍失败，请检查媒体 Worker。'
+  ? '无法读取视频，请重新校验；如仍失败，请重新上传兼容 MP4。'
   : message;
 
 const episodeRequestStatus = (reason: any) => Number(
@@ -575,39 +573,10 @@ const readResume = (key: string) => {
 };
 const writeResume = (key: string, value: ResumeState) => localStorage.setItem(key, JSON.stringify(value));
 
-const inspectMedia = (file: File) => new Promise<MediaProbe>(async (resolve, reject) => {
-  const parser = createMp4File();
-  let settled = false;
-  const finish = (callback: () => void) => { if (!settled) { settled = true; callback(); } };
-  parser.onError = (_module, message) => finish(() => reject(new Error(`无法解析媒体容器：${message}`)));
-  parser.onReady = (info) => finish(() => {
-    const videoTrack = info.videoTracks[0];
-    const audioTrack = info.audioTracks[0];
-    if (!videoTrack) return reject(new Error(`${file.name} 缺少视频轨道`));
-    if (!audioTrack) return reject(new Error(`${file.name} 缺少音频轨道`));
-    const durationSeconds = info.timescale ? info.duration / info.timescale : 0;
-    const width = Math.round(videoTrack.video?.width || videoTrack.track_width || 0);
-    const height = Math.round(videoTrack.video?.height || videoTrack.track_height || 0);
-    if (!durationSeconds || durationSeconds > 6 * 60 * 60 || !width || !height) return reject(new Error(`${file.name} 的时长或画面尺寸无效`));
-    resolve({ durationSeconds, width, height, hasVideo: true, hasAudio: true });
-  });
-  try {
-    const chunkSize = 2 * 1024 * 1024;
-    let nextOffset = 0;
-    const visited = new Set<number>();
-    for (let reads = 0; reads < 64 && !settled; reads += 1) {
-      const offset = Math.max(0, Math.min(nextOffset, Math.max(0, file.size - 8)));
-      if (visited.has(offset)) break;
-      visited.add(offset);
-      const buffer = await file.slice(offset, Math.min(file.size, offset + chunkSize)).arrayBuffer() as ArrayBuffer & { fileStart: number };
-      buffer.fileStart = offset;
-      nextOffset = parser.appendBuffer(buffer, offset + buffer.byteLength >= file.size);
-      if (!Number.isFinite(nextOffset) || nextOffset < 0) break;
-    }
-    if (!settled) parser.flush();
-    if (!settled) finish(() => reject(new Error(`${file.name} 的媒体元数据不完整`)));
-  } catch (error) { finish(() => reject(error)); }
-});
+const inspectMedia = async (file: File): Promise<MediaProbe> => {
+  const media = inspectDirectMp4(await file.slice(0, MP4_PROBE_BYTES).arrayBuffer());
+  return { ...media, hasVideo: true, hasAudio: true };
+};
 
 const uploadPart = (url: string, token: string, blob: Blob, onProgress: (loaded: number) => void) => new Promise<MediaUploadPart>((resolve, reject) => {
   const request = new XMLHttpRequest();
@@ -684,7 +653,7 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
     const createSession = (idempotencyKey: string) => api.createEpisodeUpload(selectedSeries.value!.id, {
       idempotencyKey,
       episodeNo, title: `Episode ${episodeNo}`, fileName: file.name,
-      contentType: file.type || (file.name.toLowerCase().endsWith('.mov') ? 'video/quicktime' : 'video/mp4'), fileSizeBytes: file.size,
+      contentType: 'video/mp4', fileSizeBytes: file.size,
       ...probe,
     });
     let idempotencyKey = localStorage.getItem(idempotencyStorageKey) || `upload:${crypto.randomUUID()}`;
@@ -775,9 +744,9 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
   uploadLabel.value = `正在提交 Episode ${episodeNo} · ${file.name}`;
   const completion = await api.completeEpisodeUpload(session.id, [...parts.values()]);
   uploadFinalizing.value = false;
-  if (completion.status === 'completing') {
+  if (completion.status === 'failed') {
     const detail = completion.errorMessage ? `：${mediaErrorMessage(completion.errorMessage)}` : '';
-    throw new Error(`原片已保存到 R2，Stream 转码暂未提交${detail}`);
+    throw new Error(`视频校验失败，请重新导出兼容 MP4 后上传${detail}`);
   }
   localStorage.removeItem(key);
   localStorage.removeItem(idempotencyStorageKey);
@@ -789,11 +758,11 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
 const startTranscode = async () => {
   if (!selectedSeries.value) return;
   if (episodeError.value) return ElMessage.warning('请先重新加载分集，再选择要新增或替换的视频');
-  if (!mediaAvailable.value) return ElMessage.warning('R2/Stream 媒体链路尚未配置');
-  if (!selectedFiles.value.length) return ElMessage.warning('请选择一个或多个 MP4/MOV 文件');
+  if (!mediaAvailable.value) return ElMessage.warning('R2 媒体链路尚未配置');
+  if (!selectedFiles.value.length) return ElMessage.warning('请选择一个或多个 MP4 文件');
   if (blockedUploadAssignment.value) return ElMessage.warning(`第 ${blockedUploadAssignment.value.episodeNo} 集正在处理媒体任务，请完成后再替换视频`);
-  const invalid = selectedFiles.value.find((file) => !/\.(mp4|mov)$/i.test(file.name) || file.size < 1024 || file.size > 20 * 1024 ** 3);
-  if (invalid) return ElMessage.error(`${invalid.name} 不是有效的 MP4/MOV 文件，或文件超过 20 GB`);
+  const invalid = selectedFiles.value.find((file) => !/\.mp4$/i.test(file.name) || file.size < 1024 || file.size > 20 * 1024 ** 3);
+  if (invalid) return ElMessage.error(`${invalid.name} 不是有效的 MP4 文件，或文件超过 20 GB`);
   uploading.value = true;
   uploadCancelled.value = false;
   uploadFinalizing.value = false;
@@ -816,7 +785,7 @@ const startTranscode = async () => {
     selectedFiles.value = [];
     selectedUploadFiles.value = [];
     uploadControl.value?.clearFiles();
-    ElMessage.success('原片已写入 R2，Stream 转码任务已提交');
+    ElMessage.success('视频已写入 R2 并通过校验，可预览和上架');
     await Promise.all([loadEpisodes(), loadSeries()]);
   } catch (reason) {
     if (uploadCancelled.value || (reason instanceof DOMException && reason.name === 'AbortError')) {
@@ -856,10 +825,11 @@ const startTranscode = async () => {
 const retryTranscode = async (episode: AdminEpisode) => {
   if (!episode.mediaAssetId) return;
   try {
-    await api.retryTranscode(episode.mediaAssetId);
-    ElMessage.success('已重新提交转码任务');
+    const result = await api.retryTranscode(episode.mediaAssetId);
+    if (result.status === 'failed') throw new Error(result.errorMessage || '视频格式不兼容，请重新导出后上传');
+    ElMessage.success('视频校验通过');
     await loadEpisodes();
-  } catch (reason: any) { ElMessage.error(reason?.data?.statusMessage || '转码重试失败'); }
+  } catch (reason: any) { ElMessage.error(reason?.data?.statusMessage || reason?.message || '视频校验失败'); }
 };
 
 const openPreview = async (episode: AdminEpisode) => {
@@ -868,13 +838,8 @@ const openPreview = async (episode: AdminEpisode) => {
   previewVisible.value = true;
   await nextTick();
   if (!previewVideo.value) return;
-  previewHls?.destroy();
-  if (previewVideo.value.canPlayType('application/vnd.apple.mpegurl')) previewVideo.value.src = episode.previewUrl;
-  else if (Hls.isSupported()) {
-    previewHls = new Hls();
-    previewHls.loadSource(episode.previewUrl);
-    previewHls.attachMedia(previewVideo.value);
-  }
+  previewVideo.value.src = episode.previewUrl;
+  previewVideo.value.load();
 };
 
 watch(episodeDrawer, (open) => {
@@ -893,15 +858,12 @@ watch(previewVisible, (open) => {
     previewVideo.value?.pause();
     previewVideo.value?.removeAttribute('src');
     previewVideo.value?.load();
-    previewHls?.destroy();
-    previewHls = undefined;
     previewEpisode.value = null;
   }
 });
 onBeforeUnmount(() => {
   if (episodePoll) clearInterval(episodePoll);
   episodeSortable?.destroy();
-  previewHls?.destroy();
   activeCoverRequest?.abort();
   releaseCoverObjectUrl();
   for (const request of activeUploadRequests) request.abort();
@@ -1019,16 +981,16 @@ const exportSeries = () => {
     <el-drawer v-model="episodeDrawer" class="admin-episode-drawer" :title="`${selectedSeries?.title || ''} · 分集管理`" size="min(620px, 92vw)" append-to-body>
       <div v-if="selectedSeries" class="episode-manager">
         <section class="episode-upload-section">
-          <el-alert v-if="!mediaAvailabilityLoading && !mediaAvailable" title="R2/Stream 上传链路不可用，请在站点与支付中检查 D1、Media Worker 和 Stream API。" type="warning" :closable="false" show-icon />
+          <el-alert v-if="!mediaAvailabilityLoading && !mediaAvailable" title="R2 上传链路不可用，请在站点与支付中检查 D1、Media Worker 和私有 R2。" type="warning" :closable="false" show-icon />
           <div class="episode-section-heading">
             <div><strong>上传原片</strong><span>文件按选择顺序对应连续集号</span></div>
             <label class="episode-upload-target" for="episode-upload-start"><span>起始集数</span><el-input-number id="episode-upload-start" v-model="episodeStart" aria-label="起始集数" :min="1" :max="10000" :disabled="uploading || !mediaAvailable || Boolean(episodeError)" controls-position="right" /></label>
           </div>
           <div class="episode-upload-box">
             <Upload :size="26" />
-            <div><strong>{{ selectedFiles.length ? `已选择 ${selectedFiles.length} 个文件` : '选择 MP4/MOV 原片' }}</strong><span>单文件最大 20 GB，支持中断后继续上传</span></div>
-            <el-upload ref="uploadControl" :auto-upload="false" :show-file-list="false" :multiple="true" :limit="50" accept="video/mp4,video/quicktime,.mp4,.mov" :disabled="uploading || !mediaAvailable || Boolean(episodeError)" :on-change="onFileSelected" :on-remove="onFileSelected"><el-button :disabled="uploading || !mediaAvailable || Boolean(episodeError)"><FileVideo :size="15" />选择视频</el-button></el-upload>
-            <el-button type="primary" :loading="uploading" :disabled="!mediaAvailable || Boolean(episodeError) || !selectedFiles.length || Boolean(blockedUploadAssignment)" @click="startTranscode">{{ uploading ? '正在上传' : '上传并转码' }}</el-button>
+            <div><strong>{{ selectedFiles.length ? `已选择 ${selectedFiles.length} 个文件` : '选择 MP4 原片' }}</strong><span>H.264 + AAC、faststart；最大 20 GB，支持断点续传</span></div>
+            <el-upload ref="uploadControl" :auto-upload="false" :show-file-list="false" :multiple="true" :limit="50" accept="video/mp4,.mp4" :disabled="uploading || !mediaAvailable || Boolean(episodeError)" :on-change="onFileSelected" :on-remove="onFileSelected"><el-button :disabled="uploading || !mediaAvailable || Boolean(episodeError)"><FileVideo :size="15" />选择视频</el-button></el-upload>
+            <el-button type="primary" :loading="uploading" :disabled="!mediaAvailable || Boolean(episodeError) || !selectedFiles.length || Boolean(blockedUploadAssignment)" @click="startTranscode">{{ uploading ? '正在上传' : '上传并校验' }}</el-button>
           </div>
           <div v-if="selectedUploadAssignments.length" class="episode-upload-assignments" aria-label="视频与剧集对应关系">
             <div v-for="assignment in selectedUploadAssignments" :key="assignment.file.uid" class="episode-upload-assignment">
@@ -1057,7 +1019,7 @@ const exportSeries = () => {
             <el-switch :model-value="episode.isFree" inline-prompt active-text="试看" inactive-text="收费" :loading="episodeAccessSavingIds.includes(episode.id)" :aria-label="`设置第 ${episode.episodeNo} 集为${episode.isFree ? '收费' : '试看'}`" @change="(value) => toggleEpisodeAccess(episode, Boolean(value))" />
             <el-tag :type="mediaStatus(episode)[1] as any" effect="light">{{ mediaStatus(episode)[0] }}</el-tag>
             <el-tooltip v-if="episode.previewUrl" content="发布前预览" placement="top"><el-button circle text aria-label="发布前预览" @click="openPreview(episode)"><Eye :size="16" /></el-button></el-tooltip>
-            <el-tooltip v-if="episode.videoStatus === 'failed' || (episode.videoStatus === 'validating' && episode.errorMessage)" content="重试转码" placement="top"><el-button circle text aria-label="重试转码" @click="retryTranscode(episode)"><RefreshCw :size="16" /></el-button></el-tooltip>
+            <el-tooltip v-if="episode.videoStatus === 'failed' || episode.videoStatus === 'processing' || (episode.videoStatus === 'validating' && episode.errorMessage)" content="重新校验" placement="top"><el-button circle text aria-label="重新校验" @click="retryTranscode(episode)"><RefreshCw :size="16" /></el-button></el-tooltip>
           </div>
         </section>
       </div>

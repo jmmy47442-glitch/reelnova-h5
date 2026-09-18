@@ -29,31 +29,3 @@ export const playbackAuthorizationMatches = (left: string, right: string) => {
   }
   return difference === 0;
 };
-
-export const createStreamTokenGrant = async (event: H3Event, uid: string, tokenExpires: number) => {
-  const grantExpires = Math.floor(Date.now() / 1000) + 60;
-  const signature = await signPlaybackAuthorization(
-    `stream:${uid}:${tokenExpires}:${grantExpires}`,
-    getPlaybackAuthorizationSecret(event),
-  );
-  return `${grantExpires}.${signature}`;
-};
-
-export const verifyStreamTokenGrant = async (
-  event: H3Event,
-  uid: string,
-  tokenExpires: number,
-  grant: string,
-) => {
-  const [grantExpiresRaw, suppliedSignature, extra] = grant.split('.');
-  const grantExpires = Number(grantExpiresRaw);
-  const now = Math.floor(Date.now() / 1000);
-  if (!Number.isInteger(tokenExpires) || tokenExpires < now + 30 || tokenExpires > now + 15 * 60
-    || !Number.isInteger(grantExpires) || grantExpires < now || grantExpires > now + 90
-    || !suppliedSignature || extra) return false;
-  const expected = await signPlaybackAuthorization(
-    `stream:${uid}:${tokenExpires}:${grantExpires}`,
-    getPlaybackAuthorizationSecret(event),
-  );
-  return playbackAuthorizationMatches(suppliedSignature, expected);
-};
