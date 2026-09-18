@@ -44,3 +44,27 @@ export const prefetchPlaybackStart = async (url: string, signal: AbortSignal) =>
     }
   } finally { await reader.cancel(); }
 };
+
+export const prefetchHlsStart = async (grant: PlaybackAuthorization, signal: AbortSignal) => {
+  if (!grant.signedUrl) return;
+  const base = new URL('.', grant.signedUrl);
+  for (const source of (grant.prefetchUrls || []).slice(0, 4)) {
+    const url = new URL(source, base);
+    if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname)) continue;
+    const response = await fetch(url.href, { signal, cache: 'no-store', credentials: 'omit' });
+    const limit = url.pathname.endsWith('.m3u8') ? 65536 : 1024 * 1024;
+    if (!response.ok || Number(response.headers.get('content-length')) > limit) {
+      await response.body?.cancel(); return;
+    }
+    const reader = response.body?.getReader();
+    if (!reader) continue;
+    let received = 0;
+    try {
+      while (received < limit) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.byteLength;
+      }
+    } finally { await reader.cancel(); }
+  }
+};

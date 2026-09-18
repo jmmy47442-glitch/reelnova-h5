@@ -1,3 +1,4 @@
+import { readHlsPackage, serveHlsFile } from './hls-delivery.mjs';
 import { mediaCache, streamCachedMedia, warmMediaStart } from './media-cache.mjs';
 import { inspectDirectMp4, inspectStoredMp4, MP4_PROBE_BYTES } from '../shared/direct-mp4.mjs';
 
@@ -268,6 +269,28 @@ const createOriginalPlayback = async (env, origin, body, ctx) => {
     || !/^media_[0-9a-f-]{36}$/i.test(assetId)) throw new Error('Invalid original playback request');
   let metadata = await env.MEDIA_BUCKET.head(key);
   if (!metadata || metadata.customMetadata?.assetId !== assetId) throw new Error('Original media object not found');
+  if (body.delivery === 'auto' && env.MEDIA_HLS !== 'false') {
+    const packaged = await readHlsPackage(env, assetId, metadata.etag);
+    if (packaged) {
+      const expires = Math.min(now + 15 * 60, Math.max(now + 60, Math.floor(Number(body.exp) || now + 10 * 60)));
+      const payload = { kind: 'hls-playback', assetId, expires, ...packaged };
+      const token = await createToken(payload, env.MEDIA_WORKER_SECRET);
+      const url = `${origin}/hls/${encodeURIComponent(token)}/master.m3u8`;
+      const startup = packaged.renditions[0].id;
+      const prefetchFiles = ['master.m3u8', `${startup}/index.m3u8`, `${startup}/init.mp4`, `${startup}/seg-000000.m4s`];
+      const prefetchUrls = prefetchFiles.map(file => new URL(file, url).href);
+      if (body.prewarm === true && ctx?.waitUntil) {
+        ctx.waitUntil((async () => {
+          for (const file of prefetchFiles) {
+            const target = new URL(file, url).href;
+            const response = await serveHlsFile(new Request(target), env, ctx, payload, file, {}, parseByteRange);
+            await response.body?.cancel();
+          }
+        })().catch(() => undefined));
+      }
+      return { url, delivery: 'hls', prefetchUrls, expiresAt: new Date(expires * 1000).toISOString() };
+    }
+  }
   let rendition = 'original';
   if (body.profile === 'mobile') {
     // Only select a rendition tied to this exact original version. No arbitrary
@@ -288,7 +311,7 @@ const createOriginalPlayback = async (env, origin, body, ctx) => {
   if (body.prewarm === true && mediaCache(env, ctx)) {
     ctx.waitUntil(warmMediaStart(url, env, ctx, payload).catch(() => undefined));
   }
-  return { url, rendition, expiresAt: new Date(expires * 1000).toISOString() };
+  return { url, delivery: 'mp4', rendition, expiresAt: new Date(expires * 1000).toISOString() };
 };
 
 const serveOriginalObject = async (request, env, encodedToken, requestCors, ctx) => {
@@ -588,6 +611,15 @@ export default {
       const ingestMatch = url.pathname.match(/^\/ingest\/(.+)$/);
       if (ingestMatch && ['GET', 'HEAD'].includes(request.method)) {
         return serveIngestObject(request, env, ingestMatch[1]);
+      }
+
+      const hlsMatch = url.pathname.match(/^\/hls\/([^/]+)\/(.+)$/);
+      if (hlsMatch && ['GET', 'HEAD'].includes(request.method)) {
+        const payload = await readToken(decodeURIComponent(hlsMatch[1]), env.MEDIA_WORKER_SECRET);
+        if (payload?.kind !== 'hls-playback' || !payload.prefix || !Array.isArray(payload.renditions)) {
+          return new Response('Expired HLS URL', { status: 403, headers: { ...requestCors, 'cache-control': 'no-store' } });
+        }
+        return await serveHlsFile(request, env, ctx, payload, hlsMatch[2], requestCors, parseByteRange);
       }
 
       const originalMatch = url.pathname.match(/^\/original\/(.+)$/);

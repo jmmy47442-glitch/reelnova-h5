@@ -22,7 +22,7 @@ const readObject = async (env, payload, offset, length) => {
   return object;
 };
 
-export const readMediaBlock = async (env, ctx, payload, identity, offset) => {
+const openMediaBlock = async (env, ctx, payload, identity, offset) => {
   const cache = mediaCache(env, ctx);
   const length = Math.min(MEDIA_BLOCK_BYTES, payload.size - offset);
   const key = new Request(`${identity}/${offset}`);
@@ -30,23 +30,35 @@ export const readMediaBlock = async (env, ctx, payload, identity, offset) => {
     try {
       const hit = await cache.match(key);
       if (hit?.status === 200 && Number(hit.headers.get('content-length')) === length) {
-        const bytes = new Uint8Array(await hit.arrayBuffer());
-        if (bytes.length === length) return { bytes, hit: true };
+        return { body: hit.body, hit: true, length };
       }
     } catch { /* Cache failure must not prevent R2 playback. */ }
   }
   const object = await readObject(env, payload, offset, length);
-  const bytes = new Uint8Array(await object.arrayBuffer());
-  if (bytes.length !== length) throw new Error('Incomplete video block');
+  let body = new Response(object.body).body;
   const ttl = Math.min(3600, Math.floor(payload.expires - Date.now() / 1000));
   if (cache && ttl > 0) {
-    const response = new Response(bytes, { headers: {
-      'content-type': 'application/octet-stream', 'content-length': String(length),
-      'cache-control': `public, max-age=${ttl}, s-maxage=${ttl}`,
-    } });
-    ctx.waitUntil(Promise.resolve().then(() => cache.put(key, response)).catch(() => undefined));
+    const [playback, cacheBody] = body.tee();
+    body = playback;
+    // Only the bounded cache branch waits for a complete block. The playback
+    // branch starts forwarding immediately after R2 responds with headers.
+    ctx.waitUntil((async () => {
+      const bytes = await new Response(cacheBody).arrayBuffer();
+      if (bytes.byteLength !== length) return;
+      await cache.put(key, new Response(bytes, { headers: {
+        'content-type': 'application/octet-stream', 'content-length': String(length),
+        'cache-control': `public, max-age=${ttl}, s-maxage=${ttl}`,
+      } }));
+    })().catch(() => undefined));
   }
-  return { bytes, hit: false };
+  return { body, hit: false, length };
+};
+
+export const readMediaBlock = async (env, ctx, payload, identity, offset) => {
+  const block = await openMediaBlock(env, ctx, payload, identity, offset);
+  const bytes = new Uint8Array(await new Response(block.body).arrayBuffer());
+  if (bytes.length !== block.length) throw new Error('Incomplete video block');
+  return { bytes, hit: block.hit };
 };
 
 export const streamCachedMedia = async (request, env, ctx, payload, range) => {
@@ -54,51 +66,56 @@ export const streamCachedMedia = async (request, env, ctx, payload, range) => {
   let offset = range?.offset ?? 0;
   const end = offset + (range?.length ?? payload.size);
   let blockOffset = Math.floor(offset / MEDIA_BLOCK_BYTES) * MEDIA_BLOCK_BYTES;
-  let block = await readMediaBlock(env, ctx, payload, identity, blockOffset);
+  let block = await openMediaBlock(env, ctx, payload, identity, blockOffset);
   const cacheStatus = block.hit ? 'HIT' : 'MISS';
+  let reader = block.body.getReader();
+  let readOffset = blockOffset;
+  let blockEnd = blockOffset + block.length;
   let blocks = 1;
   let cancelled = false;
-  let tailReader;
+  const cancelReader = () => { void reader?.cancel().catch(() => undefined); };
   const body = new ReadableStream({
     async pull(controller) {
       try {
-        if (cancelled) return;
-        if (offset >= end) { controller.close(); return; }
-        if (!block && blocks >= MAX_BLOCKS_PER_REQUEST) {
-          // Large/open-ended MP4 requests must not exhaust Worker subrequest
-          // limits or buffer a whole film. Stream the remaining bytes from R2.
-          if (!tailReader) {
-            const object = await readObject(env, payload, offset, end - offset);
-            tailReader = new Response(object.body).body.getReader();
-            if (cancelled) { await tailReader.cancel(); return; }
+        while (!cancelled) {
+          if (offset >= end) { cancelReader(); controller.close(); return; }
+          if (!reader) {
+            blockOffset = offset;
+            if (blocks >= MAX_BLOCKS_PER_REQUEST) {
+              const object = await readObject(env, payload, offset, end - offset);
+              reader = new Response(object.body).body.getReader();
+              blockEnd = end;
+            } else {
+              block = await openMediaBlock(env, ctx, payload, identity, blockOffset);
+              reader = block.body.getReader();
+              blockEnd = blockOffset + block.length;
+              blocks++;
+            }
+            readOffset = blockOffset;
           }
-          const result = await tailReader.read();
+          if (cancelled) { cancelReader(); return; }
+          const result = await reader.read();
           if (cancelled) return;
           if (result.done) {
-            if (offset !== end) throw new Error('Incomplete video stream');
-            controller.close();
-          } else {
-            offset += result.value.byteLength;
-            controller.enqueue(result.value);
+            if (readOffset !== blockEnd) throw new Error('Incomplete video block');
+            reader = undefined;
+            continue;
           }
-          return;
+          const from = Math.max(0, offset - readOffset);
+          const to = Math.min(result.value.length, end - readOffset);
+          readOffset += result.value.length;
+          if (readOffset > blockEnd) throw new Error('Invalid video block length');
+          if (to > from) {
+            const bytes = result.value.subarray(from, to);
+            offset += bytes.length;
+            controller.enqueue(bytes);
+            return;
+          }
         }
-        if (!block) {
-          blockOffset = Math.floor(offset / MEDIA_BLOCK_BYTES) * MEDIA_BLOCK_BYTES;
-          block = await readMediaBlock(env, ctx, payload, identity, blockOffset);
-          blocks++;
-        }
-        if (cancelled) return;
-        const to = Math.min(end, blockOffset + block.bytes.length);
-        controller.enqueue(block.bytes.slice(offset - blockOffset, to - blockOffset));
-        offset = to;
-        block = undefined;
-      } catch (error) { if (!cancelled) controller.error(error); }
+      } catch (error) { cancelReader(); if (!cancelled) controller.error(error); }
     },
-    async cancel() { cancelled = true; block = undefined; await tailReader?.cancel(); },
+    cancel() { cancelled = true; cancelReader(); },
   }, { highWaterMark: 0 });
-  // Workers ignores manually supplied Content-Length for ordinary streams.
-  // A fixed-length stream preserves it on the wire and detects truncation.
   if (globalThis.FixedLengthStream) {
     const fixed = new globalThis.FixedLengthStream(range?.length ?? payload.size);
     ctx.waitUntil(body.pipeTo(fixed.writable).catch(() => undefined));

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { canPrefetchPlayback, playbackProfile, handoffPlayback, takePlaybackHandoff, prefetchPlaybackStart } from '../utils/playback-prefetch.ts';
+import { canPrefetchPlayback, playbackProfile, handoffPlayback, takePlaybackHandoff, prefetchPlaybackStart, prefetchHlsStart } from '../utils/playback-prefetch.ts';
 
 test('prefetch skips slow connections, cellular, save-data and hidden pages', t => {
   const prior = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
@@ -21,6 +21,18 @@ test('prefetch skips slow connections, cellular, save-data and hidden pages', t 
   }
   globalThis.document.visibilityState = 'hidden';
   assert.equal(canPrefetchPlayback(), false);
+});
+
+test('HLS warming only fetches bounded startup files inside the signed package', async t => {
+  const previous = globalThis.fetch, requested = [];
+  t.after(() => { globalThis.fetch = previous; });
+  globalThis.fetch = async url => { requested.push(url); return new Response('data', { headers: { 'content-length': '4' } }); };
+  await prefetchHlsStart({ signedUrl: 'https://media.test/hls/token/master.m3u8', prefetchUrls: [
+    'https://other.test/segment.m4s', 'https://media.test/hls/other/segment.m4s',
+    'https://media.test/hls/token/v360/index.m3u8', 'https://media.test/hls/token/v360/seg-000000.m4s',
+    'https://media.test/hls/token/v720/seg-000000.m4s',
+  ] }, new AbortController().signal);
+  assert.deepEqual(requested, ['https://media.test/hls/token/v360/index.m3u8', 'https://media.test/hls/token/v360/seg-000000.m4s']);
 });
 
 test('navigation reuses exactly one matching unexpired authorization and its episode session', () => {

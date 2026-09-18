@@ -23,6 +23,7 @@ const harness = () => {
       VALUES ('upload', 'asset', 'provider-upload', 'originals/series/episode/asset/video.mp4', 5242880, 1024, 'uploading', '2099-01-01',
         'upload:key', 'r2:upload', 'legacy-placeholder', 'now', 'now');
   `);
+  let workerPlayback = { url: 'https://media.example.test/original/signed' };
   let valid = true, workerCalls = 0, failSessionWrite = false, established = 0;
   const d1 = {
     hasD1Connection: () => true,
@@ -48,7 +49,7 @@ const harness = () => {
     '~/server/utils/media-pipeline': { mediaWorkerRequest: async (_e, path) => {
       assert.equal(path, '/original/token'); workerCalls++;
       assert.equal(established > 0, true);
-      return { url: 'https://media.example.test/original/signed' };
+      return workerPlayback;
     } },
     '~/server/utils/response': { ok: data => ({ data }) },
     '~/server/utils/user-profile': { assertUserEnabled: async () => {}, upsertUserProfile: async () => {} },
@@ -74,6 +75,7 @@ const harness = () => {
   };
   const upload = load('server/utils/media-upload-state.ts');
   return { db, upload, playback: load('server/api/playback.get.ts').default,
+    setWorkerPlayback: value => { workerPlayback = value; },
     setInvalid: () => { valid = false; }, failWrite: () => { failSessionWrite = true; }, calls: () => workerCalls };
 };
 const complete = async h => h.upload.completeMediaUpload({}, await h.upload.getMediaUploadState({}, 'upload'), [{ partNumber: 1, etag: 'part' }]);
@@ -176,4 +178,20 @@ test('acceptance seeding creates draft metadata without Stream requests or prete
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM episodes WHERE video_status = 'ready'").get().count, 0);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM media_assets').get().count, 0);
   } finally { db.close(); }
+});
+
+test('playback API passes through HLS delivery and startup URLs without treating the manifest as original MP4', async () => {
+  const h = harness();
+  try {
+    await complete(h); publish(h);
+    h.setWorkerPlayback({ url: 'https://media.test/hls/token/master.m3u8', delivery: 'hls',
+      prefetchUrls: ['https://media.test/hls/token/v360/seg-000000.m4s'] });
+    const response = (await h.playback(event())).data;
+    assert.equal(response.delivery, 'hls');
+    assert.equal(response.originalUrl, undefined);
+    assert.match(response.signedUrl, /master.m3u8$/);
+    assert.equal(response.prefetchUrls.length, 1);
+    h.db.exec('UPDATE episodes SET is_free = 0');
+    await assert.rejects(h.playback(event({ query: { seriesId: 'series', episodeNo: 1, sessionId: 'next', prewarm: 'true' } })), error => error.statusCode === 403);
+  } finally { h.db.close(); }
 });

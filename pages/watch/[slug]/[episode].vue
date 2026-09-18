@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ArrowLeft, Check, ChevronRight, Gauge, History, Loader2, LockKeyhole, Maximize2, Minimize2, Pause, Play, RotateCcw, Settings2, SkipForward, X } from 'lucide-vue-next';
 import Hls from 'hls.js';
-import { canPrefetchPlayback, handoffPlayback, playbackProfile, prefetchPlaybackStart, takePlaybackHandoff } from '~/utils/playback-prefetch';
+import { canPrefetchPlayback, handoffPlayback, playbackProfile, prefetchHlsStart, prefetchPlaybackStart, takePlaybackHandoff } from '~/utils/playback-prefetch';
 import type { PlaybackAuthorization } from '~/composables/useContentApi';
 import { enterVideoFullscreen, exitVideoFullscreen, type FullscreenDocument } from '~/utils/video-fullscreen';
 import { useSafeBack } from '~/composables/useSafeBack';
@@ -40,7 +40,7 @@ const playbackReady = ref(false);
 const firstFrameReady = ref(false);
 const playRequested = ref(false);
 const speed = ref(1);
-const qualityPreference = ref<VideoQualityPreference>('original');
+const qualityPreference = ref<VideoQualityPreference>('auto');
 const qualityLevels = ref<VideoQualityLevel[]>([]);
 const showQualityDrawer = ref(false);
 const qualityTrigger = ref<HTMLButtonElement | null>(null);
@@ -285,7 +285,10 @@ const loadSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
       enableWorker: true,
       lowLatencyMode: false,
       autoStartLoad: false,
-      capLevelToPlayerSize: false,
+      capLevelToPlayerSize: true,
+      abrEwmaDefaultEstimate: 600_000,
+      abrBandWidthFactor: 0.8,
+      abrBandWidthUpFactor: 0.65,
       // Wait for MANIFEST_PARSED to select the requested quality before fetching video.
       startFragPrefetch: false,
       // VOD playback needs enough forward buffer to absorb short throughput
@@ -299,9 +302,10 @@ const loadSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
       if (!hls) return;
       qualityLevels.value = normalizeVideoQualityLevels(hls.levels);
       const selectedLevel = resolveVideoQualityLevel(qualityLevels.value, qualityPreference.value);
-      hls.startLevel = selectedLevel;
+      // Fetch a small first segment immediately, then let ABR follow measured bandwidth.
+      hls.startLevel = qualityPreference.value === 'auto' ? 0 : selectedLevel;
       hls.loadLevel = selectedLevel;
-      hls.startLoad(-1);
+      hls.startLoad(restoreAt > 0 ? restoreAt : -1);
     });
     hls.on(Hls.Events.FRAG_LOADED, (_event, data) => {
       const stats = data.frag?.stats;
@@ -330,6 +334,7 @@ const loadSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
     return;
   }
   if (video.value.canPlayType('application/vnd.apple.mpegurl')) {
+    void inspectQualityLevels(source);
     nativeHlsPlayback = true;
     nativeQualityOnly.value = true;
     video.value.src = source;
@@ -391,7 +396,7 @@ const authorize = async (renew = false) => {
     directMp4.value = authorization.delivery === 'mp4';
     rendition.value = authorization.rendition || 'original';
     if (directMp4.value) { qualityPreference.value = 'original'; qualityLevels.value = []; }
-    else void inspectQualityLevels(authorization.signedUrl);
+    else if (!renew) qualityPreference.value = 'auto';
     trackingToken.value = authorization.trackingToken;
     expiresAt.value = Date.parse(authorization.expiresAt || '') || Date.now() + 9 * 60_000;
     if (!renew && !started.value && !resumePromptResolved.value) {
@@ -486,7 +491,7 @@ const onPause = () => {
 };
 const maybePrefetchNext = () => {
   const media = video.value;
-  if (nextPrefetchAttempted || !series.value || !directMp4.value || !media || media.paused
+  if (nextPrefetchAttempted || !series.value || !media || media.paused
     || stalled.value || !canPrefetchPlayback() || currentTime.value < 5
     || durationSeconds.value - currentTime.value > 30) return;
   const next = series.value.episodes.find(item => item.episodeNo === episodeNo.value + 1);
@@ -508,11 +513,12 @@ const maybePrefetchNext = () => {
     try {
       const grant = await api.getPlayback(series.value!.id, next.episodeNo, nextSessionId,
         { profile: playbackProfile(), prewarm: true, signal: controller.signal });
-      if (controller.signal.aborted || !grant.signedUrl || grant.delivery !== 'mp4') return;
+      if (controller.signal.aborted || !grant.signedUrl) return;
       prefetchedNext = { episodeNo: next.episodeNo, sessionId: nextSessionId, grant };
       // The client's edge may differ from the API server's edge. Warm this POP
       // with a bounded request and reuse the same signed URL on navigation.
-      await prefetchPlaybackStart(grant.signedUrl, controller.signal);
+      if (grant.delivery === 'hls') await prefetchHlsStart(grant, controller.signal);
+      else await prefetchPlaybackStart(grant.signedUrl, controller.signal);
     } catch { /* Optional warming must never surface as a playback error. */ }
     finally { clearTimeout(timeout); if (nextPrefetchController === controller) nextPrefetchController = undefined; }
   })();

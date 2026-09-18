@@ -26,7 +26,7 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | GET | `/api/home` | Configured home sections and series cards |
 | GET | `/api/explore` | Search, filter and sort series |
 | GET | `/api/series/{slug}` | Series metadata, pricing and episode entitlement states |
-| GET | `/api/playback?seriesId=&episodeNo=` | Server-authorized short-lived HLS URL |
+| GET | `/api/playback?seriesId=&episodeNo=` | Server-authorized short-lived HLS or MP4 URL |
 | POST | `/api/events/playback` | Compatibility endpoint for authorized playback events |
 | GET/POST | `/api/me/watch-history` | Read history or persist an authorized start, heartbeat or completion snapshot |
 | GET | `/api/me/library` | Purchases and account-level watch progress for the signed-in user |
@@ -60,7 +60,7 @@ Non-2xx responses should keep the same `code`, `message`, and `requestId` fields
 | Audit | `GET /api/admin/audit` |
 | Connection health | `GET /api/admin/connection` |
 
-Episode uploads use 10 MiB R2 multipart chunks. The browser may resume an unexpired upload session. Completion validates the actual private R2 object (H.264 + AAC-LC, non-fragmented faststart MP4) and returns `ready` or `failed` with `errorMessage`; transient failures remain recoverable by the hourly reconciliation job. No Stream subscription or callback is used. `/api/admin/media/:assetId/retry` revalidates the existing object. A series cannot be published until every non-deleted episode has a `ready` media asset. Playback authorization returns `delivery: "mp4"`; `signedUrl` and `originalUrl` are the same short-lived Worker URL. Cover images are uploaded separately. See [R2 MP4 deployment](./R2-MP4-DELIVERY.md).
+Episode uploads use 10 MiB R2 multipart chunks. The browser may resume an unexpired upload session. Completion validates the actual private R2 object (H.264 + AAC-LC, non-fragmented faststart MP4) and returns `ready` or `failed` with `errorMessage`; transient failures remain recoverable by the hourly reconciliation job. No Stream subscription or callback is used. `/api/admin/media/:assetId/retry` revalidates the existing object. A series cannot be published until every non-deleted episode has a `ready` media asset. Playback authorization prefers `delivery: "hls"` when a version-matched HLS package is published, returning a signed `master.m3u8` URL and bounded startup `prefetchUrls`; `originalUrl` is omitted. Otherwise it returns `delivery: "mp4"`, with identical `signedUrl` and `originalUrl`. All manifests, init files and segments require a valid token; no Stream service is involved. Cover images are uploaded separately. See [R2 MP4 deployment](./R2-MP4-DELIVERY.md).
 
 Order creation must use a server-side price snapshot. Playback requests must validate the user session and entitlement every time. PayPal approval in the browser is not proof of payment; only a verified capture or webhook may issue entitlement.
 

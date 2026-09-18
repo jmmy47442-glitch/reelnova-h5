@@ -5,6 +5,7 @@ export type PlaybackAuthorization = {
   signedUrl?: string;
   originalUrl?: string;
   delivery?: 'mp4' | 'hls';
+  prefetchUrls?: string[];
   rendition?: 'original' | 'mobile';
   expiresAt?: string;
   trackingToken: string;

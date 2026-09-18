@@ -111,19 +111,40 @@ test('cache identity includes signature and full query; internal keys are not pu
 test('origin errors and partial blocks are never cached, cache outages fall back to R2', async t => {
   const h = await setup(t);
   const get = h.env.MEDIA_BUCKET.get;
-  for (const broken of [async () => { throw new Error('502 upstream'); }, async () => null,
-    async () => ({ body: new Uint8Array(2), arrayBuffer: async () => new ArrayBuffer(2) })]) {
+  for (const broken of [async () => { throw new Error('502 upstream'); }, async () => null]) {
     h.env.MEDIA_BUCKET.get = broken;
     const response = await h.get('bytes=0-7');
     assert.equal(response.status, 502); assert.equal(response.headers.get('cache-control'), 'no-store');
     await h.drain(); assert.equal(h.entries.size, 0);
   }
+  h.env.MEDIA_BUCKET.get = async () => ({ body: new Uint8Array(2) });
+  const truncated = await h.get('bytes=0-7');
+  assert.equal(truncated.status, 206, 'headers are sent before the block finishes');
+  await assert.rejects(truncated.arrayBuffer(), /Incomplete video block/);
+  await h.drain(); assert.equal(h.entries.size, 0);
   h.env.MEDIA_BUCKET.get = get;
   h.cache.match = async () => { throw new Error('Cache unavailable'); };
   h.cache.put = async () => { throw new Error('Cache unavailable'); };
   const response = await h.get('bytes=0-7');
   assert.deepEqual(new Uint8Array(await response.arrayBuffer()), source.slice(0, 8));
   await h.drain();
+});
+
+test('a cold MP4 forwards its first bytes before the rest of the 1 MiB block arrives', async t => {
+  const h = await setup(t);
+  let controller;
+  h.env.MEDIA_BUCKET.get = async () => ({ body: new ReadableStream({ start(value) { controller = value; } }) });
+  // No upstream body bytes have arrived yet. Returning headers must not wait.
+  const response = await h.get('bytes=0-15');
+  const reader = response.body.getReader();
+  controller.enqueue(source.slice(0, 16));
+  assert.deepEqual((await reader.read()).value, source.slice(0, 16));
+  assert.equal(h.entries.size, 0, 'the incomplete block is not cached');
+  assert.equal((await reader.read()).done, true);
+  controller.enqueue(source.slice(16, MEDIA_BLOCK_BYTES));
+  controller.close();
+  await h.drain();
+  assert.equal(h.entries.size, 1);
 });
 
 test('prewarming reads only first/tail blocks and playback reuses them', async t => {
