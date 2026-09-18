@@ -1,10 +1,11 @@
 import type { AnalyticsEventInput, ApiEnvelope, ExploreResponse, HomeResponse, LibraryResponse, Order, PlaybackEventInput, Series, WatchHistoryItem } from '~/types/content';
 
-type PlaybackAuthorization = {
+export type PlaybackAuthorization = {
   authorized: boolean;
   signedUrl?: string;
   originalUrl?: string;
   delivery?: 'mp4' | 'hls';
+  rendition?: 'original' | 'mobile';
   expiresAt?: string;
   trackingToken: string;
   resumePositionSeconds?: number;
@@ -24,13 +25,14 @@ export const useContentApi = () => {
     getExplore: (params?: Record<string, string>) => request<ExploreResponse>('/explore', { query: params, cache: 'no-store' }),
     getSeries: (slug: string) => request<Series>(`/series/${slug}`, { cache: 'no-store' }),
     getLibrary: () => request<LibraryResponse>('/me/library'),
-    getPlayback: (seriesId: string, episodeNo: number, sessionId: string) =>
+    getPlayback: (seriesId: string, episodeNo: number, sessionId: string, options: { profile?: 'original' | 'mobile'; prewarm?: boolean; signal?: AbortSignal } = {}) =>
       request<PlaybackAuthorization>('/playback', {
-        query: { seriesId, episodeNo, sessionId },
+        query: { seriesId, episodeNo, sessionId, profile: options.profile, prewarm: options.prewarm },
+        signal: options.signal, cache: 'no-store',
       }),
-    getPlaybackBySlug: (seriesSlug: string, episodeNo: number, sessionId: string) =>
+    getPlaybackBySlug: (seriesSlug: string, episodeNo: number, sessionId: string, options: { profile?: 'original' | 'mobile' } = {}) =>
       request<PlaybackAuthorization>('/playback', {
-        query: { seriesSlug, episodeNo, sessionId },
+        query: { seriesSlug, episodeNo, sessionId, profile: options.profile }, cache: 'no-store',
       }),
     recordPlayback: (event: PlaybackEventInput, keepalive = false) => request<{ accepted: true; positionSeconds: number; durationSeconds: number; lastWatchedAt: string }>('/me/watch-history', { method: 'POST', body: event, keepalive }),
     recordAnalytics: (event: AnalyticsEventInput, keepalive = false) => request<{ accepted: true }>('/events', { method: 'POST', body: event, keepalive }),

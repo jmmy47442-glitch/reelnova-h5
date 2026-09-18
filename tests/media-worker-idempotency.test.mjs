@@ -411,7 +411,7 @@ test('private playback rejects expired and tampered tokens and supports HEAD and
   const head = await worker.fetch(new Request(url, { method: 'HEAD' }), env);
   assert.equal(head.status, 200);
   assert.equal(head.headers.get('content-length'), String(bytes.length));
-  assert.equal(head.headers.get('cache-control'), 'private, max-age=0');
+  assert.equal(head.headers.get('cache-control'), 'private, no-store');
   const suffix = await worker.fetch(new Request(url, { headers: { range: 'bytes=-4' } }), env);
   assert.equal(suffix.status, 206);
   assert.deepEqual(new Uint8Array(await suffix.arrayBuffer()), bytes.slice(-4));
@@ -434,4 +434,32 @@ test('health checks verify the private R2 binding with server authentication', a
   const unsigned = new Request('https://media.example.test/health', { method: 'POST', body: '{}' });
   assert.equal((await worker.fetch(unsigned, env)).status, 401);
   assert.equal((await worker.fetch(await signedRequest('/stream/token', {}), env)).status, 404);
+});
+
+test('mobile selection uses only the matching original version and falls back when missing or invalid', async () => {
+  const bucket = createBucket();
+  const assetId = 'media_11111111-1111-4111-8111-111111111111';
+  const key = `originals/series_1/episode_1/${assetId}/source.mp4`;
+  const source = new Uint8Array(fixture().length + 4096);
+  source.set(fixture());
+  new DataView(source.buffer).setUint32(fixture().length, 4096);
+  source.set(encoder.encode('free'), fixture().length + 4);
+  await bucket.put(key, source, { httpMetadata: { contentType: 'video/mp4' }, customMetadata: { assetId } });
+  const env = { MEDIA_BUCKET: bucket, MEDIA_WORKER_SECRET: secret };
+  const mint = async () => {
+    const response = await worker.fetch(await signedRequest('/original/token', { key, assetId, profile: 'mobile' }), env);
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  assert.equal((await mint()).rendition, 'original');
+  const variant = `variants/${assetId}/${encodeURIComponent((await bucket.head(key)).etag)}/mobile.mp4`;
+  await bucket.put(variant.replace('/mobile.mp4', '/other.mp4'), fixture(), { httpMetadata: { contentType: 'video/mp4' } });
+  assert.equal((await mint()).rendition, 'original', 'an arbitrary rendition is not selectable');
+  await bucket.put(variant, fixture('unsupported-video'), { httpMetadata: { contentType: 'video/mp4' } });
+  assert.equal((await mint()).rendition, 'original');
+  await bucket.put(variant, fixture(), { httpMetadata: { contentType: 'video/mp4' } });
+  const grant = await mint();
+  assert.equal(grant.rendition, 'mobile');
+  const response = await worker.fetch(new Request(grant.url), env);
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), fixture());
 });

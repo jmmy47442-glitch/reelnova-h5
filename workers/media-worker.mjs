@@ -1,3 +1,4 @@
+import { mediaCache, streamCachedMedia, warmMediaStart } from './media-cache.mjs';
 import { inspectDirectMp4, inspectStoredMp4, MP4_PROBE_BYTES } from '../shared/direct-mp4.mjs';
 
 const encoder = new TextEncoder();
@@ -30,7 +31,7 @@ const cors = (request, env) => {
     'access-control-allow-origin': origin,
     'access-control-allow-methods': 'GET,HEAD,PUT,DELETE,OPTIONS',
     'access-control-allow-headers': 'authorization,content-type,range',
-    'access-control-expose-headers': 'accept-ranges,content-length,content-range,etag',
+    'access-control-expose-headers': 'accept-ranges,content-length,content-range,etag,x-media-cache',
     'access-control-max-age': '86400',
     vary: 'Origin',
   } : {};
@@ -229,9 +230,9 @@ const serveIngestObject = async (request, env, encodedToken) => {
   return new Response(object.body, { status: range ? 206 : 200, headers });
 };
 
-const validateVideoObject = async (env, key, assetId, suppliedObject, forPlayback = false) => {
+const validateVideoObject = async (env, key, assetId, suppliedObject, forPlayback = false, trustedVariant = false) => {
   const object = suppliedObject || await env.MEDIA_BUCKET.head(key);
-  if (!object || object.customMetadata?.assetId !== assetId || !assetId) throw new Error('Video object not found');
+  if (!object || (!trustedVariant && object.customMetadata?.assetId !== assetId) || !assetId) throw new Error('Video object not found');
   if (object.httpMetadata?.contentType !== 'video/mp4' || !String(key).toLowerCase().endsWith('.mp4')) {
     return { etag: object.httpEtag, valid: false, errorMessage: '仅支持 MP4，请重新上传 H.264 + AAC、faststart 视频' };
   }
@@ -259,45 +260,84 @@ const validateVideoObject = async (env, key, assetId, suppliedObject, forPlaybac
   return { etag: object.httpEtag, valid: true, media };
 };
 
-const createOriginalPlayback = async (env, origin, body) => {
-  const key = String(body.key || '');
+const createOriginalPlayback = async (env, origin, body, ctx) => {
+  let key = String(body.key || '');
   const assetId = String(body.assetId || '');
   const now = Math.floor(Date.now() / 1000);
   if (!/^originals\/[a-z0-9_-]{2,100}\/[a-z0-9_-]{2,100}\/[a-z0-9_-]{2,100}\/[a-z0-9_.-]{2,160}$/i.test(key)
     || !/^media_[0-9a-f-]{36}$/i.test(assetId)) throw new Error('Invalid original playback request');
-  const metadata = await env.MEDIA_BUCKET.head(key);
+  let metadata = await env.MEDIA_BUCKET.head(key);
   if (!metadata || metadata.customMetadata?.assetId !== assetId) throw new Error('Original media object not found');
-  const validation = await validateVideoObject(env, key, assetId, metadata, true);
+  let rendition = 'original';
+  if (body.profile === 'mobile') {
+    // Only select a rendition tied to this exact original version. No arbitrary
+    // object key from the public playback query can become a signed URL.
+    const variantKey = `variants/${assetId}/${encodeURIComponent(metadata.etag)}/mobile.mp4`;
+    const variant = await env.MEDIA_BUCKET.head(variantKey);
+    if (variant && variant.size > 0 && variant.size < metadata.size) {
+      const checked = await validateVideoObject(env, variantKey, assetId, variant, false, true);
+      if (checked.valid) { key = variantKey; metadata = variant; rendition = 'mobile'; }
+    }
+  }
+  const validation = await validateVideoObject(env, key, assetId, metadata, true, rendition === 'mobile');
   if (!validation.valid) throw new Error(validation.errorMessage);
   const expires = Math.min(now + 15 * 60, Math.max(now + 60, Math.floor(Number(body.exp) || now + 10 * 60)));
-  const token = await createToken({ kind: 'original-playback', key, assetId, expires }, env.MEDIA_WORKER_SECRET);
-  return { url: `${origin}/original/${encodeURIComponent(token)}`, expiresAt: new Date(expires * 1000).toISOString() };
+  const payload = { kind: 'original-playback', key, assetId, expires, size: metadata.size, etag: metadata.etag, httpEtag: metadata.httpEtag };
+  const token = await createToken(payload, env.MEDIA_WORKER_SECRET);
+  const url = `${origin}/original/${encodeURIComponent(token)}`;
+  if (body.prewarm === true && mediaCache(env, ctx)) {
+    ctx.waitUntil(warmMediaStart(url, env, ctx, payload).catch(() => undefined));
+  }
+  return { url, rendition, expiresAt: new Date(expires * 1000).toISOString() };
 };
 
-const serveOriginalObject = async (request, env, encodedToken, requestCors) => {
+const serveOriginalObject = async (request, env, encodedToken, requestCors, ctx) => {
   const payload = await readToken(decodeURIComponent(encodedToken), env.MEDIA_WORKER_SECRET);
   if (payload?.kind !== 'original-playback' || !payload.key || !payload.assetId) {
     return new Response('Expired original playback URL', { status: 403, headers: requestCors });
   }
-  const metadata = await env.MEDIA_BUCKET.head(payload.key);
-  if (!metadata || metadata.customMetadata?.assetId !== payload.assetId) {
-    return new Response('Not found', { status: 404, headers: requestCors });
+  // Version and size are encrypted inside new grants, so an edge hit needs no
+  // R2 HEAD. Legacy grants retain their existing ownership lookup.
+  let metadata;
+  if (Number.isSafeInteger(payload.size) && payload.size > 0 && payload.etag && payload.httpEtag) {
+    metadata = { size: payload.size, etag: payload.etag, httpEtag: payload.httpEtag,
+      writeHttpMetadata: headers => headers.set('content-type', 'video/mp4') };
+  } else {
+    metadata = await env.MEDIA_BUCKET.head(payload.key);
+    if (!metadata || metadata.customMetadata?.assetId !== payload.assetId) {
+      return new Response('Not found', { status: 404, headers: requestCors });
+    }
+    Object.assign(payload, { size: metadata.size, etag: metadata.etag, httpEtag: metadata.httpEtag });
   }
   const headers = new Headers(requestCors);
-  if (request.method === 'HEAD') {
-    writeObjectHeaders(headers, metadata);
-    return new Response(null, { status: 200, headers });
-  }
+  writeObjectHeaders(headers, metadata);
+  // Public s-maxage belongs only on INTERNAL block entries. Never allow an
+  // outer CDN/browser cache to serve this URL without running signature checks.
+  headers.set('cache-control', 'private, no-store');
+  if (request.method === 'HEAD') return new Response(null, { status: 200, headers });
   const range = parseByteRange(request.headers.get('range'), metadata.size);
   if (range === false) {
-    headers.set('accept-ranges', 'bytes');
+    headers.delete('content-length');
     headers.set('content-range', `bytes */${metadata.size}`);
     return new Response(null, { status: 416, headers });
   }
-  const object = await env.MEDIA_BUCKET.get(payload.key, range ? { range } : undefined);
-  if (!object) return new Response('Not found', { status: 404, headers });
-  writeObjectHeaders(headers, object, range?.length ?? metadata.size);
+  headers.set('content-length', String(range?.length ?? metadata.size));
   if (range) headers.set('content-range', `bytes ${range.offset}-${range.offset + range.length - 1}/${metadata.size}`);
+  if (mediaCache(env, ctx)) {
+    try {
+      const { body, cacheStatus } = await streamCachedMedia(request, env, ctx, payload, range);
+      headers.set('x-media-cache', cacheStatus);
+      return new Response(body, { status: range ? 206 : 200, headers });
+    } catch {
+      return new Response('Media temporarily unavailable', { status: 502,
+        headers: { ...requestCors, 'cache-control': 'no-store' } });
+    }
+  }
+  const object = await env.MEDIA_BUCKET.get(payload.key, {
+    ...(range ? { range } : {}), onlyIf: { etagMatches: payload.etag },
+  });
+  if (!object?.body) return new Response('Not found or changed', { status: 404, headers: { ...requestCors, 'cache-control': 'no-store' } });
+  headers.set('x-media-cache', 'BYPASS');
   return new Response(object.body, { status: range ? 206 : 200, headers });
 };
 
@@ -460,7 +500,7 @@ const triggerApplicationReconciliation = async (env, path) => {
 };
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const requestCors = cors(request, env);
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: requestCors });
@@ -482,7 +522,7 @@ export default {
       if (request.method === 'POST' && url.pathname === '/original/token') {
         const rawBody = await request.text();
         if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
-        return json(await createOriginalPlayback(env, url.origin, JSON.parse(rawBody)));
+        return json(await createOriginalPlayback(env, url.origin, JSON.parse(rawBody), ctx));
       }
 
       if (request.method === 'PUT' && url.pathname === '/images/upload') {
@@ -552,7 +592,7 @@ export default {
 
       const originalMatch = url.pathname.match(/^\/original\/(.+)$/);
       if (originalMatch && ['GET', 'HEAD'].includes(request.method)) {
-        return serveOriginalObject(request, env, originalMatch[1], requestCors);
+        return await serveOriginalObject(request, env, originalMatch[1], requestCors, ctx);
       }
 
       if (url.pathname.startsWith('/posters/') && ['GET', 'HEAD'].includes(request.method)) {

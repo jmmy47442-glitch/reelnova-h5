@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ArrowLeft, Check, ChevronRight, Gauge, History, Loader2, LockKeyhole, Maximize2, Minimize2, Pause, Play, RotateCcw, Settings2, SkipForward, X } from 'lucide-vue-next';
 import Hls from 'hls.js';
+import { canPrefetchPlayback, handoffPlayback, playbackProfile, prefetchPlaybackStart, takePlaybackHandoff } from '~/utils/playback-prefetch';
+import type { PlaybackAuthorization } from '~/composables/useContentApi';
 import { enterVideoFullscreen, exitVideoFullscreen, type FullscreenDocument } from '~/utils/video-fullscreen';
 import { useSafeBack } from '~/composables/useSafeBack';
 import { useAnalytics } from '~/composables/useAnalytics';
@@ -84,6 +86,11 @@ const resumeRestartButton = ref<HTMLButtonElement | null>(null);
 const initialGrantRequested = ref(false);
 const activeSourceUrl = ref('');
 const originalPlayback = ref(false);
+const rendition = ref<'original' | 'mobile'>('original');
+let nextPrefetchController: AbortController | undefined;
+let nextPrefetchAttempted = false;
+let prefetchedNext: { episodeNo: number; sessionId: string; grant: PlaybackAuthorization } | undefined;
+const stopNextPrefetch = () => { nextPrefetchController?.abort(); nextPrefetchController = undefined; };
 const originalFallbackAttempted = ref(false);
 const canUseOriginalSource = computed(() => Boolean(originalUrl.value) && !originalFallbackAttempted.value);
 let renewTimer: ReturnType<typeof setTimeout> | undefined;
@@ -178,6 +185,7 @@ const qualitySelectValue = computed(() => nativeQualityOnly.value ? 'auto' : typ
   ? `resolution:${qualityPreference.value}`
   : qualityPreference.value);
 const qualityControlLabel = computed(() => {
+  if (directMp4.value && rendition.value === 'mobile') return 'Data saver';
   if (nativeQualityOnly.value) return 'Auto';
   if (qualityPreference.value === 'original') return canUseOriginalSource.value ? 'Original' : qualityLevels.value[0]?.label || 'Highest';
   if (qualityPreference.value === 'auto') return 'Auto';
@@ -376,11 +384,12 @@ const authorize = async (renew = false) => {
     const wasPlaying = isPlaying.value;
     const prefetchedGrant = !renew ? initialGrantPromise : undefined;
     initialGrantPromise = undefined;
-    const authorization = await (prefetchedGrant || api.getPlayback(series.value.id, currentEpisode.value.episodeNo, session()));
+    const authorization = await (prefetchedGrant || api.getPlayback(series.value.id, currentEpisode.value.episodeNo, session(), { profile: playbackProfile() }));
     if (!authorization.signedUrl) throw new Error('No playable source');
     signedUrl.value = authorization.signedUrl;
     originalUrl.value = authorization.originalUrl || '';
     directMp4.value = authorization.delivery === 'mp4';
+    rendition.value = authorization.rendition || 'original';
     if (directMp4.value) { qualityPreference.value = 'original'; qualityLevels.value = []; }
     else void inspectQualityLevels(authorization.signedUrl);
     trackingToken.value = authorization.trackingToken;
@@ -475,12 +484,46 @@ const onPause = () => {
   stalled.value = false;
   if (started.value && !video.value?.ended) void record('heartbeat');
 };
+const maybePrefetchNext = () => {
+  const media = video.value;
+  if (nextPrefetchAttempted || !series.value || !directMp4.value || !media || media.paused
+    || stalled.value || !canPrefetchPlayback() || currentTime.value < 5
+    || durationSeconds.value - currentTime.value > 30) return;
+  const next = series.value.episodes.find(item => item.episodeNo === episodeNo.value + 1);
+  if (!next || (!next.isFree && !next.isUnlocked && !locallyUnlocked.value)) return;
+  // Only speculate once the current episode has enough data to keep playing.
+  let ahead = 0;
+  for (let i = 0; i < media.buffered.length; i++) {
+    if (media.buffered.start(i) <= media.currentTime && media.buffered.end(i) > media.currentTime) {
+      ahead = media.buffered.end(i) - media.currentTime;
+    }
+  }
+  if (ahead < Math.min(8, Math.max(0, durationSeconds.value - currentTime.value - 0.5))) return;
+  nextPrefetchAttempted = true;
+  const controller = new AbortController();
+  nextPrefetchController = controller;
+  const nextSessionId = crypto.randomUUID();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  void (async () => {
+    try {
+      const grant = await api.getPlayback(series.value!.id, next.episodeNo, nextSessionId,
+        { profile: playbackProfile(), prewarm: true, signal: controller.signal });
+      if (controller.signal.aborted || !grant.signedUrl || grant.delivery !== 'mp4') return;
+      prefetchedNext = { episodeNo: next.episodeNo, sessionId: nextSessionId, grant };
+      // The client's edge may differ from the API server's edge. Warm this POP
+      // with a bounded request and reuse the same signed URL on navigation.
+      await prefetchPlaybackStart(grant.signedUrl, controller.signal);
+    } catch { /* Optional warming must never surface as a playback error. */ }
+    finally { clearTimeout(timeout); if (nextPrefetchController === controller) nextPrefetchController = undefined; }
+  })();
+};
 const onTimeUpdate = () => {
   if (!video.value) return;
   currentTime.value = video.value.currentTime;
   durationSeconds.value = Number.isFinite(video.value.duration) ? video.value.duration : durationSeconds.value;
   progress.value = durationSeconds.value ? Math.min(100, currentTime.value / durationSeconds.value * 100) : 0;
   updateBuffered();
+  maybePrefetchNext();
   if (isPlaying.value && Date.now() - lastHeartbeat.value > 15_000) { lastHeartbeat.value = Date.now(); void record('heartbeat'); }
 };
 const onLoadedMetadata = () => { snapshotPlayback(); updateBuffered(); };
@@ -502,6 +545,7 @@ const onFirstFrame = () => {
   void track('playback_first_frame', { seriesId: series.value.id, seriesTitle: series.value.title, episodeNo: episodeNo.value, properties: { latencyMs: Math.max(0, Math.round(performance.now() - playbackStartedAt.value)) } });
 };
 const onWaiting = () => {
+  stopNextPrefetch();
   const media = video.value;
   // `stalled` is a network resource hint, not proof that playback stopped.
   // Only show the overlay for a non-paused element that has actually run out
@@ -687,12 +731,17 @@ const nextEpisode = () => {
   if (!next?.isUnlocked && !next?.isFree && !locallyUnlocked.value) { void track('lock_trigger', { seriesId: series.value.id, seriesTitle: series.value.title, episodeNo: episodeNo.value + 1, properties: { source: 'next_episode' } }); showUnlock.value = true; return; }
   void track('next_episode_click', { seriesId: series.value.id, seriesTitle: series.value.title, episodeNo: episodeNo.value + 1 });
   if (!video.value?.ended) void record('heartbeat');
+  if (prefetchedNext?.episodeNo === episodeNo.value + 1) {
+    handoffPlayback({ slug: series.value.slug, ...prefetchedNext });
+  }
   navigateTo(`/watch/${series.value.slug}/${episodeNo.value + 1}`);
 };
 const retry = async () => { playbackError.value = ''; resumeFallbackAttempted.value = false; playRequested.value = true; playbackLoading.value = true; await authorize(); await startPlaybackWhenReady(); };
 const requestRouteGrant = () => {
   if (initialGrantPromise || initialGrantRequested.value || signedUrl.value) return;
-  initialGrantPromise = api.getPlaybackBySlug(String(route.params.slug), episodeNo.value, session());
+  const warm = takePlaybackHandoff(String(route.params.slug), episodeNo.value);
+  if (warm) { sessionId.value = warm.sessionId; initialGrantPromise = Promise.resolve(warm.grant); }
+  else initialGrantPromise = api.getPlaybackBySlug(String(route.params.slug), episodeNo.value, session(), { profile: playbackProfile() });
   // Locked or unavailable episodes are rendered from the series response; keep
   // speculative authorization failures from becoming unhandled rejections.
   void initialGrantPromise.catch(() => undefined);
@@ -760,7 +809,7 @@ const chooseResume = (choice: 'resume' | 'restart') => {
   }
 };
 const persistOnExit = () => { if (started.value && !video.value?.ended) void record('heartbeat', true); };
-const persistWhenHidden = () => { if (document.visibilityState === 'hidden') persistOnExit(); };
+const persistWhenHidden = () => { if (document.visibilityState === 'hidden') { stopNextPrefetch(); persistOnExit(); } };
 const handleUnlocked = async () => {
   locallyUnlocked.value = true;
   showUnlock.value = false;
@@ -802,6 +851,7 @@ watch(showResumePrompt, (open) => {
   if (open) void nextTick(() => resumeContinueButton.value?.focus());
 });
 onBeforeUnmount(() => {
+  stopNextPrefetch();
   if (renewTimer) clearTimeout(renewTimer);
   if (sourceTransitionTimer) clearTimeout(sourceTransitionTimer);
   networkResourceObserver?.disconnect();

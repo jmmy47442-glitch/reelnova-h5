@@ -7,7 +7,7 @@
 - `.mp4`，单条 H.264 8 位视频轨 + 单条 AAC-LC 音轨。
 - 普通 MP4（非 fragmented MP4），开启 faststart，使完整 moov 元数据位于文件前 16 MiB。
 - 单文件不超过 20 GB，时长不超过 6 小时。
-- 上传后不自动转码、不生成多清晰度。播放器固定使用上传画质；原片码率过高会增加弱网缓冲。
+- 普通上传不自动转码。可使用下方离线工具生成低码率移动版；省流量、蜂窝或低速网络优先选择已就绪的移动版，没有合格移动版时播放原片。当前是起播/续签时选源，不是 HLS 的逐片自适应码率。
 - 封面通过后台单独上传，不再从 Stream 获取缩略图。
 
 可在上传前用 FFmpeg 转成兼容格式（保留原视频尺寸）：
@@ -23,6 +23,37 @@ ffmpeg -i input.mp4 -map 0:v:0 -map 0:a:0 -c copy -movflags +faststart output.mp
 ```
 
 后台浏览器会预检，Worker 再读取实际 R2 对象前 16 MiB 校验编码、时长、尺寸和 faststart，并核对上传归属及字节数。该检查不等同于逐帧解码质检，上线前仍须抽检画面和声音。校验结果缓存在私有 `validation/` 前缀下，按资源 ID 和对象 ETag 隔离。
+
+## 鉴权后的边缘缓存
+
+- `MEDIA_EDGE_CACHE="true"` 启用 Cloudflare Cache API。每次请求先解密并校验签名有效期，再查缓存。签名中绑定对象 key、ETag、大小；命中时无需 R2 HEAD/GET。旧签名仍兼容，通过 R2 HEAD 取得元数据。
+- 完整签名 URL（含所有查询参数）、对象版本和块偏移参与缓存键，URL 先做 SHA-256 摘要。不同签名不共享视频块；因此该策略主要改善同一授权下的预加载、重复读取和拖动，不是全站跨用户共享缓存。续签会产生新缓存空间。
+- Cache API 不支持直接 `put` 一个 `206`。内部按 1 MiB 对齐，完整读取且校验块长度后，以 `200` 写入缓存，再按用户 Range 切出精确字节并返回 `206`。支持普通范围、开放结尾、尾部范围及 `HEAD`；无效/多重 Range 返回 `416`。
+- 只有内部块使用 `public, max-age=..., s-maxage=...`，TTL 不超过一小时或剩余签名寿命（通常 10 分钟）。对浏览器的媒体响应使用 `private, no-store`，避免浏览器或外层 CDN 绕过 Worker 鉴权；不要给 `/original/*` 配置强制缓存规则。
+- 缓存异常回退 R2；不缓存 403、404、502、截断块等失败结果。首块读取失败返回不缓存的 502；响应开始后遇到 R2 读取失败会终止媒体流，不能再修改已发送的状态码。
+- 每次请求最多处理 16 个缓存块，后续数据单次 R2 流式读取，限制 Worker 子请求数量和内存。`X-Media-Cache: HIT/MISS` 表示首块结果，后续块可能混合命中；`BYPASS` 表示缓存关闭/不可用。
+- Cache API 仅在当前 Cloudflare 节点生效，不提供自动跨节点复制/分层缓存。本地测试不能代表线上命中率。
+- 资源路径应保持不可变。删除/替换 R2 原片后，已缓存的旧签名数据最多可继续播放到签名过期；ETag 条件读取会拒绝从 R2 拼入新版本。如需立即撤销，需要额外的撤销检查或清缓存机制。
+
+## 下一集预热
+
+当前集已播放至少 5 秒、剩余不超过 30 秒、缓冲足够且下一集可观看时，浏览器请求下一集授权，沿用服务端登录、权益、设备和限流检查，使用独立的下一集 session。预加载不会提交播放开始事件或观看历史。
+
+授权端让 Worker 在 `ctx.waitUntil` 中预热首块和末块（最多各 1 MiB，兼容旧片尾部 moov）；客户端另发一个最多 512 KiB 的 Range 请求，预热用户实际所在的节点。客户端不把字节存进持久缓存，切集会在内存中一次性移交同一签名地址和会话，利用边缘缓存加速后续媒体请求。浏览器仍负责正常的视频缓冲。
+
+省流量、蜂窝/弱网、后台页面跳过预加载；当前集卡顿、隐藏或离开页面会取消客户端预加载。可选预加载最多执行一次且 10 秒超时；失败不影响当前播放。Worker 已启动的后台预热最多两块，客户端取消不会撤回它。
+
+## 低码率移动版
+
+先安装 FFmpeg，再针对实际原片生成 H.264 + AAC-LC、faststart、宽度不超过 480 像素、视频目标峰值 900 kbps、音频 96 kbps 的版本。使用当前 R2 原片的 **原始 ETag**（不是文件名或 asset ID）：
+
+```bash
+npm run media:prepare-mobile -- --input /path/source.mp4 --output /path/mobile.mp4 --asset-id media_UUID --source-etag ORIGINAL_R2_ETAG
+```
+
+工具默认只生成本地 MP4 和对应 `.json` 上传清单；不覆盖已存在的输出，也不改原片。检查效果后，在相同命令添加 `--upload` 将文件上传到私有 bucket（需 Wrangler 凭据），可用 `--bucket` 指定 bucket。对象键为 `variants/{assetId}/{encodeURIComponent(originalEtag)}/mobile.mp4`。原片更新后旧移动版不会被选中，须针对新 ETag 重新生成；旧 variants 的清理由运维单独处理。
+
+Worker 仅从上述确定路径选取比原片更小且通过编码/faststart 校验的文件。服务端接受 `profile=mobile` 或 `Save-Data: on`；客户端根据 Network Information API 的 `saveData`、`type=cellular`、`effectiveType` 或 `downlink<2` 选择。浏览器不提供网络信息时默认原片。移动版标签显示 `Data saver`。不通过 `Accept` 猜测 HEVC 支持，继续使用目前跨浏览器已验证的 H.264。
 
 ## 部署顺序
 
@@ -55,6 +86,7 @@ ffmpeg -i input.mp4 -map 0:v:0 -map 0:a:0 -c copy -movflags +faststart output.mp
 ```bash
 npm run typecheck
 npm run test:media-worker
+npm run test:playback-prefetch
 npm run test:playback-security
 npm run build:cloudflare
 npx wrangler deploy --dry-run --config wrangler.media.toml
@@ -63,5 +95,7 @@ npx wrangler deploy --dry-run --config wrangler.media.toml
 本地启动 Nuxt 后可运行 `VISUAL_BASE_URL=http://127.0.0.1:3000 npm run check:direct-playback-ui`，使用合成 MP4 和拦截的业务 API 检查真实浏览器解码、续播、拖动和签名续期，不写入真实账号/订单/播放记录。
 
 上线后上传兼容 MP4，检查断点续传、校验完成、后台预览、上架、免费集播放、付费集未购拒绝/已购可播、进度拖动、断点续播及超过 10 分钟的连续播放。检查 Chrome、Android 浏览器及 iPhone Safari 的画面和声音。确认网络请求不再访问 Stream。
+
+缓存验收：使用同一有效签名 URL 重复请求同一范围，确认 `X-Media-Cache` 从 `MISS` 变成 `HIT`，字节和 `Content-Range` 一致；过期后必须返回 403。切集预加载必须复用预热 URL，未购买下一集不能请求媒体。故障时可设置 `MEDIA_EDGE_CACHE="false"` 并重新部署 Worker 回退到 R2 直读。
 
 取消 Stream 不代表零运行成本：R2 存储/请求、Worker 请求和计算仍按实际套餐计费。

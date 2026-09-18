@@ -14,6 +14,7 @@ bucket_name = "reelnova-media-private"
 APP_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000,https://iseedrama.com,https://www.iseedrama.com,https://admin.iseedrama.com"
 APP_BASE_URL = "https://iseedrama.com"
 PUBLIC_BASE_URL = "https://media.iseedrama.com"
+MEDIA_EDGE_CACHE = "true"
 
 [triggers]
 crons = ["17 * * * *"]

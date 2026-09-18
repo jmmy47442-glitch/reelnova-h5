@@ -88,12 +88,14 @@ export default defineEventHandler(async (event) => {
   await establishPlaybackSession(event, { sessionId, userId, seriesId: series.id, episodeNo: episode.episodeNo, context: playbackContext });
   const [trackingSignature, original] = await Promise.all([
     signPlaybackAuthorization(`track:${userId}:${sessionId}:${series.id}:${episode.episodeNo}:${expires}`, trackingSecret),
-    mediaWorkerRequest<{ url: string }>(event, '/original/token', {
+    mediaWorkerRequest<{ url: string; rendition?: 'original' | 'mobile' }>(event, '/original/token', {
       key: mediaAsset.source_object_key, assetId: mediaAsset.id, exp: expires,
+      profile: query.profile === 'mobile' || getHeader(event, 'save-data') === 'on' ? 'mobile' : 'original',
+      prewarm: query.prewarm === 'true',
     }),
   ]);
   setHeader(event, 'cache-control', 'no-store');
-  return ok({ authorized: true, signedUrl: original.url, originalUrl: original.url, delivery: 'mp4' as const, expiresAt: new Date(expires * 1000).toISOString(), trackingToken: `${expires}.${trackingSignature}`,
+  return ok({ authorized: true, signedUrl: original.url, originalUrl: original.url, delivery: 'mp4' as const, rendition: original.rendition || 'original', expiresAt: new Date(expires * 1000).toISOString(), trackingToken: `${expires}.${trackingSignature}`,
     // A completed episode should start from the beginning on the next visit.
     resumePositionSeconds: lastProgress?.completed ? 0 : Math.max(0, Number(lastProgress?.position_seconds || 0)),
     resumeDurationSeconds: Math.max(0, Number(lastProgress?.duration_seconds || 0)) });
