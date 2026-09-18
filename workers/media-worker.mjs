@@ -1,4 +1,4 @@
-import { inspectDirectMp4, MP4_PROBE_BYTES } from '../shared/direct-mp4.mjs';
+import { inspectDirectMp4, inspectStoredMp4, MP4_PROBE_BYTES } from '../shared/direct-mp4.mjs';
 
 const encoder = new TextEncoder();
 
@@ -229,20 +229,28 @@ const serveIngestObject = async (request, env, encodedToken) => {
   return new Response(object.body, { status: range ? 206 : 200, headers });
 };
 
-const validateVideoObject = async (env, key, assetId, suppliedObject) => {
+const validateVideoObject = async (env, key, assetId, suppliedObject, forPlayback = false) => {
   const object = suppliedObject || await env.MEDIA_BUCKET.head(key);
   if (!object || object.customMetadata?.assetId !== assetId || !assetId) throw new Error('Video object not found');
   if (object.httpMetadata?.contentType !== 'video/mp4' || !String(key).toLowerCase().endsWith('.mp4')) {
     return { etag: object.httpEtag, valid: false, errorMessage: '仅支持 MP4，请重新上传 H.264 + AAC、faststart 视频' };
   }
-  const markerKey = `validation/${assetId}/${encodeURIComponent(object.httpEtag)}.json`;
+  // Playback compatibility must never make a non-faststart upload pass the
+  // stricter upload check. Keep their validation caches separate.
+  const markerKey = `validation/${forPlayback ? 'playback-v2/' : ''}${assetId}/${encodeURIComponent(object.httpEtag)}.json`;
   const cached = await env.MEDIA_BUCKET.get(markerKey);
   if (cached) return { etag: object.httpEtag, valid: true, media: await cached.json() };
-  const source = await env.MEDIA_BUCKET.get(key, { range: { offset: 0, length: Math.min(object.size, MP4_PROBE_BYTES) } });
-  if (!source) throw new Error('Video object not found');
-  const bytes = await source.arrayBuffer();
+  const readRange = async (offset, length) => {
+    const source = await env.MEDIA_BUCKET.get(key, { range: { offset, length }, onlyIf: { etagMatches: object.etag } });
+    if (!source?.body) throw new Error('Video object missing or changed during validation');
+    return source.arrayBuffer();
+  };
   let media;
-  try { media = inspectDirectMp4(bytes); }
+  try {
+    media = forPlayback
+      ? await inspectStoredMp4(object.size, readRange)
+      : inspectDirectMp4(await readRange(0, Math.min(object.size, MP4_PROBE_BYTES)));
+  }
   catch (error) { return { etag: object.httpEtag, valid: false, errorMessage: error.message }; }
   await env.MEDIA_BUCKET.put(markerKey, JSON.stringify(media), {
     httpMetadata: { contentType: 'application/json' },
@@ -259,7 +267,7 @@ const createOriginalPlayback = async (env, origin, body) => {
     || !/^media_[0-9a-f-]{36}$/i.test(assetId)) throw new Error('Invalid original playback request');
   const metadata = await env.MEDIA_BUCKET.head(key);
   if (!metadata || metadata.customMetadata?.assetId !== assetId) throw new Error('Original media object not found');
-  const validation = await validateVideoObject(env, key, assetId, metadata);
+  const validation = await validateVideoObject(env, key, assetId, metadata, true);
   if (!validation.valid) throw new Error(validation.errorMessage);
   const expires = Math.min(now + 15 * 60, Math.max(now + 60, Math.floor(Number(body.exp) || now + 10 * 60)));
   const token = await createToken({ kind: 'original-playback', key, assetId, expires }, env.MEDIA_WORKER_SECRET);

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { inspectDirectMp4 } from '../shared/direct-mp4.mjs';
+import { inspectDirectMp4, inspectStoredMp4, MP4_PROBE_BYTES } from '../shared/direct-mp4.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import worker from '../workers/media-worker.mjs';
@@ -32,6 +32,7 @@ const createBucket = () => {
   let aborts = 0;
   const withMetadata = (value) => ({
     ...value,
+    etag: value.httpEtag.replace(/^"|"$/g, ''),
     writeHttpMetadata(headers) {
       if (value.httpMetadata?.contentType) headers.set('content-type', value.httpMetadata.contentType);
     },
@@ -73,7 +74,7 @@ const createBucket = () => {
           };
           objects.set(key, object);
           uploads.delete(uploadId);
-          return object;
+          return withMetadata(object);
         },
         async abort() { aborts += 1; uploads.delete(uploadId); },
       };
@@ -83,12 +84,85 @@ const createBucket = () => {
       objects.set(key, { key, body: bytes, size: bytes.byteLength, httpEtag: `etag:${key}`, httpMetadata: options?.httpMetadata,
         customMetadata: options?.customMetadata || {}, uploaded: new Date() });
     },
-    async get(key, options) { return objects.has(key) ? bodyObject(objects.get(key), options) : null; },
+    async get(key, options) {
+      if (options?.onlyIf) {
+        assert.ok(options.onlyIf.etagMatches, 'conditional reads require the raw object ETag');
+        assert.ok(!options.onlyIf.etagMatches.includes('"'), 'R2 rejects quoted conditional ETags');
+      }
+      return objects.has(key) ? bodyObject(objects.get(key), options) : null;
+    },
     async head(key) { return objects.has(key) ? withMetadata(objects.get(key)) : null; },
     async delete(key) { objects.delete(key); },
     async list() { return { objects: [], truncated: false }; },
   };
 };
+
+test('legacy moov-at-end originals play without relaxing upload validation or sharing its cache', async () => {
+  const bucket = createBucket();
+  const assetId = 'media_11111111-1111-4111-8111-111111111111';
+  const key = `originals/series_1/episode_1/${assetId}/legacy.mp4`;
+  const bytes = fixture('no-faststart');
+  await bucket.put(key, bytes, { httpMetadata: { contentType: 'video/mp4' }, customMetadata: { assetId } });
+  // R2 exposes a quoted HTTP ETag and an unquoted conditional-request ETag.
+  const head = bucket.head.bind(bucket);
+  bucket.head = async objectKey => { const object = await head(objectKey); return object ? { ...object, httpEtag: `"${object.etag}"` } : null; };
+  const env = { MEDIA_BUCKET: bucket, MEDIA_WORKER_SECRET: secret };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const grant = await worker.fetch(await signedRequest('/original/token', { key, assetId }), env);
+    assert.equal(grant.status, 200);
+    const response = await worker.fetch(new Request((await grant.json()).url, { headers: { range: 'bytes=-1024' } }), env);
+    assert.equal(response.status, 206);
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), bytes.slice(-1024));
+  }
+  const upload = await worker.fetch(await signedRequest('/videos/verify', { objectKey: key, assetId }), env);
+  assert.equal((await upload.json()).valid, false, 'playback cache must not bypass faststart upload validation');
+});
+
+test('stored MP4 inspection skips a large mdat to validate tail metadata with bounded reads', async () => {
+  const bytes = fixture('no-faststart');
+  let position = 0;
+  let mdatOffset, moovOffset;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  while (position < bytes.length) {
+    const type = new TextDecoder().decode(bytes.slice(position + 4, position + 8));
+    if (type === 'mdat') mdatOffset = position;
+    if (type === 'moov') moovOffset = position;
+    position += view.getUint32(position);
+  }
+  const gap = 200 * 1024 * 1024;
+  const prefix = bytes.slice(0, moovOffset);
+  new DataView(prefix.buffer).setUint32(mdatOffset, view.getUint32(mdatOffset) + gap);
+  const tailOffset = moovOffset + gap;
+  const size = bytes.length + gap;
+  const reads = [];
+  const result = await inspectStoredMp4(size, async (offset, length) => {
+    reads.push({ offset, length });
+    const buffer = new Uint8Array(length);
+    if (offset === 0) buffer.set(prefix);
+    else { assert.equal(offset, tailOffset); buffer.set(bytes.slice(moovOffset)); }
+    return buffer.buffer;
+  });
+  assert.equal(result.hasVideo, true);
+  assert.equal(result.hasAudio, true);
+  assert.equal(reads.length, 2);
+  assert.ok(reads.reduce((total, read) => total + read.length, 0) < 1024 * 1024);
+});
+
+test('stored MP4 inspection still rejects unsupported codecs and truncated metadata', async () => {
+  for (const bytes of [fixture('unsupported-video'), fixture('no-faststart').slice(0, 4991)]) {
+    await assert.rejects(inspectStoredMp4(bytes.length, async (offset, length) => bytes.slice(offset, offset + length).buffer));
+  }
+  // An oversized incomplete moov cannot force an unlimited download.
+  let total = 0, calls = 0;
+  await assert.rejects(inspectStoredMp4(64 * 1024 * 1024, async (offset, length) => {
+    calls++; total += length;
+    const bytes = new Uint8Array(length);
+    if (offset === 0) { new DataView(bytes.buffer).setUint32(0, 64 * 1024 * 1024); bytes.set(encoder.encode('moov'), 4); }
+    return bytes.buffer;
+  }), /inspection limit/);
+  assert.ok(calls <= 32);
+  assert.ok(total <= MP4_PROBE_BYTES);
+});
 
 test('original playback tokens stream private source bytes with range support', async () => {
   const bucket = createBucket();
