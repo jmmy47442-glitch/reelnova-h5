@@ -33,6 +33,7 @@
     "test:video-quality": "node --experimental-strip-types --test tests/video-quality.test.mjs",
     "deploy:media-worker": "wrangler deploy --config wrangler.media.toml",
     "media:prepare-hls": "node scripts/prepare-hls-video.mjs",
+    "media:migrate-hls": "node scripts/migrate-all-videos-to-hls.mjs",
     "check:hls-playback-ui": "node scripts/check-hls-playback-ui.mjs"
   },
   "dependencies": {

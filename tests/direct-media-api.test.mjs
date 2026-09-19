@@ -67,7 +67,7 @@ const harness = () => {
     const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
     runInNewContext(code, {
       exports, require: name => { assert.ok(imports[name], `Unexpected import ${name}`); return imports[name]; },
-      createError, defineEventHandler: fn => fn, getQuery: event => event.query,
+      URL, createError, defineEventHandler: fn => fn, getQuery: event => event.query,
       getRequestURL: () => new URL('https://app.example.test/api/playback'),
       getHeader: () => undefined, setHeader: (event, name, value) => { (event.headers ||= {})[name] = value; },
     });
@@ -193,5 +193,23 @@ test('playback API passes through HLS delivery and startup URLs without treating
     assert.equal(response.prefetchUrls.length, 1);
     h.db.exec('UPDATE episodes SET is_free = 0');
     await assert.rejects(h.playback(event({ query: { seriesId: 'series', episodeNo: 1, sessionId: 'next', prewarm: 'true' } })), error => error.statusCode === 403);
+  } finally { h.db.close(); }
+});
+
+test('playback API returns validated Cloudflare Stream HLS without minting an R2 URL', async () => {
+  const h = harness();
+  try {
+    await complete(h); publish(h);
+    const uid = '0123456789abcdef0123456789abcdef';
+    h.db.prepare(`UPDATE media_assets SET storage_provider = 'stream', stream_uid = ?, hls_url = ?, source_object_key = ? WHERE id = 'asset'`)
+      .run(uid, `https://customer-example.cloudflarestream.com/${uid}/manifest/video.m3u8`, 'https://example.test/source.webm');
+    const response = (await h.playback(event())).data;
+    assert.equal(response.delivery, 'hls');
+    assert.equal(response.signedUrl, `https://customer-example.cloudflarestream.com/${uid}/manifest/video.m3u8`);
+    assert.equal(response.originalUrl, undefined);
+    assert.equal(h.calls(), 1);
+
+    h.db.prepare("UPDATE media_assets SET hls_url = 'https://attacker.test/video.m3u8' WHERE id = 'asset'").run();
+    await assert.rejects(h.playback(event()), error => error.statusCode === 503);
   } finally { h.db.close(); }
 });

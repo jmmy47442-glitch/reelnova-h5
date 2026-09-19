@@ -7,6 +7,25 @@ import { mediaWorkerRequest } from '~/server/utils/media-pipeline';
 import { getPlaybackAuthorizationSecret, signPlaybackAuthorization } from '~/server/utils/playback-authorization';
 import { enforcePlaybackRateLimits, establishPlaybackSession, getPlaybackClientContext } from '~/server/utils/playback-security';
 
+type PlaybackAsset = {
+  id: string;
+  storage_provider: string;
+  source_object_key: string | null;
+  source_content_type: string | null;
+  stream_uid: string | null;
+  hls_url: string | null;
+};
+
+const cloudflareStreamHlsUrl = (asset: PlaybackAsset) => {
+  if (asset.storage_provider !== 'stream' || !/^[a-f0-9]{32}$/i.test(asset.stream_uid || '')) return null;
+  try {
+    const url = new URL(asset.hls_url || '');
+    if (url.protocol !== 'https:' || !/^customer-[a-z0-9]+\.cloudflarestream\.com$/i.test(url.hostname)
+      || url.pathname !== `/${asset.stream_uid}/manifest/video.m3u8` || url.search || url.hash) return null;
+    return url.href;
+  } catch { return null; }
+};
+
 export default defineEventHandler(async (event) => {
   const requestUrl = getRequestURL(event);
   const origin = getHeader(event, 'origin');
@@ -29,14 +48,14 @@ export default defineEventHandler(async (event) => {
   // its active asset, so keep this hot path to a single indexed query.
   let series: { id: string; title: string };
   let episode: { episodeNo: number; isFree: boolean; videoStatus: string };
-  let mediaAsset: { id: string; source_object_key: string | null; source_content_type: string | null } | null = null;
+  let mediaAsset: PlaybackAsset | null = null;
   const userSessionPromise = getUserSession(event);
   if (hasD1Connection(event)) {
     const seriesSelector = seriesId ? 's.id = ?' : 's.slug = ?';
     const seriesIdentifier = seriesId || seriesSlug;
-    const row = await d1First<{ series_id: string; series_title: string; episode_no: number; is_free: number; video_status: string; asset_id: string | null; source_object_key: string | null; source_content_type: string | null }>(event,
+    const row = await d1First<{ series_id: string; series_title: string; episode_no: number; is_free: number; video_status: string; asset_id: string | null; storage_provider: string | null; source_object_key: string | null; source_content_type: string | null; stream_uid: string | null; hls_url: string | null }>(event,
       `SELECT s.id AS series_id, s.title AS series_title, e.episode_no, e.is_free, e.video_status,
-        a.id AS asset_id, a.source_object_key, a.source_content_type
+        a.id AS asset_id, a.storage_provider, a.source_object_key, a.source_content_type, a.stream_uid, a.hls_url
        FROM series s
        JOIN episodes e ON e.series_id = s.id AND e.deleted_at IS NULL
        LEFT JOIN media_assets a ON a.id = e.active_media_asset_id AND a.status = 'ready' AND a.deleted_at IS NULL
@@ -45,7 +64,9 @@ export default defineEventHandler(async (event) => {
     if (!row) throw createError({ statusCode: 404, statusMessage: 'Episode not found' });
     series = { id: row.series_id, title: row.series_title };
     episode = { episodeNo: row.episode_no, isFree: Boolean(row.is_free), videoStatus: row.video_status };
-    mediaAsset = row.asset_id ? { id: row.asset_id, source_object_key: row.source_object_key, source_content_type: row.source_content_type } : null;
+    mediaAsset = row.asset_id ? { id: row.asset_id, storage_provider: row.storage_provider || '',
+      source_object_key: row.source_object_key, source_content_type: row.source_content_type,
+      stream_uid: row.stream_uid, hls_url: row.hls_url } : null;
   } else {
     const seriesList = await getPublicSeries(event);
     const localSeries = seriesList.find((item) => seriesId ? item.id === seriesId : item.slug === seriesSlug);
@@ -80,15 +101,18 @@ export default defineEventHandler(async (event) => {
     lastProgressPromise,
   ]);
   if (!entitlement) throw createError({ statusCode: 403, statusMessage: 'Entitlement required' });
-  if (!mediaAsset?.source_object_key || episode.videoStatus !== 'ready') {
-    throw createError({ statusCode: 503, statusMessage: 'R2 MP4 playback is not ready' });
+  const streamHlsUrl = mediaAsset ? cloudflareStreamHlsUrl(mediaAsset) : null;
+  if (!mediaAsset || episode.videoStatus !== 'ready'
+    || (mediaAsset.storage_provider === 'stream' ? !streamHlsUrl : !mediaAsset.source_object_key)) {
+    throw createError({ statusCode: 503, statusMessage: 'Video playback is not ready' });
   }
   const trackingSecret = getPlaybackAuthorizationSecret(event);
   const expires = Math.floor(Date.now() / 1000) + 10 * 60;
   await establishPlaybackSession(event, { sessionId, userId, seriesId: series.id, episodeNo: episode.episodeNo, context: playbackContext });
   const [trackingSignature, original] = await Promise.all([
     signPlaybackAuthorization(`track:${userId}:${sessionId}:${series.id}:${episode.episodeNo}:${expires}`, trackingSecret),
-    mediaWorkerRequest<{ url: string; delivery?: 'hls' | 'mp4'; prefetchUrls?: string[]; rendition?: 'original' | 'mobile' }>(event, '/original/token', {
+    streamHlsUrl ? Promise.resolve({ url: streamHlsUrl, delivery: 'hls' as const,
+      prefetchUrls: undefined, rendition: undefined }) : mediaWorkerRequest<{ url: string; delivery?: 'hls' | 'mp4'; prefetchUrls?: string[]; rendition?: 'original' | 'mobile' }>(event, '/original/token', {
       key: mediaAsset.source_object_key, assetId: mediaAsset.id, exp: expires, delivery: 'auto',
       profile: query.profile === 'mobile' || getHeader(event, 'save-data') === 'on' ? 'mobile' : 'original',
       prewarm: query.prewarm === 'true',
