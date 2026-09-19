@@ -1,3 +1,4 @@
+import type { H3Event } from 'h3';
 import { ok } from '~/server/utils/response';
 import { d1First, hasD1Connection } from '~/server/utils/cloudflare-d1';
 import { assertUserEnabled, upsertUserProfile } from '~/server/utils/user-profile';
@@ -24,6 +25,27 @@ const cloudflareStreamHlsUrl = (asset: PlaybackAsset) => {
       || url.pathname !== `/${asset.stream_uid}/manifest/video.m3u8` || url.search || url.hash) return null;
     return url.href;
   } catch { return null; }
+};
+
+const createCloudflareStreamPlaybackUrl = async (event: H3Event, manifestUrl: string) => {
+  const config = useRuntimeConfig(event);
+  const env = (event.context.cloudflare as { env?: { CLOUDFLARE_ACCOUNT_ID?: string; CLOUDFLARE_API_TOKEN?: string } } | undefined)?.env;
+  const accountId = String(config.cloudflareAccountId || env?.CLOUDFLARE_ACCOUNT_ID || '');
+  const apiToken = String(config.cloudflareApiToken || env?.CLOUDFLARE_API_TOKEN || '');
+  if (!accountId || !apiToken) throw createError({ statusCode: 503, statusMessage: 'Cloudflare Stream signing is not configured' });
+  const assetUid = new URL(manifestUrl).pathname.split('/')[1];
+  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/stream/${encodeURIComponent(assetUid)}/token`, {
+    method: 'POST', body: '{}', signal: AbortSignal.timeout(10000),
+    headers: { authorization: `Bearer ${apiToken}`, 'content-type': 'application/json' },
+  });
+  const payload = await response.json().catch(() => ({})) as { success?: boolean; result?: { token?: string }; errors?: Array<{ message?: string }> };
+  const token = String(payload.result?.token || '');
+  if (!response.ok || !payload.success || !/^[A-Za-z0-9._-]{20,4096}$/.test(token)) {
+    throw createError({ statusCode: 502, statusMessage: payload.errors?.[0]?.message || 'Cloudflare Stream token request failed' });
+  }
+  const signed = new URL(manifestUrl);
+  signed.pathname = `/${token}/manifest/video.m3u8`;
+  return signed.href;
 };
 
 export default defineEventHandler(async (event) => {
@@ -111,8 +133,8 @@ export default defineEventHandler(async (event) => {
   await establishPlaybackSession(event, { sessionId, userId, seriesId: series.id, episodeNo: episode.episodeNo, context: playbackContext });
   const [trackingSignature, original] = await Promise.all([
     signPlaybackAuthorization(`track:${userId}:${sessionId}:${series.id}:${episode.episodeNo}:${expires}`, trackingSecret),
-    streamHlsUrl ? Promise.resolve({ url: streamHlsUrl, delivery: 'hls' as const,
-      prefetchUrls: undefined, rendition: undefined }) : mediaWorkerRequest<{ url: string; delivery?: 'hls' | 'mp4'; prefetchUrls?: string[]; rendition?: 'original' | 'mobile' }>(event, '/original/token', {
+    streamHlsUrl ? createCloudflareStreamPlaybackUrl(event, streamHlsUrl).then(url => ({ url, delivery: 'hls' as const,
+      prefetchUrls: undefined, rendition: undefined })) : mediaWorkerRequest<{ url: string; delivery?: 'hls' | 'mp4'; prefetchUrls?: string[]; rendition?: 'original' | 'mobile' }>(event, '/original/token', {
       key: mediaAsset.source_object_key, assetId: mediaAsset.id, exp: expires, delivery: 'auto',
       profile: query.profile === 'mobile' || getHeader(event, 'save-data') === 'on' ? 'mobile' : 'original',
       prewarm: query.prewarm === 'true',

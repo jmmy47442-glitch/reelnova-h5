@@ -67,9 +67,15 @@ const harness = () => {
     const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
     runInNewContext(code, {
       exports, require: name => { assert.ok(imports[name], `Unexpected import ${name}`); return imports[name]; },
-      URL, createError, defineEventHandler: fn => fn, getQuery: event => event.query,
+      URL, AbortSignal, createError, defineEventHandler: fn => fn, getQuery: event => event.query,
       getRequestURL: () => new URL('https://app.example.test/api/playback'),
       getHeader: () => undefined, setHeader: (event, name, value) => { (event.headers ||= {})[name] = value; },
+      useRuntimeConfig: () => ({ cloudflareAccountId: 'account', cloudflareApiToken: 'api-token' }),
+      fetch: async (url, options) => {
+        assert.equal(url, 'https://api.cloudflare.com/client/v4/accounts/account/stream/0123456789abcdef0123456789abcdef/token');
+        assert.equal(options.method, 'POST');
+        return { ok: true, status: 200, json: async () => ({ success: true, result: { token: 'signed-stream-token-1234567890' } }) };
+      },
     });
     return exports;
   };
@@ -80,7 +86,7 @@ const harness = () => {
 };
 const complete = async h => h.upload.completeMediaUpload({}, await h.upload.getMediaUploadState({}, 'upload'), [{ partNumber: 1, etag: 'part' }]);
 const publish = h => h.db.exec("UPDATE series SET status = 'published'");
-const event = extra => ({ query: { seriesId: 'series', episodeNo: 1, sessionId: 'session' }, ...extra });
+const event = extra => ({ query: { seriesId: 'series', episodeNo: 1, sessionId: 'session' }, context: {}, ...extra });
 
 test('completion makes the actual episode ready, without a Stream UID or transcode job, and is repeatable', async () => {
   const h = harness();
@@ -205,7 +211,7 @@ test('playback API returns validated Cloudflare Stream HLS without minting an R2
       .run(uid, `https://customer-example.cloudflarestream.com/${uid}/manifest/video.m3u8`, 'https://example.test/source.webm');
     const response = (await h.playback(event())).data;
     assert.equal(response.delivery, 'hls');
-    assert.equal(response.signedUrl, `https://customer-example.cloudflarestream.com/${uid}/manifest/video.m3u8`);
+    assert.equal(response.signedUrl, 'https://customer-example.cloudflarestream.com/signed-stream-token-1234567890/manifest/video.m3u8');
     assert.equal(response.originalUrl, undefined);
     assert.equal(h.calls(), 1);
 
