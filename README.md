@@ -40,6 +40,7 @@ npm run dev
 - 用户端不显示播放数、评分、虚构在线人数。真实更新提示每 30 秒及返回首页/窗口时比较最新数据，按变化的短剧与分组计数，刷新成功后清零；请求时间戳、隐藏播放数字和观看进度变化不计入更新。Popular 按 D1 中通过授权校验的播放开始事件累计排序；播放器实际开始播放时上报，同一播放会话同一集只计一次，心跳不增加播放量。New 按更新时间排序。两个分组由系统生成，后台管理附加分区。
 - 已删除未验证邮箱归属的密码重置入口及接口、无服务支撑的个性化推荐和营销邮件开关。
 - MVP 验收草稿目录可通过 `npm run db:seed:acceptance` 幂等导入；后台上传兼容 MP4、封面并上架后，用 `npm run check:acceptance-data` 只读核对；该命令不会创建伪造支付或购买权益。需要验收后台订单状态时，必须在隔离环境显式运行 `npm run db:seed:acceptance:transactions`。字段、PayPal Sandbox 实测步骤见 [`docs/MVP-ACCEPTANCE-DATA.md`](./docs/MVP-ACCEPTANCE-DATA.md)。
+- 封面仍指向旧自动缩略图接口、默认图或 Stream 地址时，运行 `node scripts/repair-series-posters.mjs` 只读扫描；添加 `--prepare --ffmpeg-path /path/to/ffmpeg` 提取现有视频画面并生成竖版封面、横版背景，可用 `--frame-time SERIES_ID=SECONDS` 指定取帧时间（可重复）。检查 `/tmp/reelnova-poster-repair` 中图片后，单独运行 `node scripts/repair-series-posters.mjs --apply` 上传到 R2 并更新 D1。脚本保留原地址和文件校验值，验证公开图片后才更新记录，遇到并发修改会停止；已上传的自定义图片不会被替换。Stream 视频只在提取时需要临时签名，保存后的封面不依赖 Stream。
 - PayPal 与 R2 可以后开通：配置留空时 H5 会关闭结账入口、后台会禁用媒体上传，服务端不会写入失败订单或上传任务；开通后补齐 `.env.example` 对应变量并重启即可启用。
 - MVP 域名使用普通 Cloudflare Custom Domains：Nuxt 绑定根域名和 `admin`，媒体 Worker 绑定 `media`，`www` 通过 Cloudflare Redirect Rule 301 到根域名。后台动态添加任意第三方备用域名需在 Cloudflare for SaaS 开通后再启用。
 - 验收命令：`npm run typecheck`、`npm run build`、`npm run visual-check`；正式域名绑定后运行 `npm run check:domains` 验证 DNS、TLS 与 `www` 301。

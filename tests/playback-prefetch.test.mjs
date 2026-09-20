@@ -48,6 +48,29 @@ test('navigation reuses exactly one matching unexpired authorization and its epi
   assert.equal(takePlaybackHandoff('series', 2), undefined);
 });
 
+test('HLS warming overlaps two requests and cancellation prevents the next batch', async t => {
+  const previous = globalThis.fetch;
+  t.after(() => { globalThis.fetch = previous; });
+  const grant = { signedUrl: 'https://media.test/hls/token/master.m3u8',
+    prefetchUrls: ['master.m3u8', 'v360/index.m3u8', 'v360/init.mp4', 'v360/seg-000000.m4s'] };
+  for (const cancel of [false, true]) {
+    const controller = new AbortController(), requested = [], pending = [];
+    globalThis.fetch = async url => {
+      requested.push(url);
+      return new Response(new ReadableStream({ start(stream) { pending.push(stream); } }));
+    };
+    const warming = prefetchHlsStart(grant, controller.signal);
+    assert.equal(requested.length, 2, 'both playlists start without waiting for the first response');
+    if (cancel) controller.abort();
+    for (const stream of pending.splice(0)) stream.close();
+    // Let response readers and the next batch settle without a timing threshold.
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(requested.length, cancel ? 2 : 4);
+    for (const stream of pending.splice(0)) stream.close();
+    await warming;
+  }
+});
+
 test('client warm requests are bounded and cancel a server that ignores Range', async t => {
   const previous = globalThis.fetch;
   t.after(() => { globalThis.fetch = previous; });

@@ -90,6 +90,35 @@ test('HLS never serves cached data before token validation and restricts paths t
   assert.equal(h.reads(), before);
 });
 
+test('HLS shares startup files across grants and isolates new builds and renditions', async t => {
+  const h = harness(t), first = await h.grant({ prewarm: true });
+  await h.drain();
+  const second = await h.grant();
+  assert.notEqual(first.url, second.url);
+  const before = h.reads();
+  for (const url of second.prefetchUrls) {
+    const hit = await h.get(`${url}?retry=1`, { headers: { origin: 'https://b.test' } });
+    assert.equal(hit.headers.get('x-media-cache'), 'HIT');
+    assert.equal(hit.headers.get('access-control-allow-origin'), 'https://b.test');
+    assert.equal(hit.headers.get('cache-control'), 'private, no-store');
+    await hit.arrayBuffer();
+  }
+  assert.equal(h.reads(), before);
+  for (const entry of h.entries.values()) assert.equal(entry.headers.get('cache-control'), 'public, max-age=86400, s-maxage=86400');
+  h.put(`${prefix}v720/seg-000000.m4s`, new Uint8Array([7, 2, 0]));
+  const high = await h.get(new URL('v720/seg-000000.m4s', second.url));
+  assert.equal(high.headers.get('x-media-cache'), 'MISS');
+  assert.deepEqual(new Uint8Array(await high.arrayBuffer()), new Uint8Array([7, 2, 0]));
+  const nextBuild = '33333333-3333-4333-8333-333333333333';
+  h.put(`${root}/ready.json`, JSON.stringify({ ...marker, buildId: nextBuild }));
+  h.put(`${root}/${nextBuild}/v360/seg-000000.m4s`, new Uint8Array([9, 8, 7]));
+  const updated = await h.grant();
+  const segment = await h.get(new URL('v360/seg-000000.m4s', updated.url));
+  assert.equal(segment.headers.get('x-media-cache'), 'MISS');
+  assert.deepEqual(new Uint8Array(await segment.arrayBuffer()), new Uint8Array([9, 8, 7]));
+  await h.drain();
+});
+
 test('missing, incomplete or stale HLS packages fall back to MP4; original previews stay MP4', async t => {
   const h = harness(t);
   assert.equal((await h.grant({ delivery: undefined })).delivery, 'mp4');

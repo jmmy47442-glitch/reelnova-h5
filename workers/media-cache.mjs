@@ -1,17 +1,21 @@
 // Cache API rejects 206 responses. Store bounded, aligned blocks as internal
 // 200 responses, then slice/stream the exact range requested by the browser.
 export const MEDIA_BLOCK_BYTES = 1024 * 1024;
+// Only internal, versioned objects get this TTL. Public requests must still
+// validate their token on every read, including when the object is cached.
+export const MEDIA_CACHE_TTL_SECONDS = 24 * 60 * 60;
 const MAX_BLOCKS_PER_REQUEST = 16;
 
 export const mediaCache = (env, ctx) => env.MEDIA_EDGE_CACHE !== 'false' && ctx?.waitUntil
   ? globalThis.caches?.default : undefined;
 
 export const mediaCacheIdentity = async (url, payload) => {
-  // Include the entire signed URL (including query parameters), and version.
+  // Callers validate authorization first. Token rotation and unrelated query
+  // parameters do not change the bytes; object key/version/size do.
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(
-    JSON.stringify([url, payload.key, payload.etag, payload.size]),
+    JSON.stringify([payload.key, payload.etag, payload.size]),
   ));
-  return `${new URL(url).origin}/__media_cache/v1/${Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('')}`;
+  return `${new URL(url).origin}/__media_cache/v2/${Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('')}`;
 };
 
 const readObject = async (env, payload, offset, length) => {
@@ -36,8 +40,7 @@ const openMediaBlock = async (env, ctx, payload, identity, offset) => {
   }
   const object = await readObject(env, payload, offset, length);
   let body = new Response(object.body).body;
-  const ttl = Math.min(3600, Math.floor(payload.expires - Date.now() / 1000));
-  if (cache && ttl > 0) {
+  if (cache) {
     const [playback, cacheBody] = body.tee();
     body = playback;
     // Only the bounded cache branch waits for a complete block. The playback
@@ -47,7 +50,7 @@ const openMediaBlock = async (env, ctx, payload, identity, offset) => {
       if (bytes.byteLength !== length) return;
       await cache.put(key, new Response(bytes, { headers: {
         'content-type': 'application/octet-stream', 'content-length': String(length),
-        'cache-control': `public, max-age=${ttl}, s-maxage=${ttl}`,
+        'cache-control': `public, max-age=${MEDIA_CACHE_TTL_SECONDS}, s-maxage=${MEDIA_CACHE_TTL_SECONDS}`,
       } }));
     })().catch(() => undefined));
   }

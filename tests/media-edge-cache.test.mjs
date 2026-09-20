@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import worker from '../workers/media-worker.mjs';
-import { MEDIA_BLOCK_BYTES, warmMediaStart } from '../workers/media-cache.mjs';
+import { MEDIA_BLOCK_BYTES, MEDIA_CACHE_TTL_SECONDS, mediaCacheIdentity, warmMediaStart } from '../workers/media-cache.mjs';
 
 const secret = 'edge-cache-test-secret';
 const source = Uint8Array.from({ length: MEDIA_BLOCK_BYTES * 2 + 53 }, (_, i) => i % 251);
@@ -97,15 +97,58 @@ test('expired/tampered tokens cannot read warm cache; HEAD and invalid ranges do
   assert.deepEqual(h.counts(), before);
 });
 
-test('cache identity includes signature and full query; internal keys are not public routes', async t => {
+test('valid new signatures and queries share versioned blocks; internal keys are not public routes', async t => {
   const h = await setup(t);
+  let first = true;
   for (const url of [h.url, await makeUrl(h.payload), `${h.url}?quality=x`]) {
     const response = await h.get('bytes=0-7', url);
-    assert.equal(response.headers.get('x-media-cache'), 'MISS');
-    await response.arrayBuffer(); await h.drain();
+    assert.equal(response.headers.get('x-media-cache'), first ? 'MISS' : 'HIT');
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), source.slice(0, 8));
+    await h.drain(); first = false;
   }
-  assert.equal(h.counts().reads, 3);
+  assert.equal(h.counts().reads, 1);
   for (const url of h.entries.keys()) assert.equal((await worker.fetch(new Request(url), h.env, h.ctx)).status, 404);
+});
+
+test('object keys, versions, sizes and media hosts remain isolated', async t => {
+  const h = await setup(t);
+  const identities = await Promise.all([
+    [h.url, h.payload],
+    [h.url, { ...h.payload, key: 'originals/another.mp4' }],
+    [h.url, { ...h.payload, etag: 'version-2' }],
+    [h.url, { ...h.payload, size: source.length + 1 }],
+    [h.url.replace('media.example.test', 'other.example.test'), h.payload],
+  ].map(([url, payload]) => mediaCacheIdentity(url, payload)));
+  assert.equal(new Set(identities).size, identities.length);
+  await (await h.get('bytes=0-7')).arrayBuffer(); await h.drain();
+  const changed = await makeUrl({ ...h.payload, etag: 'version-2', httpEtag: '"version-2"' });
+  h.env.MEDIA_BUCKET.get = async (_key, options) => {
+    assert.equal(options.onlyIf.etagMatches, 'version-2');
+    return { body: new Uint8Array(MEDIA_BLOCK_BYTES).fill(99) };
+  };
+  const response = await h.get('bytes=0-7', changed);
+  assert.equal(response.headers.get('x-media-cache'), 'MISS');
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), new Uint8Array(8).fill(99));
+  await h.drain();
+});
+
+test('internal blocks outlive the warming grant but still require a fresh valid token', async t => {
+  const h = await setup(t);
+  await (await h.get('bytes=0-7')).arrayBuffer(); await h.drain();
+  for (const entry of h.entries.values()) {
+    assert.equal(entry.headers.get('cache-control'), `public, max-age=${MEDIA_CACHE_TTL_SECONDS}, s-maxage=${MEDIA_CACHE_TTL_SECONDS}`);
+  }
+  const now = Date.now;
+  Date.now = () => now() + 601_000;
+  try {
+    assert.equal((await h.get('bytes=0-7')).status, 403);
+    const renewed = await makeUrl({ ...h.payload, expires: Math.floor(Date.now() / 1000) + 600 });
+    const response = await h.get('bytes=0-7', renewed);
+    assert.equal(response.headers.get('x-media-cache'), 'HIT');
+    assert.equal(response.headers.get('cache-control'), 'private, no-store');
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), source.slice(0, 8));
+    assert.equal(h.counts().reads, 1);
+  } finally { Date.now = now; }
 });
 
 test('origin errors and partial blocks are never cached, cache outages fall back to R2', async t => {

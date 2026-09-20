@@ -1,4 +1,4 @@
-import { mediaCache, mediaCacheIdentity } from './media-cache.mjs';
+import { mediaCache, mediaCacheIdentity, MEDIA_CACHE_TTL_SECONDS } from './media-cache.mjs';
 
 export const readHlsPackage = async (env, assetId, sourceEtag) => {
   const root = `hls/${assetId}/${encodeURIComponent(sourceEtag)}`;
@@ -45,14 +45,13 @@ export const serveHlsFile = async (request, env, ctx, payload, file, requestCors
       'content-length': String(object.size), etag: object.httpEtag,
     });
     response = new Response(request.method === 'HEAD' ? null : object.body, { headers });
-    const ttl = Math.min(3600, Math.floor(payload.expires - Date.now() / 1000));
-    if (cache && request.method !== 'HEAD' && ttl > 0) {
+    if (cache && request.method !== 'HEAD') {
       const copy = response.clone();
       ctx.waitUntil((async () => {
         const bytes = await copy.arrayBuffer();
         if (bytes.byteLength !== object.size) return;
         const internalHeaders = new Headers(headers);
-        internalHeaders.set('cache-control', `public, max-age=${ttl}, s-maxage=${ttl}`);
+        internalHeaders.set('cache-control', `public, max-age=${MEDIA_CACHE_TTL_SECONDS}, s-maxage=${MEDIA_CACHE_TTL_SECONDS}`);
         await cache.put(cacheKey, new Response(bytes, { headers: internalHeaders }));
       })().catch(() => undefined));
     }

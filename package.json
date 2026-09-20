@@ -34,7 +34,8 @@
     "deploy:media-worker": "wrangler deploy --config wrangler.media.toml",
     "media:prepare-hls": "node scripts/prepare-hls-video.mjs",
     "media:migrate-hls": "node scripts/migrate-all-videos-to-hls.mjs",
-    "check:hls-playback-ui": "node scripts/check-hls-playback-ui.mjs"
+    "check:hls-playback-ui": "node scripts/check-hls-playback-ui.mjs",
+    "check:playback-retry-ui": "node scripts/check-playback-retry-ui.mjs"
   },
   "dependencies": {
     "@element-plus/nuxt": "1.1.1",

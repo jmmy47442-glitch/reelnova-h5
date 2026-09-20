@@ -93,7 +93,9 @@ for (const item of series) {
     subtitle_languages, cast_json, director, copyright_notice, free_episode_count, price_cents, original_price_cents, currency, status, published_at, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'United States', 'en', '[]', ?, ?, ?, ?, ?, ?, 'USD', 'draft', ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET slug=excluded.slug, title=excluded.title, tagline=excluded.tagline, description=excluded.description,
-      cover_url=excluded.cover_url, backdrop_url=excluded.backdrop_url, badge=excluded.badge, cast_json=excluded.cast_json, director=excluded.director, copyright_notice=excluded.copyright_notice,
+      cover_url=COALESCE(NULLIF(series.cover_url, ''), excluded.cover_url),
+      backdrop_url=COALESCE(NULLIF(series.backdrop_url, ''), excluded.backdrop_url),
+      badge=excluded.badge, cast_json=excluded.cast_json, director=excluded.director, copyright_notice=excluded.copyright_notice,
       free_episode_count=excluded.free_episode_count, price_cents=excluded.price_cents, original_price_cents=excluded.original_price_cents,
       status='draft', published_at=NULL, updated_at=excluded.updated_at, deleted_at=NULL`,
   [item.id, item.slug, item.title, item.tagline, item.description, item.cover, item.backdrop, item.badge, JSON.stringify(item.cast), item.director, item.copyright, item.free, item.price, item.original, now, now, now]);
