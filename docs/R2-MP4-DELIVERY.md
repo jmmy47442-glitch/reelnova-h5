@@ -65,7 +65,7 @@ Worker 仅从上述确定路径选取比原片更小且通过编码/faststart �
 npm run media:prepare-hls -- --input /path/source.mp4 --output /path/new-hls-directory --asset-id media_UUID --source-etag ORIGINAL_R2_ETAG
 ```
 
-工具输出 360P / 480P / 720P / 1080P 四档（不会放大低分辨率原片）、H.264 Main + AAC-LC、30 fps、对齐的 2 秒 GOP 和独立 fMP4 分片。视频目标码率分别为 500 / 900 / 1800 / 4000 kbps，音频 96 kbps；主清单带宽根据实际分片峰值计算。必须使用新的输出目录。先抽检画音；正式生成并发布时添加 `--upload`（可指定 `--bucket`），该操作会上传输出文件：
+工具输出 360P / 480P / 720P / 1080P 四档（不会放大低分辨率原片）、H.264 Main + AAC-LC、30 fps、对齐的 2 秒 GOP 和独立 fMP4 分片。360P / 480P 保留 500 / 900 kbps 的省流量档；720P / 1080P 使用 CRF 20、medium 编码预设，码率上限分别为 4500 / 8000 kbps，使复杂画面保留更多纹理，简单画面按需使用码率。音频 96 kbps；主清单带宽取实际分片峰值，避免用码率上限高估带宽需求。新包标记为 `h264-hq1080-v2`，重建时不会复用旧低码率包。必须使用新的输出目录。先抽检画音；正式生成并发布时添加 `--upload`（可指定 `--bucket`），该操作会上传输出文件：
 
 - 媒体对象位于 `hls/{assetId}/{encodeURIComponent(sourceEtag)}/{buildId}/`。
 - 所有文件成功上传后，最后写入 `hls/{assetId}/{encodeURIComponent(sourceEtag)}/ready.json`，此时新授权才启用 HLS。

@@ -32,7 +32,7 @@ const sourceEtag = values['source-etag'].replace(/^"|"$/g, '');
 const assetId = values['asset-id'], buildId = randomUUID();
 const root = `hls/${assetId}/${encodeURIComponent(sourceEtag)}`;
 const renditions = [], files = [];
-for (const [shortEdge, videoRate] of [[360, 500], [480, 900], [720, 1800], [1080, 4000]]) {
+for (const [shortEdge, videoRate] of [[360, 500], [480, 900], [720, 4500], [1080, 8000]]) {
   if (shortEdge > Math.min(width, height) && renditions.length) continue;
   const scale = Math.min(1, shortEdge / Math.min(width, height));
   const w = Math.max(2, Math.floor(width * scale / 2) * 2), h = Math.max(2, Math.floor(height * scale / 2) * 2);
@@ -40,10 +40,13 @@ for (const [shortEdge, videoRate] of [[360, 500], [480, 900], [720, 1800], [1080
   // portrait and ultrawide sources), then advertise that level in HLS.
   const id = `v${shortEdge}`, directory = join(output, id);
   mkdirSync(directory);
+  // HD uses a quality target with a bitrate ceiling: detailed scenes can
+  // retain texture without forcing simple scenes to consume the full budget.
+  const rateControl = shortEdge >= 720 ? ['-crf', '20'] : ['-b:v', `${videoRate}k`];
   run(process.env.FFMPEG_PATH || 'ffmpeg', ['-hide_banner', '-loglevel', 'warning', '-n', '-i', input,
     '-map', '0:v:0', '-map', '0:a:0', '-vf', `scale=${w}:${h},setsar=1,fps=30`,
-    '-c:v', 'libx264', '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-preset', 'fast',
-    '-b:v', `${videoRate}k`, '-maxrate', `${videoRate}k`, '-bufsize', `${videoRate * 2}k`,
+    '-c:v', 'libx264', '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-preset', shortEdge >= 720 ? 'medium' : 'fast',
+    ...rateControl, '-maxrate', `${videoRate}k`, '-bufsize', `${videoRate * 2}k`,
     '-g', '60', '-keyint_min', '60', '-sc_threshold', '0', '-flags', '+cgop',
     '-force_key_frames', 'expr:gte(t,n_forced*2)', '-c:a', 'aac', '-profile:a', 'aac_low', '-b:a', '96k', '-ac', '2', '-ar', '48000',
     '-f', 'hls', '-hls_time', '2', '-hls_playlist_type', 'vod', '-hls_segment_type', 'fmp4',
@@ -66,14 +69,14 @@ for (const [shortEdge, videoRate] of [[360, 500], [480, 900], [720, 1800], [1080
   const level = encoded.streams?.[0]?.level;
   if (!Number.isInteger(level) || level <= 0 || level > 255) throw new Error(`Invalid H.264 level: ${id}`);
   renditions.push({ id, width: w, height: h, codecs: `avc1.4d40${level.toString(16).padStart(2, '0')},mp4a.40.2`,
-    bandwidth: Math.ceil(Math.max(peak, (videoRate + 96) * 1000)), segments: durations.length });
+    bandwidth: Math.ceil(peak), segments: durations.length });
   files.push(...readdirSync(directory).map(name => `${id}/${name}`));
 }
 const master = '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-INDEPENDENT-SEGMENTS\n' + renditions.map(v =>
   `#EXT-X-STREAM-INF:BANDWIDTH=${v.bandwidth},RESOLUTION=${v.width}x${v.height},CODECS="${v.codecs}"\n${v.id}/index.m3u8\n`).join('');
 writeFileSync(join(output, 'master.m3u8'), master);
 files.push('master.m3u8');
-writeFileSync(join(output, 'ready.json'), JSON.stringify({ version: 1, encodingProfile: 'h264-1080-v1', assetId, sourceEtag, buildId, renditions }, null, 2));
+writeFileSync(join(output, 'ready.json'), JSON.stringify({ version: 1, encodingProfile: 'h264-hq1080-v2', assetId, sourceEtag, buildId, renditions }, null, 2));
 if (values.upload) {
   // Publish the readiness marker last. Incomplete uploads never replace the
   // active package; immutable build prefixes protect existing signed grants.

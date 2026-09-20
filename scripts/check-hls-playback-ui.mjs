@@ -53,7 +53,7 @@ try {
   assert.equal(requests.find(r => r.file.endsWith('.m4s'))?.file, 'v360/seg-000000.m4s', 'first segment starts at lowest bitrate');
   assert.match(await page.getByRole('button', { name: 'Video quality', exact: true }).innerText(), /Auto/);
   await page.waitForFunction(() => document.querySelector('video')?.currentTime > 5.5);
-  assert.ok(requests.some(r => /^v(?:480|720)\/seg-/.test(r.file)), 'ABR should upgrade on a fast connection');
+  assert.ok(requests.some(r => /^v(?:480|720|1080)\/seg-/.test(r.file)), 'ABR should upgrade on a fast connection');
   const warm = grants.find(g => g.episodeNo === 2);
   assert.ok(warm, 'next episode grant should be prefetched');
   assert.equal(warm.prewarm, 'true');
