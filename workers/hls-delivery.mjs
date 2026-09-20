@@ -8,8 +8,9 @@ export const readHlsPackage = async (env, assetId, sourceEtag) => {
     const data = await marker.json();
     if (data.version !== 1 || data.assetId !== assetId || data.sourceEtag !== sourceEtag
       || !/^[0-9a-f-]{36}$/i.test(data.buildId) || !Array.isArray(data.renditions)
-      || !data.renditions.length || data.renditions.length > 3) return null;
-    if (data.renditions.some(v => !/^v(360|480|720)$/.test(v.id)
+      || !data.renditions.length || data.renditions.length > 4
+      || new Set(data.renditions.map(v => v.id)).size !== data.renditions.length) return null;
+    if (data.renditions.some(v => !/^v(360|480|720|1080)$/.test(v.id)
       || !Number.isInteger(v.segments) || v.segments < 1 || v.segments > 10801)) return null;
     return { prefix: `${root}/${data.buildId}/`, renditions: data.renditions };
   } catch { return null; }
@@ -17,7 +18,7 @@ export const readHlsPackage = async (env, assetId, sourceEtag) => {
 
 const allowedFile = (payload, file) => {
   if (file === 'master.m3u8') return true;
-  const match = /^(v(?:360|480|720))\/(index\.m3u8|init\.mp4|seg-(\d{6})\.m4s)$/.exec(file);
+  const match = /^(v(?:360|480|720|1080))\/(index\.m3u8|init\.mp4|seg-(\d{6})\.m4s)$/.exec(file);
   const level = match && payload.renditions?.find(v => v.id === match[1]);
   return Boolean(level && (!match[3] || Number(match[3]) < level.segments));
 };

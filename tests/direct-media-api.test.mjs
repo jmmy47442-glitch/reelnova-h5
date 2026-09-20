@@ -197,6 +197,10 @@ test('playback API passes through HLS delivery and startup URLs without treating
     assert.equal(response.originalUrl, undefined);
     assert.match(response.signedUrl, /master.m3u8$/);
     assert.equal(response.prefetchUrls.length, 1);
+    h.setWorkerPlayback({ url: response.signedUrl, delivery: 'hls', originalUrl: 'https://media.test/original/signed-source' });
+    const withOriginal = (await h.playback(event())).data;
+    assert.equal(withOriginal.originalUrl, 'https://media.test/original/signed-source');
+    assert.equal(withOriginal.signedUrl, response.signedUrl);
     h.db.exec('UPDATE episodes SET is_free = 0');
     await assert.rejects(h.playback(event({ query: { seriesId: 'series', episodeNo: 1, sessionId: 'next', prewarm: 'true' } })), error => error.statusCode === 403);
   } finally { h.db.close(); }

@@ -261,6 +261,12 @@ const validateVideoObject = async (env, key, assetId, suppliedObject, forPlaybac
   return { etag: object.httpEtag, valid: true, media };
 };
 
+const originalPlaybackUrl = async (env, origin, key, assetId, metadata, expires) => {
+  const payload = { kind: 'original-playback', key, assetId, expires, size: metadata.size, etag: metadata.etag, httpEtag: metadata.httpEtag };
+  const token = await createToken(payload, env.MEDIA_WORKER_SECRET);
+  return { url: `${origin}/original/${encodeURIComponent(token)}`, payload };
+};
+
 const createOriginalPlayback = async (env, origin, body, ctx) => {
   let key = String(body.key || '');
   const assetId = String(body.assetId || '');
@@ -288,7 +294,12 @@ const createOriginalPlayback = async (env, origin, body, ctx) => {
           }
         })().catch(() => undefined));
       }
-      return { url, delivery: 'hls', prefetchUrls, expiresAt: new Date(expires * 1000).toISOString() };
+      let originalUrl;
+      try {
+        const validation = await validateVideoObject(env, key, assetId, metadata, true);
+        if (validation.valid) originalUrl = (await originalPlaybackUrl(env, origin, key, assetId, metadata, expires)).url;
+      } catch { /* HLS remains playable if the original cannot be validated. */ }
+      return { url, originalUrl, delivery: 'hls', prefetchUrls, expiresAt: new Date(expires * 1000).toISOString() };
     }
   }
   let rendition = 'original';
@@ -305,9 +316,7 @@ const createOriginalPlayback = async (env, origin, body, ctx) => {
   const validation = await validateVideoObject(env, key, assetId, metadata, true, rendition === 'mobile');
   if (!validation.valid) throw new Error(validation.errorMessage);
   const expires = Math.min(now + 15 * 60, Math.max(now + 60, Math.floor(Number(body.exp) || now + 10 * 60)));
-  const payload = { kind: 'original-playback', key, assetId, expires, size: metadata.size, etag: metadata.etag, httpEtag: metadata.httpEtag };
-  const token = await createToken(payload, env.MEDIA_WORKER_SECRET);
-  const url = `${origin}/original/${encodeURIComponent(token)}`;
+  const { url, payload } = await originalPlaybackUrl(env, origin, key, assetId, metadata, expires);
   if (body.prewarm === true && mediaCache(env, ctx)) {
     ctx.waitUntil(warmMediaStart(url, env, ctx, payload).catch(() => undefined));
   }

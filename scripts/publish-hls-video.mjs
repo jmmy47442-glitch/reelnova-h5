@@ -11,12 +11,12 @@ const directory = resolve(values.directory);
 const ready = JSON.parse(readFileSync(join(directory, 'ready.json'), 'utf8'));
 if (ready.version !== 1 || !/^media_[0-9a-f-]{36}$/i.test(ready.assetId || '')
   || !/^[0-9a-f-]{36}$/i.test(ready.buildId || '') || typeof ready.sourceEtag !== 'string' || !ready.sourceEtag
-  || !Array.isArray(ready.renditions) || !ready.renditions.length || ready.renditions.length > 3) throw new Error('Invalid HLS package');
+  || !Array.isArray(ready.renditions) || !ready.renditions.length || ready.renditions.length > 4) throw new Error('Invalid HLS package');
 const files = ['master.m3u8'];
 const levels = new Set();
 const master = readFileSync(join(directory, 'master.m3u8'), 'utf8');
 for (const rendition of ready.renditions) {
-  if (!/^v(360|480|720)$/.test(rendition.id) || levels.has(rendition.id)
+  if (!/^v(360|480|720|1080)$/.test(rendition.id) || levels.has(rendition.id)
     || !Number.isInteger(rendition.segments) || rendition.segments < 1 || rendition.segments > 10801) throw new Error('Invalid rendition');
   levels.add(rendition.id);
   if (!master.split(/\r?\n/).includes(`${rendition.id}/index.m3u8`)) throw new Error('Missing master playlist entry');

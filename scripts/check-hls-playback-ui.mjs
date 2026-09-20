@@ -39,7 +39,7 @@ try {
     const match = /^\/hls-check\/([^/]+)\/(.+)$/.exec(url.pathname);
     if (!match) return route.continue();
     const file = match[2];
-    assert.match(file, /^(master\.m3u8|v(?:360|480|720)\/(index\.m3u8|init\.mp4|seg-\d{6}\.m4s))$/);
+    assert.match(file, /^(master\.m3u8|v(?:360|480|720|1080)\/(index\.m3u8|init\.mp4|seg-\d{6}\.m4s))$/);
     requests.push({ url: url.href, grant: match[1], file });
     const body = readFileSync(join(directory, file));
     return route.fulfill({ status: 200, contentType: file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp4',

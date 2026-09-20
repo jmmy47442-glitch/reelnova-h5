@@ -65,12 +65,16 @@ Worker 仅从上述确定路径选取比原片更小且通过编码/faststart �
 npm run media:prepare-hls -- --input /path/source.mp4 --output /path/new-hls-directory --asset-id media_UUID --source-etag ORIGINAL_R2_ETAG
 ```
 
-工具输出 360P / 480P / 720P 三档（不会放大低分辨率原片）、H.264 Main + AAC-LC、30 fps、对齐的 2 秒 GOP 和独立 fMP4 分片。视频目标码率分别为 500 / 900 / 1800 kbps，音频 96 kbps；主清单带宽根据实际分片峰值计算。必须使用新的输出目录。先抽检画音；正式生成并发布时添加 `--upload`（可指定 `--bucket`），该操作会上传输出文件：
+工具输出 360P / 480P / 720P / 1080P 四档（不会放大低分辨率原片）、H.264 Main + AAC-LC、30 fps、对齐的 2 秒 GOP 和独立 fMP4 分片。视频目标码率分别为 500 / 900 / 1800 / 4000 kbps，音频 96 kbps；主清单带宽根据实际分片峰值计算。必须使用新的输出目录。先抽检画音；正式生成并发布时添加 `--upload`（可指定 `--bucket`），该操作会上传输出文件：
 
 - 媒体对象位于 `hls/{assetId}/{encodeURIComponent(sourceEtag)}/{buildId}/`。
 - 所有文件成功上传后，最后写入 `hls/{assetId}/{encodeURIComponent(sourceEtag)}/ready.json`，此时新授权才启用 HLS。
 - 每次 buildId 独立，未完成的上传不会覆盖已有可播放包，也不破坏旧签名。上传失败后使用新的输出目录重跑；旧包和失败上传的清理由运维另行安排。
 - 原片更新 ETag 后必须重新切片；不会把另一版本的片段拼入当前视频。
+
+HLS 授权同时提供经格式校验的私有原片签名地址，播放器可选择 Original 播放原片；原片无法校验或格式不兼容时仅提供 HLS。原片和切片使用相同有效期并独立鉴权。Cloudflare Stream 资源只能选择其实际生成的档位，不提供不存在的原片入口。
+
+已发布的 720P 包不会自动获得 1080P。先部署支持四档和原片地址的 Worker 与应用，再使用 `npm run media:migrate-hls -- --rebuild-hls` 从 R2 原片重新生成并发布（会转码和上传）；不加该参数仍跳过已有 HLS。原片短边不足 1080 时不生成 1080P，保留 Original 供完整分辨率播放。
 
 播放器默认 Auto，在 hls.js 下从最低码率首片起播，根据下载吞吐量和缓冲情况自动升降画质；持续补充约 30 秒前向缓冲，无需等缓冲全部填满才播放。恢复/拖动直接从目标时间附近的分片开始。支持原生 HLS 的浏览器由浏览器管理码率。未准备 HLS 的旧视频也受益于此次 MP4 首字节流式转发修复，但不会凭空获得多清晰度。
 
@@ -83,6 +87,8 @@ Worker 对清单、初始化段和每个媒体段都先校验签名，再访问�
 ```bash
 HLS_FIXTURE_DIR=/path/new-hls-directory VISUAL_BASE_URL=http://127.0.0.1:3107 npm run check:hls-playback-ui
 HLS_FIXTURE_DIR=/path/new-hls-directory VISUAL_BASE_URL=http://127.0.0.1:3107 node scripts/check-hls-recovery-ui.mjs
+# 使用至少 12 秒的真实 1080P 测试包及对应 MP4，检查解码分辨率与原画切换：
+HLS_FIXTURE_DIR=/path/1080p-hls HLS_ORIGINAL_FIXTURE=/path/source-1080p.mp4 node scripts/check-hls-quality-ui.mjs
 ```
 
 该检查用合成资源和拦截的业务 API 验证首片低码率、自动升档、连续解码、下一集预热/授权复用和拖动，不写入线上播放记录。生产包仍需在真实网络及 iPhone Safari 验收，不能用本地结果承诺秒开或完全不卡顿。

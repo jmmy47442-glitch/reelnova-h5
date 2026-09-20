@@ -45,7 +45,7 @@ try {
           headers: { 'accept-ranges': 'bytes', 'content-length': String(end - start + 1),
             ...(range ? { 'content-range': `bytes ${start}-${end}/${bytes.length}` } : {}) } });
       }
-      assert.match(file, /^(master\.m3u8|v(?:360|480|720)\/(index\.m3u8|init\.mp4|seg-\d{6}\.m4s))$/);
+      assert.match(file, /^(master\.m3u8|v(?:360|480|720|1080)\/(index\.m3u8|init\.mp4|seg-\d{6}\.m4s))$/);
       if (failManifest && file === 'master.m3u8') return route.fulfill({ status: 403, body: 'Expired' });
       return route.fulfill({ body: readFileSync(join(directory, file)),
         contentType: file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp4' });

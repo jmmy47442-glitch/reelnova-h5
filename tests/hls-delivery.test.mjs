@@ -78,13 +78,48 @@ test('published HLS is selected, serves independent relative playlists and cache
   assert.deepEqual(new Uint8Array(await range.arrayBuffer()), new Uint8Array([6, 7]));
 });
 
+test('HLS grants retain a signed original and serve a four-rendition 1080P package', async t => {
+  const h = harness(t);
+  h.put(`${root}/ready.json`, JSON.stringify({ ...marker,
+    renditions: [360, 480, 720, 1080].map(height => ({ id: `v${height}`, segments: 2 })) }));
+  h.put(`${prefix}v1080/seg-000000.m4s`, new Uint8Array([1, 0, 8, 0]));
+  const grant = await h.grant({ profile: 'mobile' });
+  assert.equal(grant.delivery, 'hls');
+  assert.match(grant.originalUrl, /\/original\//);
+  const high = await h.get(new URL('v1080/seg-000000.m4s', grant.url));
+  assert.equal(high.status, 200);
+  assert.deepEqual(new Uint8Array(await high.arrayBuffer()), new Uint8Array([1, 0, 8, 0]));
+  const original = await h.get(grant.originalUrl, { headers: { range: 'bytes=0-31' } });
+  assert.equal(original.status, 206);
+  assert.deepEqual(new Uint8Array(await original.arrayBuffer()), h.objects.get(sourceKey).bytes.slice(0, 32));
+  for (const file of ['v1080/seg-000002.m4s', 'v2160/init.mp4']) {
+    assert.equal((await h.get(new URL(file, grant.url))).status, 404);
+  }
+  await h.drain();
+  const now = Date.now;
+  Date.now = () => now() + 601000;
+  try {
+    assert.equal((await h.get(grant.originalUrl)).status, 403);
+    assert.equal((await h.get(new URL('v1080/seg-000000.m4s', grant.url))).status, 403);
+  } finally { Date.now = now; }
+});
+
+test('an incompatible original does not disable an otherwise playable HLS package', async t => {
+  const h = harness(t);
+  h.put(sourceKey, new Uint8Array(readFileSync(new URL('./fixtures/media/unsupported-video.mp4', import.meta.url))),
+    { customMetadata: { assetId }, httpMetadata: { contentType: 'video/mp4' } });
+  const grant = await h.grant();
+  assert.equal(grant.delivery, 'hls');
+  assert.equal(grant.originalUrl, undefined);
+});
+
 test('HLS never serves cached data before token validation and restricts paths to this package', async t => {
   const h = harness(t), grant = await h.grant();
   await (await h.get(grant.url)).text(); await h.drain();
   const before = h.reads(), now = Date.now;
   Date.now = () => now() + 601000;
   try { assert.equal((await h.get(grant.url)).status, 403); } finally { Date.now = now; }
-  for (const file of ['v360/seg-999999.m4s', 'v480/init.mp4', 'ready.json', 'v360/%2Fsource.mp4']) {
+  for (const file of ['v360/seg-999999.m4s', 'v480/init.mp4', 'v1080/init.mp4', 'ready.json', 'v360/%2Fsource.mp4']) {
     assert.equal((await h.get(new URL(file, grant.url))).status, 404);
   }
   assert.equal(h.reads(), before);

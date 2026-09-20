@@ -17,6 +17,7 @@ const { values } = parseArgs({ options: {
   'ffprobe-path': { type: 'string' },
   limit: { type: 'string' },
   keep: { type: 'boolean', default: false },
+  'rebuild-hls': { type: 'boolean', default: false },
   help: { type: 'boolean', default: false },
 } });
 
@@ -29,6 +30,7 @@ Options:
   --ffmpeg-path PATH    FFmpeg executable (or set FFMPEG_PATH)
   --ffprobe-path PATH   FFprobe executable (or set FFPROBE_PATH)
   --limit N             Process at most N assets
+  --rebuild-hls         Rebuild existing 720P packages with the 1080P ladder
   --keep                Keep local source and HLS packages after publication`);
   process.exit(0);
 }
@@ -225,7 +227,7 @@ for (const asset of assets.slice(0, limit)) {
   console.log(`\n[${summary.processed + 1}/${Math.min(limit, assets.length)}] ${asset.series_title} episode ${asset.episode_no} (${asset.asset_id})`);
   try {
     const current = await grantFor(asset, 'auto');
-    if (current.delivery === 'hls') {
+    if (current.delivery === 'hls' && !values['rebuild-hls']) {
       await verifyHls(asset);
       assetState.status = 'verified';
       assetState.verifiedAt = new Date().toISOString();
@@ -246,7 +248,8 @@ for (const asset of assets.slice(0, limit)) {
     saveState();
     const localReady = existsSync(join(output, 'ready.json'))
       ? JSON.parse(readFileSync(join(output, 'ready.json'), 'utf8')) : null;
-    if (localReady?.sourceEtag !== sourceEtag || localReady?.assetId !== asset.asset_id) {
+    if (localReady?.sourceEtag !== sourceEtag || localReady?.assetId !== asset.asset_id
+      || localReady?.encodingProfile !== 'h264-1080-v1') {
       rmSync(output, { recursive: true, force: true });
       await run(process.execPath, [join(projectRoot, 'scripts/prepare-hls-video.mjs'),
         '--input', source, '--output', output, '--asset-id', asset.asset_id,

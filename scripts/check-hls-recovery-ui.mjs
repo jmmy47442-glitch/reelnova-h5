@@ -28,7 +28,7 @@ try {
     });
     await page.route('**/recovery-fixture/**', async route => {
       const file = new URL(route.request().url()).pathname.split('/recovery-fixture/')[1];
-      assert.match(file, /^(master\.m3u8|v(?:360|480|720)\/(index\.m3u8|init\.mp4|seg-\d{6}\.m4s))$/);
+      assert.match(file, /^(master\.m3u8|v(?:360|480|720|1080)\/(index\.m3u8|init\.mp4|seg-\d{6}\.m4s))$/);
       requests.push({ file, time: Date.now() });
       // Keep lower levels fast. A stalled high-quality request must be
       // abandoned by real hls.js once the player restores adaptive mode.
