@@ -1,4 +1,5 @@
-FROM node:22-bookworm-slim
+ARG NODE_IMAGE=docker.m.daocloud.io/library/node:22-bookworm-slim
+FROM ${NODE_IMAGE}
 
 ARG TIGRISFS_VERSION=1.2.2
 

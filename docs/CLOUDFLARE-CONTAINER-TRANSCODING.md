@@ -12,7 +12,8 @@
 ## 前置条件
 
 - Cloudflare Workers Paid 计划，帐号已可使用 Containers 和 Workflows。
-- 本地安装并启动 Docker，Wrangler 部署时会构建 `linux/amd64` 镜像。
+- 甲方的 Cloudflare 账号已开通 Workers Paid、Containers 和 Workflows。
+- 由甲方指定的部署机或 CI Runner 安装并启动 Docker；Wrangler 会在该部署环境构建 `linux/amd64` 镜像。开发人员本机不需要连接甲方生产账号。
 - 为 `reelnova-media-private` 创建专用 R2 S3 API Token，仅授予该 bucket 对象读写权限。不要使用帐号级 Global API Key。
 
 ## Secrets
@@ -28,6 +29,8 @@ npx wrangler secret put R2_SECRET_ACCESS_KEY --config wrangler.transcode.toml
 
 ## 部署顺序
 
+以下命令应由甲方授权的部署人员或 CI/CD 执行，并使用甲方 Cloudflare API Token。项目交付本身不包含甲方账号登录、R2 数据迁移或生产环境发布。
+
 ```bash
 # 1. 先部署 Workflow + Container，创建 Service Binding 目标
 npm run deploy:transcoder
@@ -39,7 +42,19 @@ npm run deploy:media-worker
 npm run build:cloudflare
 ```
 
+Nuxt 应用建议在 Cloudflare Dashboard 的 **Workers & Pages** 中连接代码仓库部署：
+
+- Build command：`npm run build:cloudflare`
+- Build output directory：`dist`
+- Node.js：使用仓库 `.nvmrc` 的 Node 22.22.0
+- 绑定 D1 数据库，变量名必须是 `DB`
+- 配置应用所需的 PayPal、管理员、播放签名和媒体 Worker 环境变量
+
+如果甲方使用 CI 发布 Pages，CI 只负责构建并触发 Pages 部署；D1 binding、Secrets 和 Custom Domains 仍在甲方 Cloudflare 项目中配置。
+
 部署后在管理后台“站点与支付”检查 `R2 连接` 和 `FFmpeg Container` 都为“已连通”。新建 Container 首次部署后可能需要数分钟完成资源预置。
+
+甲方需要提供或自行配置：Cloudflare Account ID、R2 bucket、D1 数据库、部署 API Token、R2 S3 API Token，以及应用域名对应的 DNS/Worker 路由。生产 Secret 只应写入甲方 Cloudflare Secrets，不要提交到代码仓库或交付包。
 
 ## 转码规则
 
@@ -56,4 +71,4 @@ npm run test:media-worker
 npm run typecheck
 ```
 
-`wrangler deploy --dry-run --config wrangler.transcode.toml` 也会构建镜像，因此同样需要 Docker daemon。
+`wrangler deploy --dry-run --config wrangler.transcode.toml` 也会构建镜像，因此应在甲方部署机或 CI Runner 执行；若仅需检查 Worker 配置，可使用 `--containers-rollout=none` 跳过镜像构建。
