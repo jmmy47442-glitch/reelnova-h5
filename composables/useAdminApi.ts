@@ -63,7 +63,10 @@ export const useAdminApi = () => {
       request<MediaUploadSession>(`/admin/series/${encodeURIComponent(seriesId)}/episodes/uploads`, { method: 'POST', body: input }),
     reportUploadProgress: (uploadId: string, uploadedBytes: number) => request<{ uploadedBytes: number; fileSizeBytes: number }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}/progress`, { method: 'PATCH', body: { uploadedBytes } }),
     getEpisodeUpload: (uploadId: string) => request<{ uploadId: string; mediaAssetId: string; status: string; uploadedBytes: number; fileSizeBytes: number; r2Completed: boolean; streamUid: string | null; recoverable: boolean; errorMessage: string | null; updatedAt: string | null }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}`),
-    cancelEpisodeUpload: (uploadId: string) => request<{ uploadId: string; mediaAssetId: string; episodeId: string; status: 'aborted'; cleanupPending: boolean }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' }),
+    cancelEpisodeUpload: (uploadId: string, episodeId?: string) => request<{ uploadId: string; mediaAssetId: string; episodeId: string; status: 'aborted'; cleanupPending: boolean }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}`, {
+      method: 'DELETE',
+      query: episodeId ? { episodeId } : undefined,
+    }),
     completeEpisodeUpload: (uploadId: string, parts: MediaUploadPart[]) => request<{ uploadId: string; mediaAssetId: string; streamUid: string | null; status: 'ready' | 'processing' | 'failed'; errorMessage?: string }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}/complete`, { method: 'POST', body: { parts } }),
     retryTranscode: (assetId: string) => request<{ assetId: string; status: 'ready' | 'processing' | 'failed'; errorMessage?: string }>(`/admin/media/${encodeURIComponent(assetId)}/retry`, { method: 'POST' }),
     getTaxonomy: () => request<{ items: TaxonomyItem[] }>('/admin/taxonomy'),

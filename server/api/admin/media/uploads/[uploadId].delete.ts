@@ -6,7 +6,10 @@ import { mediaWorkerRequest } from '~/server/utils/media-pipeline';
 
 export default defineEventHandler(async (event) => {
   const requestedId = getRouterParam(event, 'uploadId') || '';
-  const upload = await getMediaUploadState(event, requestedId) || await getActiveMediaUploadStateByEpisode(event, requestedId);
+  const episodeId = String(getQuery(event).episodeId || '').trim();
+  const upload = (episodeId ? await getActiveMediaUploadStateByEpisode(event, episodeId) : null)
+    || await getMediaUploadState(event, requestedId)
+    || await getActiveMediaUploadStateByEpisode(event, requestedId);
   if (!upload) throw createError({ statusCode: 404, statusMessage: 'Upload session not found' });
   const uploadId = upload.id;
   if (upload.status === 'aborted') {

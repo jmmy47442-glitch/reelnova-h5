@@ -648,8 +648,10 @@ const cancelEpisode = async (episode: AdminEpisode) => {
   }
   cancellingUploadIds.value = [...cancellingUploadIds.value, uploadKey];
   try {
-    const result = await api.cancelEpisodeUpload(uploadKey);
-    clearUploadResumeState(episode.uploadId || uploadKey);
+    // Pass the episode id as a fallback: a stale upload id can remain in the
+    // episode list while the server has already replaced the upload session.
+    const result = await api.cancelEpisodeUpload(uploadKey, episode.id);
+    clearUploadResumeState(result.uploadId || episode.uploadId || uploadKey);
     ElMessage.success(result.cleanupPending ? '上传已取消，R2 分片将在后台清理' : '上传已取消');
     await Promise.all([loadEpisodes(false), loadSeries()]);
   } catch (reason: any) {
