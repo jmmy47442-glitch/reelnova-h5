@@ -73,7 +73,11 @@ export default defineNuxtConfig({
         { name: 'theme-color', content: '#09090d' },
         { name: 'viewport', content: 'width=device-width, initial-scale=1, viewport-fit=cover' },
       ],
-      link: [{ rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' }],
+      link: [
+        { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' },
+        { rel: 'preconnect', href: 'https://www.paypal.com' },
+        { rel: 'preconnect', href: 'https://www.paypalobjects.com', crossorigin: 'anonymous' },
+      ],
       script: [{
         innerHTML: "(function(){try{var theme=localStorage.getItem('reelnova-theme');if(theme==='light'||theme==='dark'){document.documentElement.dataset.theme=theme;document.documentElement.style.colorScheme=theme;var meta=document.querySelector('meta[name=\"theme-color\"]');if(meta)meta.setAttribute('content',theme==='light'?'#f7f8fb':'#09090d')}}catch(error){}})();",
         tagPosition: 'head',

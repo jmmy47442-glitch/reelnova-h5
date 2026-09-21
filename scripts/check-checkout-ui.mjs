@@ -90,8 +90,8 @@ async function scenario(name, options, run, beforeOpen) {
     return route.fulfill({ json: envelope(data) });
   });
   try {
-    await page.goto(`${baseURL}/login`, { waitUntil: 'networkidle' });
-    await page.waitForFunction(() => typeof window.useNuxtApp === 'function', { timeout: 20_000 }).catch(async (error) => { console.log('Hydration errors', errors); console.log(await page.locator('body').innerText()); throw error; });
+    await page.goto(`${baseURL}/login`, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => typeof window.useNuxtApp === 'function' && typeof window.useNuxtApp().$router?.push === 'function', { timeout: 20_000 }).catch(async (error) => { console.log('Hydration errors', errors); console.log(await page.locator('body').innerText()); throw error; });
     await page.evaluate(async (series) => {
       const nuxt = window.useNuxtApp();
       nuxt.payload.state['$suser-session'] = { userId: 'test-user', email: 'test@example.com' };
@@ -126,13 +126,14 @@ try {
     await page.getByText('Choose how you would like to pay.', { exact: true }).waitFor();
     assert.equal(await page.locator('.checkout-loading:visible').count(), 0);
   });
-  await scenario('only the selected provider mounts after the SDK is warmed', {}, async ({ page, calls }) => {
+  await scenario('site entry warms providers while only the selected UI mounts', {}, async ({ page, calls }) => {
+    await page.waitForFunction(() => window.__appleConfigCalls === 1);
     assert.equal(await page.locator('.paypal-buttons:visible, .paypal-card-fields:visible, .apple-pay-button:visible').count(), 0);
-    assert.equal(await page.evaluate(() => window.__appleConfigCalls), undefined);
+    assert.equal(await page.evaluate(() => window.__appleConfigCalls), 1);
     assert.equal(await page.evaluate(() => window.__correctCardDetails), undefined);
     await page.getByRole('button', { name: 'PayPal', exact: true }).click();
     await page.getByRole('button', { name: 'Mock PayPal checkout' }).waitFor();
-    assert.equal(await page.evaluate(() => window.__appleConfigCalls), undefined);
+    assert.equal(await page.evaluate(() => window.__appleConfigCalls), 1);
     assert.equal(await page.evaluate(() => window.__correctCardDetails), undefined);
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
   });
@@ -143,7 +144,7 @@ try {
     await page.getByText('PayPal unavailable', { exact: true }).waitFor();
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
   });
-  await scenario('page entry warms only the SDK; Apple Pay initializes after selection', {}, async ({ page, calls, configRequests, sdkRequests }) => {
+  await scenario('page entry warms SDK and Apple Pay once without creating an order', {}, async ({ page, calls, configRequests, sdkRequests }) => {
     await page.getByRole('button', { name: 'Apple Pay', exact: true }).click();
     await page.getByRole('button', { name: 'Buy with Apple Pay' }).waitFor();
     assert.equal(configRequests(), 1);
@@ -151,9 +152,9 @@ try {
     assert.equal(await page.evaluate(() => window.__appleConfigCalls), 1);
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
   }, async ({ page, calls }) => {
-    await page.waitForFunction(() => Boolean(window.paypal));
+    await page.waitForFunction(() => window.__appleConfigCalls === 1);
     assert.equal(await page.getByRole('dialog').count(), 0);
-    assert.equal(await page.evaluate(() => window.__appleConfigCalls), undefined);
+    assert.equal(await page.evaluate(() => window.__appleConfigCalls), 1);
     assert.equal(await page.evaluate(() => window.__appleSession), undefined);
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
   });

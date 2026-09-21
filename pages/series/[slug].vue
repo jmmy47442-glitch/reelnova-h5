@@ -5,12 +5,6 @@ import { useAnalytics } from '~/composables/useAnalytics';
 import { invalidatePageDataCache, usePageData } from '~/composables/usePageData';
 
 definePageMeta({ hideBottomNav: true, keepalive: true });
-useHead({
-  link: [
-    { rel: 'preconnect', href: 'https://www.paypal.com' },
-    { rel: 'preconnect', href: 'https://www.paypalobjects.com', crossorigin: 'anonymous' },
-  ],
-});
 const route = useRoute();
 const api = useContentApi();
 const goBack = useSafeBack(() => '/');

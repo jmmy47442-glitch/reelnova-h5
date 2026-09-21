@@ -2,6 +2,7 @@
 import { Check, CircleAlert, Clock3, CreditCard, LoaderCircle, ShieldCheck, X } from 'lucide-vue-next';
 import { useUserAuth } from '~/composables/useUserAuth';
 import { useAnalytics } from '~/composables/useAnalytics';
+import { usePaymentPreparation } from '~/composables/usePaymentPreparation';
 import { loadPayPalSdk, prepareApplePay, supportsApplePay } from '~/utils/paypal-sdk';
 import type { Order, OrderStatus, Series } from '~/types/content';
 
@@ -13,13 +14,9 @@ const { track } = useAnalytics();
 const { formatPrice } = useFormatters();
 const route = useRoute();
 const { isAuthenticated } = useUserAuth();
-const cachedPaymentConfig = useState<(Awaited<ReturnType<typeof api.getPayPalConfig>> & { fetchedAt: number }) | null>('paypal-preparation-config', () => null);
+const { getPaymentConfig } = usePaymentPreparation();
 const { data: paymentConfig, refresh: refreshPaymentConfig, error: paymentConfigError } = useAsyncData('paypal-checkout-config', async () => {
-  const cached = cachedPaymentConfig.value;
-  if (cached?.available && Date.now() - cached.fetchedAt < 60_000) return cached;
-  const config = { ...await api.getPayPalConfig(), fetchedAt: Date.now() };
-  cachedPaymentConfig.value = config;
-  return config;
+  return getPaymentConfig();
 }, { server: false, lazy: true, dedupe: 'defer' });
 const status = ref<OrderStatus>('pending');
 const error = ref('');
