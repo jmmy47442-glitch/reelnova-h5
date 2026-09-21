@@ -27,7 +27,9 @@ export const loadPayPalSdk = (clientId: string): Promise<any> => {
         reject(error);
       } else resolve((window as any).paypal);
     };
-    const timer = window.setTimeout(() => finish(new Error('Payment options took too long to load.')), 10_000);
+    // PayPal can take longer than 10 seconds on a cold mobile connection even
+    // though the SDK is still downloading successfully.
+    const timer = window.setTimeout(() => finish(new Error('Payment options took too long to load.')), 30_000);
     script.onload = () => finish((window as any).paypal ? undefined : new Error('Payment SDK unavailable.'));
     script.onerror = () => finish(new Error('Payment options could not be loaded.'));
     document.head.appendChild(script);
@@ -58,7 +60,7 @@ export const prepareApplePay = (clientId: string) => {
     try {
       const config = await Promise.race([
         applepay.config(),
-        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Apple Pay configuration timed out.')), 10_000); }),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Apple Pay configuration timed out.')), 20_000); }),
       ]);
       return { applepay, config };
     } finally { clearTimeout(timer); }

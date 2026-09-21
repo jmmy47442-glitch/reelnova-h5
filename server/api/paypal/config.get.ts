@@ -4,7 +4,7 @@ import { getActivePayPalEnvironment, getPayPalConfigurationStatus } from '~/serv
 export default defineEventHandler(async (event) => {
   const environment = await getActivePayPalEnvironment(event);
   const config = useRuntimeConfig(event);
-  const status = await getPayPalConfigurationStatus(event);
+  const status = await getPayPalConfigurationStatus(event, environment);
   const legacyEnvironment = config.paypalEnvironment === 'production' ? 'production' : 'sandbox';
   const specificClientId = environment === 'production'
     ? String(config.paypalProductionBrowserClientId || '')

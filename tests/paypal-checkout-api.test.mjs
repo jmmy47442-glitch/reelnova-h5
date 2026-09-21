@@ -15,7 +15,7 @@ function harness({ afterCreate, beforeRead, afterCapture, beforeRefund, afterRef
   const directory = new URL('../migrations/', import.meta.url);
   for (const file of readdirSync(directory).filter((name) => name.endsWith('.sql')).sort()) database.exec(readFileSync(new URL(file, directory), 'utf8'));
   database.exec("INSERT INTO users (user_id, email, created_at, updated_at, last_seen_at) VALUES ('u', 'u@example.com', 'now', 'now', 'now')");
-  const providerOrders = new Map(); let providerCreates = 0; let providerCaptures = 0;
+  const providerOrders = new Map(); let providerCreates = 0; let providerCaptures = 0; let providerTokens = 0;
   const providerRefunds = new Map();
   const d1 = {
     d1First: async (_event, sql, params = []) => database.prepare(sql).get(...params) || null,
@@ -32,7 +32,7 @@ function harness({ afterCreate, beforeRead, afterCapture, beforeRefund, afterRef
     getRequestCountry: () => 'US',
   };
   const providerFetch = async (url, options) => {
-    if (url.endsWith('/token')) return { access_token: 'test-access-token' };
+    if (url.endsWith('/token')) { providerTokens++; return { access_token: 'test-access-token', expires_in: 32_400 }; }
     if (url.includes('/v2/payments/captures/') && url.endsWith('/refund')) {
       await beforeRefund?.(options);
       const key = options.headers['PayPal-Request-Id'];
@@ -102,7 +102,7 @@ function harness({ afterCreate, beforeRead, afterCapture, beforeRefund, afterRef
   imports['~/server/utils/reporting-orders'] = load('server/utils/reporting-orders.ts');
   imports['~/server/utils/paypal'] = load('server/utils/paypal.ts');
   return {
-    db: database, providerOrders, creates: () => providerCreates, captures: () => providerCaptures,
+    db: database, providerOrders, creates: () => providerCreates, captures: () => providerCaptures, tokens: () => providerTokens,
     providerRefunds, refund: load('server/api/admin/orders/[orderNo]/refund.post.ts').default,
     customerRefund: load('server/api/me/orders/[orderNo]/refund.post.ts').default,
     adminOrders: load('server/api/admin/orders.get.ts').default,
@@ -114,6 +114,16 @@ function harness({ afterCreate, beforeRead, afterCapture, beforeRefund, afterRef
     paypal: imports['~/server/utils/paypal'],
   };
 }
+
+test('PayPal OAuth token is shared by concurrent and sequential provider calls', async () => {
+  const h = harness();
+  try {
+    await Promise.all([h.paypal.testPayPalConnection({}), h.paypal.testPayPalConnection({})]);
+    await h.paypal.testPayPalConnection({});
+    assert.equal(h.tokens(), 1);
+  } finally { h.db.close(); }
+});
+
 async function paidOrder(h) {
   const order = (await h.create({ body: { seriesId: 's', paymentMethod: 'card' } })).data;
   h.providerOrders.get(order.paypalOrderId).status = 'APPROVED';

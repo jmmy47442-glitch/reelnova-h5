@@ -13,7 +13,7 @@ import {
   isTerminalCaptureFailureStatus,
 } from '~/server/utils/paypal-payment-state';
 
-interface PayPalAccessToken { access_token: string }
+interface PayPalAccessToken { access_token: string; expires_in?: number }
 interface PayPalLink { rel: string; href: string }
 interface PayPalOrderResponse { id: string; status: string; links?: PayPalLink[] }
 interface PayPalRefundResponse { id: string; status: string; amount?: { currency_code: string; value: string } }
@@ -145,8 +145,8 @@ const environmentStatus = (event: H3Event, environment: PayPalEnvironment) => {
   };
 };
 
-export const getPayPalConfigurationStatus = async (event: H3Event) => {
-  const environment = await getActivePayPalEnvironment(event);
+export const getPayPalConfigurationStatus = async (event: H3Event, requestedEnvironment?: PayPalEnvironment) => {
+  const environment = requestedEnvironment || await getActivePayPalEnvironment(event);
   const current = environmentStatus(event, environment);
   return {
     ...current,
@@ -175,13 +175,44 @@ const configFor = async (event: H3Event, requestedEnvironment?: PayPalEnvironmen
 
 export const requirePayPalConfiguration = (event: H3Event, environment?: PayPalEnvironment) => configFor(event, environment);
 
+interface CachedPayPalToken {
+  token: string;
+  baseUrl: string;
+  expiresAt: number;
+}
+
+const accessTokenCache = new Map<string, CachedPayPalToken>();
+const accessTokenRequests = new Map<string, Promise<CachedPayPalToken>>();
+
 const accessToken = async (event: H3Event, environment?: PayPalEnvironment): Promise<{ token: string; baseUrl: string }> => {
-  const { clientId, secret, baseUrl } = await configFor(event, environment);
-  const auth = btoa(`${clientId}:${secret}`);
-  const response = await paypalRequest<PayPalAccessToken>(`${baseUrl}/v1/oauth2/token`, {
-    method: 'POST', timeout: paypalRequestTimeoutMs, headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'grant_type=client_credentials',
-  }, 'authentication');
-  return { token: response.access_token, baseUrl };
+  const config = await configFor(event, environment);
+  const cacheKey = `${config.environment}:${config.clientId}`;
+  const cached = accessTokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return { token: cached.token, baseUrl: cached.baseUrl };
+
+  const pending = accessTokenRequests.get(cacheKey);
+  if (pending) return pending;
+
+  const request = (async () => {
+    const auth = btoa(`${config.clientId}:${config.secret}`);
+    const response = await paypalRequest<PayPalAccessToken>(`${config.baseUrl}/v1/oauth2/token`, {
+      method: 'POST', timeout: paypalRequestTimeoutMs, headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'grant_type=client_credentials',
+    }, 'authentication');
+    const lifetimeSeconds = Number.isFinite(response.expires_in) ? Number(response.expires_in) : 300;
+    const entry = {
+      token: response.access_token,
+      baseUrl: config.baseUrl,
+      expiresAt: Date.now() + Math.max(30, lifetimeSeconds - 60) * 1000,
+    };
+    accessTokenCache.set(cacheKey, entry);
+    return entry;
+  })();
+  accessTokenRequests.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    if (accessTokenRequests.get(cacheKey) === request) accessTokenRequests.delete(cacheKey);
+  }
 };
 
 export const testPayPalConnection = async (event: H3Event, environment?: PayPalEnvironment): Promise<boolean> => Boolean((await accessToken(event, environment)).token);
