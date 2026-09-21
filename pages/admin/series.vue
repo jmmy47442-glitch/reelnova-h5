@@ -314,6 +314,10 @@ const mediaStatus = (episode: AdminEpisode) => episode.videoStatus === 'validati
 const mediaErrorMessage = (message: string) => /Bad Request: The request was invalid/i.test(message)
   ? '无法读取视频，请重新校验；如仍失败，请重新上传兼容 MP4。'
   : message;
+const uploadRequestErrorMessage = (reason: any) => {
+  const message = reason?.data?.statusMessage || reason?.data?.message || reason?.statusMessage || reason?.message;
+  return message ? mediaErrorMessage(String(message)) : '上传中断';
+};
 const episodeHasActiveUpload = (episode: AdminEpisode) => Boolean(episode.uploadId) || episode.videoStatus === 'uploading';
 const episodeUploadKey = (episode: AdminEpisode) => episode.uploadId || episode.id;
 
@@ -615,7 +619,7 @@ const uploadPart = (url: string, token: string, blob: Blob, onProgress: (loaded:
 });
 
 const cancelUpload = () => {
-  if (!uploading.value || uploadCancelled.value || uploadFinalizing.value) return;
+  if (!uploading.value || uploadCancelled.value) return;
   uploadCancelled.value = true;
   uploadLabel.value = '正在取消上传…';
   uploadSpeed.value = 0;
@@ -766,6 +770,7 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
   uploadLabel.value = `正在提交 Episode ${episodeNo} · ${file.name}`;
   const completion = await api.completeEpisodeUpload(session.id, [...parts.values()]);
   uploadFinalizing.value = false;
+  if (uploadCancelled.value) throw new DOMException('上传已取消', 'AbortError');
   if (completion.status === 'failed') {
     const detail = completion.errorMessage ? `：${mediaErrorMessage(completion.errorMessage)}` : '';
     throw new Error(`视频校验失败，请检查原片后重试${detail}`);
@@ -832,7 +837,7 @@ const startTranscode = async () => {
       await Promise.all([loadEpisodes(false), loadSeries()]);
       return;
     }
-    const message = reason instanceof Error ? reason.message : '上传中断';
+    const message = uploadRequestErrorMessage(reason);
     if (message.includes('原片已保存到 R2')) ElMessage.warning(`${message}，可重新点击上传或在分集列表重试。`);
     else if (activeUploadSessionId.value) ElMessage.error(`${message}，重新点击可从已完成分片继续`);
     else ElMessage.error(message);
@@ -1030,7 +1035,7 @@ const exportSeries = () => {
             </div>
           </div>
           <div v-if="uploading || uploadProgress" class="episode-upload-progress">
-            <div class="episode-upload-progress__heading" aria-live="polite"><span>{{ uploadLabel || '上传完成' }}</span><div><strong>{{ uploadProgress }}%</strong><el-button v-if="uploading && !uploadFinalizing" text type="danger" size="small" :disabled="uploadCancelled" :aria-label="uploadCancelled ? '正在取消上传' : '取消当前视频上传'" @click="cancelUpload"><X :size="14" />{{ uploadCancelled ? '取消中' : '取消上传' }}</el-button></div></div>
+            <div class="episode-upload-progress__heading" aria-live="polite"><span>{{ uploadLabel || '上传完成' }}</span><div><strong>{{ uploadProgress }}%</strong><el-button v-if="uploading" text type="danger" size="small" :disabled="uploadCancelled" :aria-label="uploadCancelled ? '正在取消上传' : '取消当前视频上传'" @click="cancelUpload"><X :size="14" />{{ uploadCancelled ? '取消中' : (uploadFinalizing ? '取消完成' : '取消上传') }}</el-button></div></div>
             <el-progress :percentage="uploadProgress" :show-text="false" :status="uploadProgress === 100 ? 'success' : undefined" />
             <div class="episode-upload-progress__stats"><span>{{ formatBytes(uploadUploadedBytes) }} / {{ formatBytes(uploadTotalBytes) }}</span><strong>{{ formatUploadSpeed(uploadSpeed) }}</strong></div>
           </div>

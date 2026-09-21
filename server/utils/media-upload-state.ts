@@ -132,7 +132,7 @@ export const getActiveMediaUploadStateByEpisode = (event: H3Event, episodeId: st
   JOIN media_assets a ON a.id = u.media_asset_id
   JOIN episodes e ON e.id = a.episode_id
   JOIN series s ON s.id = e.series_id
-  WHERE e.id = ? AND u.status IN ('created', 'uploading')
+  WHERE e.id = ? AND u.status IN ('created', 'uploading', 'completing', 'failed')
   ORDER BY u.created_at DESC LIMIT 1`, [episodeId]);
 
 const normalizeParts = (parts: MediaUploadPart[]) => [...parts].sort((left, right) => left.partNumber - right.partNumber);
@@ -148,8 +148,11 @@ const validateParts = (upload: MediaUploadStateRow, parts: MediaUploadPart[]) =>
 };
 
 const errorMessage = (error: unknown) => {
+  if (typeof error === 'object' && error && 'statusMessage' in error) {
+    const statusMessage = String(error.statusMessage || '');
+    if (statusMessage) return statusMessage;
+  }
   if (error instanceof Error) return error.message;
-  if (typeof error === 'object' && error && 'statusMessage' in error) return String(error.statusMessage || 'Upload completion failed');
   return 'Upload completion failed';
 };
 

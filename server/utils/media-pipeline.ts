@@ -41,14 +41,28 @@ export const mediaWorkerRequest = async <T>(event: H3Event, path: string, body: 
   const rawBody = JSON.stringify(body);
   const timestamp = String(Math.floor(Date.now() / 1000));
   const signature = await signHex(`${timestamp}.${rawBody}`, secret);
-  const response = await fetch(`${workerUrl}${path}`, {
-    method,
-    headers: { 'content-type': 'application/json', 'x-reelnova-timestamp': timestamp, 'x-reelnova-signature': signature },
-    body: rawBody,
-    signal: AbortSignal.timeout(15_000),
-  });
-  const payload = await response.json().catch(() => ({})) as { error?: string } & T;
-  if (!response.ok) throw createError({ statusCode: 502, statusMessage: payload.error || `Media worker request failed (${response.status})` });
+  let response: Response;
+  try {
+    response = await fetch(`${workerUrl}${path}`, {
+      method,
+      headers: { 'content-type': 'application/json', 'x-reelnova-timestamp': timestamp, 'x-reelnova-signature': signature },
+      body: rawBody,
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Network request failed';
+    throw createError({ statusCode: 502, statusMessage: `Media Worker request failed: ${message}` });
+  }
+  const responseText = await response.text().catch(() => '');
+  let payload: ({ error?: string } & T) | null = null;
+  try { payload = responseText ? JSON.parse(responseText) as ({ error?: string } & T) : null; } catch { /* handled below */ }
+  if (!response.ok) {
+    const workerMessage = payload?.error || responseText.slice(0, 500).trim();
+    throw createError({ statusCode: 502, statusMessage: workerMessage
+      ? `Media Worker request failed (${response.status}): ${workerMessage}`
+      : `Media Worker request failed (${response.status})` });
+  }
+  if (!payload) throw createError({ statusCode: 502, statusMessage: `Media Worker returned invalid JSON (${response.status})` });
   return payload;
 };
 
@@ -61,7 +75,7 @@ export const listAdminEpisodes = async (event: H3Event, seriesId: string, _sync 
     LEFT JOIN media_assets a ON a.id = e.active_media_asset_id OR (e.active_media_asset_id IS NULL AND a.id = (
       SELECT id FROM media_assets candidate WHERE candidate.episode_id = e.id AND candidate.deleted_at IS NULL ORDER BY candidate.created_at DESC LIMIT 1))
     LEFT JOIN media_upload_sessions u ON u.id = (SELECT id FROM media_upload_sessions candidate
-      WHERE candidate.media_asset_id = a.id AND candidate.status IN ('created', 'uploading') ORDER BY candidate.created_at DESC LIMIT 1)
+      WHERE candidate.media_asset_id = a.id AND candidate.status IN ('created', 'uploading', 'completing', 'failed') ORDER BY candidate.created_at DESC LIMIT 1)
     WHERE e.series_id = ? AND e.deleted_at IS NULL ORDER BY e.episode_no`, [seriesId]);
   return rows.map((row) => ({
     id: row.id, episodeNo: row.episode_no, title: row.title, durationSeconds: Number(row.duration_seconds),

@@ -15,7 +15,9 @@ export default defineEventHandler(async (event) => {
   if (upload.status === 'aborted') {
     return ok({ uploadId, mediaAssetId: upload.media_asset_id, episodeId: upload.episode_id, status: 'aborted' as const, cleanupPending: false });
   }
-  if (!['created', 'uploading'].includes(upload.status) || upload.r2_completed_at) {
+  // A failed completion is still cancellable as long as R2 has not been
+  // committed. This covers Media Worker/transcoder failures after upload.
+  if (!['created', 'uploading', 'completing', 'failed'].includes(upload.status) || upload.r2_completed_at) {
     throw createError({ statusCode: 409, statusMessage: 'Upload can no longer be cancelled' });
   }
 
@@ -24,18 +26,20 @@ export default defineEventHandler(async (event) => {
     WHERE episode_id = ? AND id <> ? AND source_object_key IS NOT NULL AND validation_status = 'valid'
     ORDER BY created_at DESC LIMIT 1`, [upload.episode_id, upload.media_asset_id]);
   await d1Run(event, `UPDATE media_upload_sessions SET status = 'aborted', last_error = 'Upload cancelled by administrator',
-    reconciled_at = ?, updated_at = ? WHERE id = ? AND status IN ('created', 'uploading')`, [now, now, upload.id]);
+    reconciled_at = ?, updated_at = ? WHERE id = ? AND status IN ('created', 'uploading', 'completing', 'failed')`, [now, now, upload.id]);
   await d1Run(event, `UPDATE media_assets SET status = 'superseded', validation_error = 'Upload cancelled',
-    deleted_at = COALESCE(deleted_at, ?), updated_at = ? WHERE id = ? AND status = 'uploading'`,
+    deleted_at = COALESCE(deleted_at, ?), updated_at = ? WHERE id = ? AND status IN ('uploading', 'processing', 'failed')`,
   [now, now, upload.media_asset_id]);
+  await d1Run(event, `UPDATE transcode_jobs SET status = 'cancelled', error_message = 'Upload cancelled', updated_at = ?
+    WHERE media_asset_id = ? AND status IN ('queued', 'processing', 'failed')`, [now, upload.media_asset_id]).catch(() => undefined);
   if (previousAsset) {
     await d1Run(event, `UPDATE media_assets SET status = 'ready', deleted_at = NULL, updated_at = ? WHERE id = ?`, [now, previousAsset.id]);
     await d1Run(event, `UPDATE episodes SET active_media_asset_id = ?, video_status = 'ready', updated_at = ?
-      WHERE id = ? AND active_media_asset_id = ? AND video_status = 'uploading'`,
+      WHERE id = ? AND active_media_asset_id = ? AND video_status IN ('uploading', 'validating', 'processing')`,
     [previousAsset.id, now, upload.episode_id, upload.media_asset_id]);
   } else {
     await d1Run(event, `UPDATE episodes SET active_media_asset_id = NULL, video_status = 'waiting_upload', updated_at = ?
-      WHERE id = ? AND active_media_asset_id = ? AND video_status = 'uploading'`, [now, upload.episode_id, upload.media_asset_id]);
+      WHERE id = ? AND active_media_asset_id = ? AND video_status IN ('uploading', 'validating', 'processing')`, [now, upload.episode_id, upload.media_asset_id]);
   }
   await d1Run(event, `UPDATE series SET status = 'draft', updated_at = ? WHERE id = ? AND status = 'processing'
     AND NOT EXISTS (SELECT 1 FROM episodes WHERE series_id = ? AND deleted_at IS NULL
