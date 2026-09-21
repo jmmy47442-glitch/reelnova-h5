@@ -768,7 +768,29 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
   if (uploadCancelled.value) throw new DOMException('上传已取消', 'AbortError');
   uploadFinalizing.value = true;
   uploadLabel.value = `正在提交 Episode ${episodeNo} · ${file.name}`;
-  const completion = await api.completeEpisodeUpload(session.id, [...parts.values()]);
+  let completion: { uploadId: string; mediaAssetId: string; streamUid: string | null; status: 'ready' | 'processing' | 'failed'; errorMessage?: string };
+  try {
+    completion = await api.completeEpisodeUpload(session.id, [...parts.values()]);
+  } catch (error) {
+    // A response can be lost after R2/D1 committed the completion. Re-read the
+    // durable session before surfacing an error or offering cancellation; this
+    // prevents a harmless Cloudflare 502 from making the operator upload the
+    // same file again.
+    const persisted = await api.getEpisodeUpload(session.id).catch(() => null);
+    if (persisted?.status === 'completed' || persisted?.r2Completed) {
+      await loadEpisodes(false);
+      const current = episodes.value.find((episode) => episode.episodeNo === episodeNo);
+      if (current && ['ready', 'processing'].includes(current.videoStatus)) {
+        localStorage.removeItem(key);
+        localStorage.removeItem(idempotencyStorageKey);
+        activeUploadSessionId.value = null;
+        activeUploadResumeKey = '';
+        activeUploadIdempotencyKey = '';
+        return current.videoStatus === 'ready' ? 'ready' : 'processing';
+      }
+    }
+    throw error;
+  }
   uploadFinalizing.value = false;
   if (uploadCancelled.value) throw new DOMException('上传已取消', 'AbortError');
   if (completion.status === 'failed') {

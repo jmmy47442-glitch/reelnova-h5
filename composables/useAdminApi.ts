@@ -67,7 +67,13 @@ export const useAdminApi = () => {
       method: 'DELETE',
       query: episodeId ? { episodeId } : undefined,
     }),
-    completeEpisodeUpload: (uploadId: string, parts: MediaUploadPart[]) => request<{ uploadId: string; mediaAssetId: string; streamUid: string | null; status: 'ready' | 'processing' | 'failed'; errorMessage?: string }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}/complete`, { method: 'POST', body: { parts } }),
+    // R2 completion can finish just before a transient edge 502 is returned.
+    // Give the idempotent endpoint enough time for one retry, then let the
+    // uploader reconcile the persisted session state below.
+    completeEpisodeUpload: (uploadId: string, parts: MediaUploadPart[]) => request<{ uploadId: string; mediaAssetId: string; streamUid: string | null; status: 'ready' | 'processing' | 'failed'; errorMessage?: string }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}/complete`, {
+      method: 'POST', body: { parts }, timeout: 60_000, retry: 1, retryDelay: 500,
+      retryStatusCodes: [408, 429, 500, 502, 503, 504],
+    }),
     retryTranscode: (assetId: string) => request<{ assetId: string; status: 'ready' | 'processing' | 'failed'; errorMessage?: string }>(`/admin/media/${encodeURIComponent(assetId)}/retry`, { method: 'POST' }),
     getTaxonomy: () => request<{ items: TaxonomyItem[] }>('/admin/taxonomy'),
     saveTaxonomy: (items: TaxonomyItem[]) => request<{ items: TaxonomyItem[] }>('/admin/taxonomy', { method: 'PUT', body: { items } }),

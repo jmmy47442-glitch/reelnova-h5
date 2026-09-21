@@ -41,29 +41,45 @@ export const mediaWorkerRequest = async <T>(event: H3Event, path: string, body: 
   const rawBody = JSON.stringify(body);
   const timestamp = String(Math.floor(Date.now() / 1000));
   const signature = await signHex(`${timestamp}.${rawBody}`, secret);
-  let response: Response;
-  try {
-    response = await fetch(`${workerUrl}${path}`, {
-      method,
-      headers: { 'content-type': 'application/json', 'x-reelnova-timestamp': timestamp, 'x-reelnova-signature': signature },
-      body: rawBody,
-      signal: AbortSignal.timeout(15_000),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Network request failed';
-    throw createError({ statusCode: 502, statusMessage: `Media Worker request failed: ${message}` });
+  // R2 multipart completion is idempotent (the completion key and object
+  // metadata are checked by the Worker), so a short retry is safe when the
+  // edge drops a response after R2 has already committed the object. This is
+  // especially important for Pages deployments where a transient Worker 5xx
+  // otherwise leaves the upload stuck in `completing` until the hourly cron.
+  const retryablePath = method === 'POST' && (/\/complete$/.test(path) || path === '/videos/verify' || path === '/transcodes');
+  const maxAttempts = retryablePath ? 2 : 1;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 350));
+    let response: Response;
+    try {
+      response = await fetch(`${workerUrl}${path}`, {
+        method,
+        headers: { 'content-type': 'application/json', 'x-reelnova-timestamp': timestamp, 'x-reelnova-signature': signature },
+        body: rawBody,
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 < maxAttempts) continue;
+      const message = error instanceof Error ? error.message : 'Network request failed';
+      throw createError({ statusCode: 502, statusMessage: `Media Worker request failed: ${message}` });
+    }
+    const responseText = await response.text().catch(() => '');
+    let payload: ({ error?: string } & T) | null = null;
+    try { payload = responseText ? JSON.parse(responseText) as ({ error?: string } & T) : null; } catch { /* handled below */ }
+    if (!response.ok) {
+      lastError = new Error(`Media Worker request failed (${response.status})`);
+      if (attempt + 1 < maxAttempts && [408, 429, 500, 502, 503, 504].includes(response.status)) continue;
+      const workerMessage = payload?.error || responseText.slice(0, 500).trim();
+      throw createError({ statusCode: 502, statusMessage: workerMessage
+        ? `Media Worker request failed (${response.status}): ${workerMessage}`
+        : `Media Worker request failed (${response.status})` });
+    }
+    if (!payload) throw createError({ statusCode: 502, statusMessage: `Media Worker returned invalid JSON (${response.status})` });
+    return payload;
   }
-  const responseText = await response.text().catch(() => '');
-  let payload: ({ error?: string } & T) | null = null;
-  try { payload = responseText ? JSON.parse(responseText) as ({ error?: string } & T) : null; } catch { /* handled below */ }
-  if (!response.ok) {
-    const workerMessage = payload?.error || responseText.slice(0, 500).trim();
-    throw createError({ statusCode: 502, statusMessage: workerMessage
-      ? `Media Worker request failed (${response.status}): ${workerMessage}`
-      : `Media Worker request failed (${response.status})` });
-  }
-  if (!payload) throw createError({ statusCode: 502, statusMessage: `Media Worker returned invalid JSON (${response.status})` });
-  return payload;
+  throw createError({ statusCode: 502, statusMessage: lastError instanceof Error ? lastError.message : 'Media Worker request failed' });
 };
 
 export const listAdminEpisodes = async (event: H3Event, seriesId: string, _sync = true): Promise<AdminEpisode[]> => {
