@@ -314,6 +314,7 @@ const mediaStatus = (episode: AdminEpisode) => episode.videoStatus === 'validati
 const mediaErrorMessage = (message: string) => /Bad Request: The request was invalid/i.test(message)
   ? '无法读取视频，请重新校验；如仍失败，请重新上传兼容 MP4。'
   : message;
+const episodeHasActiveUpload = (episode: AdminEpisode) => Boolean(episode.uploadId) || episode.videoStatus === 'uploading';
 
 const episodeRequestStatus = (reason: any) => Number(
   reason?.statusCode || reason?.status || reason?.response?.status || reason?.data?.statusCode || 0,
@@ -476,8 +477,12 @@ const resequenceEpisodesForEditor = (items: AdminEpisode[]) => items
   });
 
 const removeEpisode = async (episode: AdminEpisode) => {
-  if (!editingId.value || deletingEpisodeIds.value.includes(episode.id)) return;
-  if (episode.videoStatus === 'uploading') {
+  // The same action is available from both the edit dialog and the episode
+  // drawer. The drawer does not set editingId, so resolve the active series
+  // from whichever context is currently open.
+  const seriesId = selectedSeries.value?.id || editingId.value;
+  if (!seriesId || deletingEpisodeIds.value.includes(episode.id)) return;
+  if (episodeHasActiveUpload(episode)) {
     ElMessage.warning('请先在分集管理中取消该集正在进行的上传');
     return;
   }
@@ -498,7 +503,7 @@ const removeEpisode = async (episode: AdminEpisode) => {
   syncEpisodeSummary();
   episodeOrderAnnouncement.value = `正在删除第 ${episode.episodeNo} 集`;
   try {
-    const result = await api.deleteEpisode(editingId.value, episode.id);
+    const result = await api.deleteEpisode(seriesId, episode.id);
     episodes.value = result.items;
     syncEpisodeSummary();
     episodeOrderAnnouncement.value = `第 ${episode.episodeNo} 集已删除，其余剧集已连续重排`;
@@ -986,8 +991,8 @@ const exportSeries = () => {
             <el-tooltip :content="episode.sourceFileName ? '替换该集视频' : '上传该集视频'" placement="top">
               <el-button class="series-editor-episode-upload" circle text type="primary" :disabled="['uploading', 'validating', 'processing'].includes(episode.videoStatus)" :aria-label="`${episode.sourceFileName ? '替换' : '上传'}第 ${episode.episodeNo} 集视频`" @click="openEpisodeUploader(episode.episodeNo)"><Upload :size="16" /></el-button>
             </el-tooltip>
-            <el-tooltip :content="episode.videoStatus === 'uploading' ? '请先取消正在进行的上传' : '删除剧集'" placement="top">
-              <el-button class="series-editor-episode-delete" circle text type="danger" :loading="deletingEpisodeIds.includes(episode.id)" :disabled="episode.videoStatus === 'uploading' || deletingEpisodeIds.includes(episode.id)" :aria-label="`删除第 ${episode.episodeNo} 集`" @click="removeEpisode(episode)"><Trash2 :size="16" /></el-button>
+            <el-tooltip :content="episodeHasActiveUpload(episode) ? '请先取消正在进行的上传' : '删除剧集'" placement="top">
+              <el-button class="series-editor-episode-delete" circle text type="danger" :loading="deletingEpisodeIds.includes(episode.id)" :disabled="episodeHasActiveUpload(episode) || deletingEpisodeIds.includes(episode.id)" :aria-label="`删除第 ${episode.episodeNo} 集`" @click="removeEpisode(episode)"><Trash2 :size="16" /></el-button>
             </el-tooltip>
           </article>
         </div>
@@ -1033,11 +1038,14 @@ const exportSeries = () => {
           <div v-for="episode in episodes" v-else :key="episode.id" class="episode-row">
             <span class="episode-index">{{ String(episode.episodeNo).padStart(2, '0') }}</span>
             <div><strong>{{ episode.title }}</strong><span>{{ episode.sourceFileName || '尚无媒体文件' }} · {{ formatBytes(episode.sourceSizeBytes) }}<template v-if="episode.durationSeconds"> · {{ formatDuration(episode.durationSeconds) }}</template></span><small v-if="episode.errorMessage" role="alert">{{ mediaErrorMessage(episode.errorMessage) }}</small></div>
-            <el-button v-if="episode.videoStatus === 'uploading' && episode.uploadId && !(uploadFinalizing && episode.uploadId === activeUploadSessionId)" class="episode-cancel-upload" text type="danger" size="small" :loading="cancellingUploadIds.includes(episode.uploadId)" :disabled="cancellingUploadIds.includes(episode.uploadId)" aria-label="取消该视频上传" @click="cancelEpisode(episode)"><X :size="14" />{{ cancellingUploadIds.includes(episode.uploadId) ? '取消中' : '取消' }}</el-button>
+            <el-button v-if="episode.uploadId && !(uploadFinalizing && episode.uploadId === activeUploadSessionId)" class="episode-cancel-upload" text type="danger" size="small" :loading="cancellingUploadIds.includes(episode.uploadId)" :disabled="cancellingUploadIds.includes(episode.uploadId)" aria-label="取消该视频上传" @click="cancelEpisode(episode)"><X :size="14" />{{ cancellingUploadIds.includes(episode.uploadId) ? '取消中' : '取消' }}</el-button>
             <el-switch :model-value="episode.isFree" inline-prompt active-text="试看" inactive-text="收费" :loading="episodeAccessSavingIds.includes(episode.id)" :aria-label="`设置第 ${episode.episodeNo} 集为${episode.isFree ? '收费' : '试看'}`" @change="(value) => toggleEpisodeAccess(episode, Boolean(value))" />
             <el-tag :type="mediaStatus(episode)[1] as any" effect="light">{{ mediaStatus(episode)[0] }}</el-tag>
             <el-tooltip v-if="episode.previewUrl" content="发布前预览" placement="top"><el-button circle text aria-label="发布前预览" @click="openPreview(episode)"><Eye :size="16" /></el-button></el-tooltip>
             <el-tooltip v-if="episode.videoStatus === 'failed' || (episode.videoStatus === 'validating' && episode.errorMessage)" content="重新校验或转码" placement="top"><el-button circle text aria-label="重新校验或转码" @click="retryTranscode(episode)"><RefreshCw :size="16" /></el-button></el-tooltip>
+            <el-tooltip :content="episodeHasActiveUpload(episode) ? '请先取消正在进行的上传' : '删除剧集'" placement="top">
+              <el-button class="episode-delete" circle text type="danger" :loading="deletingEpisodeIds.includes(episode.id)" :disabled="episodeHasActiveUpload(episode) || deletingEpisodeIds.includes(episode.id)" :aria-label="`删除第 ${episode.episodeNo} 集`" @click="removeEpisode(episode)"><Trash2 :size="16" /></el-button>
+            </el-tooltip>
           </div>
         </section>
       </div>
