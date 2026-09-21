@@ -1,13 +1,14 @@
 import { ok } from '~/server/utils/response';
 import { recordAdminAudit } from '~/server/utils/admin-audit';
 import { d1First, d1Run } from '~/server/utils/cloudflare-d1';
-import { getMediaUploadState } from '~/server/utils/media-upload-state';
+import { getActiveMediaUploadStateByEpisode, getMediaUploadState } from '~/server/utils/media-upload-state';
 import { mediaWorkerRequest } from '~/server/utils/media-pipeline';
 
 export default defineEventHandler(async (event) => {
-  const uploadId = getRouterParam(event, 'uploadId') || '';
-  const upload = await getMediaUploadState(event, uploadId);
+  const requestedId = getRouterParam(event, 'uploadId') || '';
+  const upload = await getMediaUploadState(event, requestedId) || await getActiveMediaUploadStateByEpisode(event, requestedId);
   if (!upload) throw createError({ statusCode: 404, statusMessage: 'Upload session not found' });
+  const uploadId = upload.id;
   if (upload.status === 'aborted') {
     return ok({ uploadId, mediaAssetId: upload.media_asset_id, episodeId: upload.episode_id, status: 'aborted' as const, cleanupPending: false });
   }

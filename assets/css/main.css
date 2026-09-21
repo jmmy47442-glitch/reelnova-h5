@@ -716,7 +716,7 @@ html[data-theme='light'] .card-field-error { color: #b91c1c; }
 .series-editor-episode-row__content strong { color: var(--admin-text); font-size: 11px; }
 .series-editor-episode-row__content span { color: var(--admin-muted); font-size: 9px; }
 .series-editor-form-hint { display: block; margin-top: 5px; color: var(--admin-muted); font-size: 10px; line-height: 1.4; }
-.series-editor-episode-row .el-switch, .episode-row .el-switch { flex: 0 0 auto; }
+.series-editor-episode-row .el-switch, .episode-row .el-switch { flex: 0 0 auto; }.series-editor-episode-cancel { flex: 0 0 auto; margin: 0 !important; padding-inline: 4px !important; }.series-editor-episode-cancel svg { margin-right: 3px !important; }
 .series-editor-episode-preview, .series-editor-episode-upload, .series-editor-episode-delete { width: 44px !important; height: 44px !important; flex: 0 0 auto; }
 .series-editor-episode-row > .el-tooltip__trigger { display: inline-flex; width: 44px; height: 44px; flex: 0 0 auto; }
 .series-editor-episode-state { display: flex; min-height: 112px; padding: 16px; color: var(--admin-muted); flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 10px; }

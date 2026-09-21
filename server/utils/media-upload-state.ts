@@ -123,6 +123,18 @@ export const getMediaUploadState = (event: H3Event, uploadId: string) => d1First
   JOIN series s ON s.id = e.series_id
   WHERE u.id = ?`, [uploadId]);
 
+// The episode list can briefly render an uploading episode before the upload
+// session id has propagated to the client. Resolve the current session by
+// episode as a safe fallback for the cancel action.
+export const getActiveMediaUploadStateByEpisode = (event: H3Event, episodeId: string) => d1First<MediaUploadStateRow>(event, `SELECT
+    u.*, a.stream_uid AS asset_stream_uid, a.status AS asset_status, a.validation_error AS asset_error, a.episode_id, e.episode_no, e.series_id, s.title AS series_title
+  FROM media_upload_sessions u
+  JOIN media_assets a ON a.id = u.media_asset_id
+  JOIN episodes e ON e.id = a.episode_id
+  JOIN series s ON s.id = e.series_id
+  WHERE e.id = ? AND u.status IN ('created', 'uploading')
+  ORDER BY u.created_at DESC LIMIT 1`, [episodeId]);
+
 const normalizeParts = (parts: MediaUploadPart[]) => [...parts].sort((left, right) => left.partNumber - right.partNumber);
 
 const validateParts = (upload: MediaUploadStateRow, parts: MediaUploadPart[]) => {

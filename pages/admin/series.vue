@@ -315,6 +315,7 @@ const mediaErrorMessage = (message: string) => /Bad Request: The request was inv
   ? '无法读取视频，请重新校验；如仍失败，请重新上传兼容 MP4。'
   : message;
 const episodeHasActiveUpload = (episode: AdminEpisode) => Boolean(episode.uploadId) || episode.videoStatus === 'uploading';
+const episodeUploadKey = (episode: AdminEpisode) => episode.uploadId || episode.id;
 
 const episodeRequestStatus = (reason: any) => Number(
   reason?.statusCode || reason?.status || reason?.response?.status || reason?.data?.statusCode || 0,
@@ -638,21 +639,23 @@ const clearUploadResumeState = (uploadId: string) => {
 };
 
 const cancelEpisode = async (episode: AdminEpisode) => {
-  if (!episode.uploadId || cancellingUploadIds.value.includes(episode.uploadId)) return;
+  if (!episodeHasActiveUpload(episode)) return;
+  const uploadKey = episodeUploadKey(episode);
+  if (cancellingUploadIds.value.includes(uploadKey)) return;
   if (episode.uploadId === activeUploadSessionId.value && uploading.value) {
     cancelUpload();
     return;
   }
-  cancellingUploadIds.value = [...cancellingUploadIds.value, episode.uploadId];
+  cancellingUploadIds.value = [...cancellingUploadIds.value, uploadKey];
   try {
-    const result = await api.cancelEpisodeUpload(episode.uploadId);
-    clearUploadResumeState(episode.uploadId);
+    const result = await api.cancelEpisodeUpload(uploadKey);
+    clearUploadResumeState(episode.uploadId || uploadKey);
     ElMessage.success(result.cleanupPending ? '上传已取消，R2 分片将在后台清理' : '上传已取消');
     await Promise.all([loadEpisodes(false), loadSeries()]);
   } catch (reason: any) {
     ElMessage.error(reason?.data?.statusMessage || '取消上传失败');
   } finally {
-    cancellingUploadIds.value = cancellingUploadIds.value.filter((id) => id !== episode.uploadId);
+    cancellingUploadIds.value = cancellingUploadIds.value.filter((id) => id !== uploadKey);
   }
 };
 
@@ -985,6 +988,7 @@ const exportSeries = () => {
             <el-tag size="small" effect="plain" :type="episode.isFree ? 'success' : 'danger'">{{ episode.isFree ? '试看' : '收费' }}</el-tag>
             <el-switch :model-value="episode.isFree" inline-prompt active-text="试看" inactive-text="收费" :loading="episodeAccessSavingIds.includes(episode.id)" :disabled="episodeOrderSaving || deletingEpisodeIds.length > 0" :aria-label="`设置第 ${episode.episodeNo} 集为${episode.isFree ? '收费' : '试看'}`" @change="(value) => toggleEpisodeAccess(episode, Boolean(value))" />
             <el-tag size="small" :type="mediaStatus(episode)[1] as any" effect="light">{{ mediaStatus(episode)[0] }}</el-tag>
+            <el-button v-if="episodeHasActiveUpload(episode) && !(uploadFinalizing && episode.uploadId === activeUploadSessionId)" class="series-editor-episode-cancel" text type="danger" size="small" :loading="cancellingUploadIds.includes(episodeUploadKey(episode))" :disabled="cancellingUploadIds.includes(episodeUploadKey(episode))" :aria-label="`取消第 ${episode.episodeNo} 集上传`" @click="cancelEpisode(episode)"><X :size="14" />{{ cancellingUploadIds.includes(episodeUploadKey(episode)) ? '取消中' : '取消上传' }}</el-button>
             <el-tooltip :content="episode.previewUrl ? `预览第 ${episode.episodeNo} 集视频` : '视频就绪后可预览'" placement="top">
               <span><el-button class="series-editor-episode-preview" circle text :disabled="!episode.previewUrl" :aria-label="`预览第 ${episode.episodeNo} 集视频`" @click="openPreview(episode)"><Eye :size="16" /></el-button></span>
             </el-tooltip>
@@ -1038,7 +1042,7 @@ const exportSeries = () => {
           <div v-for="episode in episodes" v-else :key="episode.id" class="episode-row">
             <span class="episode-index">{{ String(episode.episodeNo).padStart(2, '0') }}</span>
             <div><strong>{{ episode.title }}</strong><span>{{ episode.sourceFileName || '尚无媒体文件' }} · {{ formatBytes(episode.sourceSizeBytes) }}<template v-if="episode.durationSeconds"> · {{ formatDuration(episode.durationSeconds) }}</template></span><small v-if="episode.errorMessage" role="alert">{{ mediaErrorMessage(episode.errorMessage) }}</small></div>
-            <el-button v-if="episode.uploadId && !(uploadFinalizing && episode.uploadId === activeUploadSessionId)" class="episode-cancel-upload" text type="danger" size="small" :loading="cancellingUploadIds.includes(episode.uploadId)" :disabled="cancellingUploadIds.includes(episode.uploadId)" aria-label="取消该视频上传" @click="cancelEpisode(episode)"><X :size="14" />{{ cancellingUploadIds.includes(episode.uploadId) ? '取消中' : '取消' }}</el-button>
+            <el-button v-if="episodeHasActiveUpload(episode) && !(uploadFinalizing && episode.uploadId === activeUploadSessionId)" class="episode-cancel-upload" text type="danger" size="small" :loading="cancellingUploadIds.includes(episodeUploadKey(episode))" :disabled="cancellingUploadIds.includes(episodeUploadKey(episode))" aria-label="取消该视频上传" @click="cancelEpisode(episode)"><X :size="14" />{{ cancellingUploadIds.includes(episodeUploadKey(episode)) ? '取消中' : '取消' }}</el-button>
             <el-switch :model-value="episode.isFree" inline-prompt active-text="试看" inactive-text="收费" :loading="episodeAccessSavingIds.includes(episode.id)" :aria-label="`设置第 ${episode.episodeNo} 集为${episode.isFree ? '收费' : '试看'}`" @change="(value) => toggleEpisodeAccess(episode, Boolean(value))" />
             <el-tag :type="mediaStatus(episode)[1] as any" effect="light">{{ mediaStatus(episode)[0] }}</el-tag>
             <el-tooltip v-if="episode.previewUrl" content="发布前预览" placement="top"><el-button circle text aria-label="发布前预览" @click="openPreview(episode)"><Eye :size="16" /></el-button></el-tooltip>
