@@ -78,7 +78,7 @@ if (process.argv.includes('--check')) {
 }
 
 // Catalogue-only seed. Videos must be uploaded through the normal validated
-// R2 MP4 pipeline; seeding never calls a video cloud or invents ready assets.
+// R2/HLS pipeline; seeding never calls a video cloud or invents ready assets.
 await run(`UPDATE orders SET series_id = ?, series_slug = ?, series_title = ? WHERE series_id = 'sr-0da51aed'`, [series[0].id, series[0].slug, series[0].title]);
 
 for (const staleId of ['acc-heiress-returns', 'acc-faking-forever', 'acc-queen-mom', 'acc-goodbye-captain']) {

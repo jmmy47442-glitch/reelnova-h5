@@ -186,8 +186,8 @@ await checkoutPage.close();
 const unauthenticatedPage = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
 await unauthenticatedPage.goto(`${baseURL}/profile`, { waitUntil: 'networkidle' });
 const consumerProtectedRouteRedirected = unauthenticatedPage.url().includes('/login?redirect=/profile');
-const guestEntryRemoved = await unauthenticatedPage.getByRole('button', { name: 'Continue as guest' }).count() === 0;
-results.push({ name: 'consumer-auth', protectedRouteRedirected: consumerProtectedRouteRedirected, guestEntryRemoved });
+const guestEntryVisible = await unauthenticatedPage.getByRole('link', { name: 'Continue as guest' }).isVisible();
+results.push({ name: 'consumer-auth', protectedRouteRedirected: consumerProtectedRouteRedirected, guestEntryVisible });
 await unauthenticatedPage.close();
 
 await browser.close();

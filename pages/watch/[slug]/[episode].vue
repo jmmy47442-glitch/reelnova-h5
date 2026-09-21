@@ -890,6 +890,12 @@ onMounted(() => {
   requestInitialGrant();
 });
 watch([canPlay, currentEpisode], requestInitialGrant, { flush: 'post' });
+watch(series, (value) => {
+  if (!import.meta.client || !value || route.query.unlock !== '1' || value.purchased || !purchasable.value) return;
+  showUnlock.value = true;
+  const { unlock: _unlock, ...query } = route.query;
+  void navigateTo({ path: route.path, query }, { replace: true });
+}, { immediate: true });
 watch([video, signedUrl, originalUrl], () => {
   if (!video.value || !signedUrl.value || showResumePrompt.value || resumePromptResolving.value) return;
   const source = qualityPreference.value === 'original' && canUseOriginalSource.value ? originalUrl.value : signedUrl.value;

@@ -12,7 +12,8 @@ export const checkMediaHealth = async (env) => {
     headers: { 'content-type': 'application/json', 'x-reelnova-timestamp': timestamp, 'x-reelnova-signature': signature },
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload.ready !== true || payload.delivery !== 'r2-mp4') {
-    throw new Error(`R2 MP4 Worker health check failed (HTTP ${response.status}); deploy the current media Worker and check its R2 binding and signing secret`);
+  if (!response.ok || payload.ready !== true || payload.delivery !== 'r2-hls' || payload.transcoderReady !== true) {
+    const detail = payload.transcoderError ? `: ${payload.transcoderError}` : '';
+    throw new Error(`R2/HLS media pipeline health check failed (HTTP ${response.status})${detail}; deploy the current media and transcode Workers and check their bindings and secrets`);
   }
 };

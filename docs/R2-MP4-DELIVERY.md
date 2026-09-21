@@ -4,10 +4,10 @@
 
 ## 视频要求
 
-- `.mp4`，单条 H.264 8 位视频轨 + 单条 AAC-LC 音轨。
-- 普通 MP4（非 fragmented MP4）。支持 moov 元数据位于文件尾部，但仍建议开启 faststart 以加快首帧。
+- 原片支持 `.mp4`、`.m4v`、`.mov`、`.mkv`、`.webm`、`.avi`、`.mpg` 和 `.mpeg`。
+- 单条 H.264 8 位视频轨 + 单条 AAC-LC 音轨的普通 MP4 可直接播放；其他可解码原片由 Container FFmpeg 转为 H.264 + AAC-LC HLS。
 - 单文件不超过 20 GB，时长不超过 6 小时。
-- 普通上传不自动转码。可使用下方离线工具生成低码率移动版；省流量、蜂窝或低速网络优先选择已就绪的移动版，没有合格移动版时播放原片。这一 MP4 回退模式在起播/续签时选源；生成下述 HLS 包后改为逐片自适应码率。
+- 上传完成后自动生成最高 1080P 的 360P/480P/720P/1080P HLS；原片尺寸不足时不放大。兼容 MP4 在 HLS 尚未生成时仍可直播放。
 - 封面通过后台单独上传，不再从 Stream 获取缩略图。
 
 可在上传前用 FFmpeg 转成兼容格式（保留原视频尺寸）：
@@ -96,10 +96,11 @@ HLS_FIXTURE_DIR=/path/1080p-hls HLS_ORIGINAL_FIXTURE=/path/source-1080p.mp4 node
 ## 部署顺序
 
 1. 保持 R2 bucket 私有，关闭 `r2.dev` 公开访问和 bucket 公共域名。媒体域名绑定 Worker。
-2. Worker 配置 `MEDIA_BUCKET` binding 和 `MEDIA_WORKER_SECRET`。`wrangler.media.toml` 的 `APP_ORIGINS` 必须包含用户端与管理端域名。保留 Cron、`APP_BASE_URL`、`PUBLIC_BASE_URL`。
-3. 先部署新版 Worker，再部署 Nuxt：
+2. Transcode Worker 配置 Workflow、Container、`MEDIA_BUCKET` binding 和 R2 S3 凭据；Media Worker 配置同一个 bucket、`MEDIA_WORKER_SECRET` 和指向 Transcode Worker 的私有 Service Binding。`wrangler.media.toml` 的 `APP_ORIGINS` 必须包含用户端与管理端域名。保留 Cron、`APP_BASE_URL`、`PUBLIC_BASE_URL`。
+3. 先部署转码 Worker，再部署媒体 Worker，最后部署 Nuxt：
 
    ```bash
+   npm run deploy:transcoder
    npm run deploy:media-worker
    npm run build:cloudflare
    ```
@@ -114,10 +115,10 @@ HLS_FIXTURE_DIR=/path/1080p-hls HLS_ORIGINAL_FIXTURE=/path/source-1080p.mp4 node
 ## 现有视频
 
 - 已就绪且 R2 原片为兼容 H.264 + AAC-LC MP4：首次获取签名地址时完成服务端校验，随后直接播放，无需重新上传。moov 元数据可以位于文件尾；Worker 按元数据偏移读取并跳过视频数据，最多读取 16 MiB、32 次，浏览器通过 Range 请求播放。
-- 旧分集停留在处理中或处理失败：在分集管理中点击“重新校验”，从现有 R2 文件恢复，不再提交转码。
-- MOV、HEVC、损坏或已无 R2 原片：转换后重新上传。仅缺少 faststart 的新旧原片均可以直接上传和播放，建议后续重新封装以改善首帧速度。不能假设所有旧 Stream 视频的原片都符合浏览器直播放要求。
+- 旧分集停留在处理中或处理失败：在分集管理中点击“重新校验”。兼容 MP4 会直接恢复；其他可解码原片会重新提交 Container 转码。
+- MOV、HEVC 等有完整音视频轨且 FFmpeg 可解码的 R2 原片可直接重试转码；损坏或已无 R2 原片需要重新上传。仅缺少 faststart 的 MP4 可以直接播放，建议后续重新封装以改善首帧速度。
 - 使用独立封面上传补齐封面；旧自动缩略图接口不再访问 Stream。
-- 上传完成响应丢失可重试；Cron 继续恢复 `completing` 会话和清理过期分片。格式不合格的文件进入 `failed`，需要重新导出上传。
+- 上传完成响应丢失可重试；Cron 继续恢复 `completing` 会话和清理过期分片。FFmpeg 无法解码或缺少音视频轨的文件进入 `failed`，需要重新导出上传。
 
 ## 验收
 

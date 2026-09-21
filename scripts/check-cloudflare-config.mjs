@@ -62,7 +62,7 @@ if (!tokenCheck.payload?.success) {
 
 try {
   await checkMediaHealth(env);
-  console.log('R2 MP4 media Worker: connected');
+  console.log('R2/HLS media pipeline: connected');
 } catch (error) {
   console.log(error.message);
   process.exitCode = 1;

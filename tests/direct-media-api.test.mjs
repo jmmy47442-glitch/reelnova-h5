@@ -24,7 +24,7 @@ const harness = () => {
         'upload:key', 'r2:upload', 'legacy-placeholder', 'now', 'now');
   `);
   let workerPlayback = { url: 'https://media.example.test/original/signed' };
-  let valid = true, workerCalls = 0, failSessionWrite = false, established = 0;
+  let workerMode = 'valid', workerCalls = 0, failSessionWrite = false, established = 0;
   const d1 = {
     hasD1Connection: () => true,
     d1First: async (_e, sql, params = []) => db.prepare(sql).get(...params) || null,
@@ -41,14 +41,23 @@ const harness = () => {
   const imports = {
     './cloudflare-d1': d1, '~/server/utils/cloudflare-d1': d1,
     './admin-audit': { recordAdminAudit: async () => {} },
-    './media-pipeline': { mediaWorkerRequest: async (_e, path) => {
-      assert.equal(path, '/uploads/provider-upload/complete'); workerCalls++;
-      return valid ? { etag: 'etag', valid: true, media: { width: 160, height: 90, durationSeconds: 12 } }
-        : { etag: 'etag', valid: false, errorMessage: 'Unsupported codec' };
+    './media-pipeline': { mediaWorkerRequest: async (_e, path, body) => {
+      workerCalls++;
+      if (path === '/transcodes') {
+        assert.equal(workerMode, 'transcode');
+        assert.equal(body.assetId, 'asset');
+        assert.equal(body.sourceEtag, 'abcdef123456');
+        return { workflowId: body.jobId };
+      }
+      assert.equal(path, '/uploads/provider-upload/complete');
+      if (workerMode === 'valid') return { etag: 'etag', valid: true, media: { width: 160, height: 90, durationSeconds: 12 } };
+      if (workerMode === 'transcode') return { etag: '"abcdef123456"', sourceEtag: 'abcdef123456', valid: false,
+        status: 'processing', transcodeRequired: true, directPlayError: 'Unsupported codec' };
+      return { etag: 'etag', valid: false, errorMessage: 'Unsupported codec' };
     } },
-    '~/server/utils/media-pipeline': { mediaWorkerRequest: async (_e, path) => {
+    '~/server/utils/media-pipeline': { mediaWorkerRequest: async (event, path) => {
       assert.equal(path, '/original/token'); workerCalls++;
-      assert.equal(established > 0, true);
+      assert.equal(event.loggedOut || established > 0, true);
       return workerPlayback;
     } },
     '~/server/utils/response': { ok: data => ({ data }) },
@@ -82,7 +91,8 @@ const harness = () => {
   const upload = load('server/utils/media-upload-state.ts');
   return { db, upload, playback: load('server/api/playback.get.ts').default,
     setWorkerPlayback: value => { workerPlayback = value; },
-    setInvalid: () => { valid = false; }, failWrite: () => { failSessionWrite = true; }, calls: () => workerCalls };
+    setInvalid: () => { workerMode = 'invalid'; }, setTranscode: () => { workerMode = 'transcode'; },
+    failWrite: () => { failSessionWrite = true; }, calls: () => workerCalls };
 };
 const complete = async h => h.upload.completeMediaUpload({}, await h.upload.getMediaUploadState({}, 'upload'), [{ partNumber: 1, etag: 'part' }]);
 const publish = h => h.db.exec("UPDATE series SET status = 'published'");
@@ -116,6 +126,23 @@ test('invalid MP4 never becomes publishable or playable', async () => {
   } finally { h.db.close(); }
 });
 
+test('non-direct input is durably queued for Cloudflare Container transcoding', async () => {
+  const h = harness();
+  try {
+    h.setTranscode();
+    assert.equal((await complete(h)).status, 'processing');
+    assert.equal(h.db.prepare('SELECT status FROM media_upload_sessions').get().status, 'completed');
+    assert.equal(h.db.prepare('SELECT video_status FROM episodes').get().video_status, 'processing');
+    const job = h.db.prepare('SELECT status, progress, provider_job_id FROM transcode_jobs').get();
+    assert.equal(job.status, 'processing');
+    assert.equal(job.progress, 1);
+    assert.equal(job.provider_job_id, 'transcode_asset');
+    assert.equal(h.db.prepare('SELECT source_etag FROM media_assets').get().source_etag, 'abcdef123456');
+    assert.equal((await complete(h)).status, 'processing');
+    assert.equal(h.calls(), 2);
+  } finally { h.db.close(); }
+});
+
 test('interrupted D1 completion can recover from stored parts without another upload', async () => {
   const h = harness();
   try {
@@ -138,21 +165,24 @@ test('stale validation cannot reactivate a superseded asset', async () => {
   } finally { h.db.close(); }
 });
 
-test('R2 playback retains login, free/paid entitlement and device-limit checks before minting a URL', async () => {
+test('R2 playback allows guest previews while retaining paid entitlement and device-limit checks', async () => {
   const h = harness();
   try {
     await complete(h); publish(h);
-    await assert.rejects(h.playback(event({ loggedOut: true })), error => error.statusCode === 401);
+    const guest = (await h.playback(event({ loggedOut: true }))).data;
+    assert.equal(guest.authorized, true);
+    assert.equal(guest.trackingToken, '');
     await assert.rejects(h.playback(event({ deviceBlocked: true })), error => error.statusCode === 429);
-    assert.equal(h.calls(), 1);
+    assert.equal(h.calls(), 2);
     const freeEvent = event();
     const free = (await h.playback(freeEvent)).data;
     assert.equal(free.delivery, 'mp4');
     assert.equal(free.signedUrl, free.originalUrl);
     assert.equal(freeEvent.headers['cache-control'], 'no-store');
     h.db.exec('UPDATE episodes SET is_free = 0');
+    await assert.rejects(h.playback(event({ loggedOut: true })), error => error.statusCode === 401);
     await assert.rejects(h.playback(event()), error => error.statusCode === 403);
-    assert.equal(h.calls(), 2);
+    assert.equal(h.calls(), 3);
     h.db.exec("INSERT INTO manual_entitlements (id, user_id, series_id, series_title, status, reason, granted_by, granted_at) VALUES ('grant', 'user', 'series', 'Series', 'granted', 'Test', 'admin', 'now')");
     assert.equal((await h.playback(event())).data.authorized, true);
     h.db.exec("UPDATE manual_entitlements SET status = 'revoked'");

@@ -19,7 +19,7 @@ The admin dashboard and administrator accounts never fall back to sample or in-m
 | Original media | Private Cloudflare R2 bucket | Multipart source uploads; no public bucket URL |
 | Playback media | Private Cloudflare R2 + media Worker | Compatible MP4 with short-lived signed URLs and byte-range delivery |
 
-Playback uses private R2 MP4 objects. The Worker verifies a short-lived signature on every media request, including byte ranges. Each playback grant creates or renews a D1 `playback_sessions` row bound to the signed user session and an HttpOnly playback-device cookie, limits active playback to two devices per account, applies D1-backed fixed-window rate limits, and records rejected or suspicious requests in `playback_security_events` using HMAC hashes rather than raw IP/device values.
+Playback uses private R2 originals and HLS packages. The Worker verifies a short-lived signature on every media request, including byte ranges. Each playback grant creates or renews a D1 `playback_sessions` row bound to the signed user session and an HttpOnly playback-device cookie, limits active playback to two devices per account, applies D1-backed fixed-window rate limits, and records rejected or suspicious requests in `playback_security_events` using HMAC hashes rather than raw IP/device values.
 
 Cloudflare Web Analytics request counts are not used as play counts. Page requests, bots, reloads and media segment requests do not represent a user starting an episode.
 
@@ -121,7 +121,7 @@ ADMIN_CREDENTIAL_SECRET
 The legacy `PAYPAL_*` values remain a fallback for the initial `PAYPAL_ENVIRONMENT`. Configure both named Sandbox and Production sets to enable environment switching from `/admin/system`. The selected environment is the only payment configuration stored in D1; Client Secrets remain encrypted deployment secrets. Each order also stores its immutable PayPal environment so later Capture, verification, refunds and Webhooks keep using the correct API after a switch. The first switch attributes pre-0016 orders to the currently active environment. A switch first verifies the target OAuth credentials and is blocked while pending payments, refunds, or risk-review orders exist.
 `SUPER_ADMIN_PASSWORD` initializes the preset super administrator on first use. `ADMIN_SESSION_SECRET` signs the HttpOnly admin session cookie. `ADMIN_CREDENTIAL_SECRET` encrypts the password verifier used by the low-CPU challenge login flow. Both secrets must be separate, stable, high-entropy production secrets; changing `ADMIN_CREDENTIAL_SECRET` requires resetting administrator credentials.
 
-## 4. Deploy the private R2 MP4 media Worker
+## 4. Deploy the private R2/HLS media Worker
 
 No Stream subscription, API permission, Customer Code or Webhook is required. Keep R2 private (disable public `r2.dev` and bucket custom-domain access).
 
@@ -135,9 +135,9 @@ Set the application's `CLOUDFLARE_MEDIA_WORKER_URL=https://media.iseedrama.com`,
 
 Deploy the Worker before deploying the Nuxt application. `/admin/system` performs an authenticated Worker/R2 health check. Configure `PUBLIC_BASE_URL`, `APP_BASE_URL` and `APP_ORIGINS` in `wrangler.media.toml`; retain the admin origin for upload and preview CORS. Keep the hourly Cron: it recovers interrupted completions, cleans expired multipart uploads and invokes PayPal reconciliation.
 
-Uploads must be H.264 8-bit + AAC-LC, non-fragmented MP4, at most 20 GB and six hours. Faststart is recommended for faster startup but is not required. Both browser and Worker follow MP4 offsets to inspect metadata with at most 16 MiB of reads, including `moov` stored after `mdat`. The Worker verifies object ownership and byte count before completion. Successful validation is cached in private R2 by immutable object ETag. Only validated objects become playable; no online transcoding or adaptive quality is provided. Covers are uploaded independently.
+Uploads accept MP4, M4V, MOV, MKV, WebM, AVI and MPEG, at most 20 GB and six hours. Compatible H.264 8-bit + AAC-LC MP4 follows the direct-play path. Other inputs are queued in a durable Workflow and transcoded by FFmpeg in a Cloudflare Container into four-rendition, two-second HLS. The source and output remain in private R2; the existing media Worker signs every manifest and segment request. Covers are uploaded independently. See [Cloudflare Container transcoding](./CLOUDFLARE-CONTAINER-TRANSCODING.md) for deployment and secrets.
 
-See [R2 MP4 delivery and migration](./R2-MP4-DELIVERY.md) for export commands, existing-video handling and deployment acceptance steps.
+See [R2/HLS delivery and migration](./R2-MP4-DELIVERY.md) for export commands, existing-video handling and deployment acceptance steps.
 
 ## 5. PayPal webhook
 
@@ -230,7 +230,7 @@ Configure the required hostnames as follows:
 | `iseedrama.com` | User H5 and same-origin API/Webhooks | Cloudflare Pages/Workers production application |
 | `www.iseedrama.com` | Compatibility entry | Cloudflare Redirect Rule permanently redirects to `https://iseedrama.com` |
 | `admin.iseedrama.com` | Operations console | Same application origin; `/` redirects to `/admin` |
-| `media.iseedrama.com` | R2 MP4 media Worker | Wrangler custom domain declared in `wrangler.media.toml` |
+| `media.iseedrama.com` | R2/HLS media Worker | Wrangler custom domain declared in `wrangler.media.toml` |
 
 Do not add a separate `api.iseedrama.com` for the MVP. The application uses same-origin `/api`, which keeps user/admin cookies, PayPal return handling, and CORS behavior consistent.
 

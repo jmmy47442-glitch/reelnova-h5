@@ -235,7 +235,7 @@ const validateVideoObject = async (env, key, assetId, suppliedObject, forPlaybac
   const object = suppliedObject || await env.MEDIA_BUCKET.head(key);
   if (!object || (!trustedVariant && object.customMetadata?.assetId !== assetId) || !assetId) throw new Error('Video object not found');
   if (object.httpMetadata?.contentType !== 'video/mp4' || !String(key).toLowerCase().endsWith('.mp4')) {
-    return { etag: object.httpEtag, valid: false, errorMessage: '仅支持 MP4，请重新上传 H.264 + AAC 视频' };
+    return { etag: object.httpEtag, valid: false, errorMessage: 'MP4 不满足 H.264 + AAC 直播放要求' };
   }
   // Keep playback and upload markers separate so their lifecycle can evolve
   // independently without allowing one path to bypass the other's checks.
@@ -257,6 +257,22 @@ const validateVideoObject = async (env, key, assetId, suppliedObject, forPlaybac
     customMetadata: { managedBy: 'reelnova', kind: 'video-validation', assetId, objectKey: key },
   });
   return { etag: object.httpEtag, valid: true, media };
+};
+
+const classifyUploadedVideo = async (env, key, assetId, suppliedObject) => {
+  const object = suppliedObject || await env.MEDIA_BUCKET.head(key);
+  if (!object || object.customMetadata?.assetId !== assetId || !assetId) throw new Error('Video object not found');
+  const directCandidate = object.httpMetadata?.contentType === 'video/mp4' && String(key).toLowerCase().endsWith('.mp4');
+  const directValidation = directCandidate ? await validateVideoObject(env, key, assetId, object) : null;
+  if (directValidation?.valid) return { ...directValidation, sourceEtag: object.etag, status: 'ready', transcodeRequired: false };
+  return {
+    etag: object.httpEtag,
+    sourceEtag: object.etag,
+    valid: false,
+    status: 'processing',
+    transcodeRequired: true,
+    directPlayError: directValidation?.errorMessage || 'Source format requires FFmpeg transcoding',
+  };
 };
 
 const originalPlaybackUrl = async (env, origin, key, assetId, metadata, expires) => {
@@ -436,8 +452,20 @@ const completeUpload = async (env, body, uploadId) => {
     || object.customMetadata?.uploadSessionId !== body.sessionId
     || object.customMetadata?.r2CompletionKey !== body.completionKey) throw new Error('R2 object ownership mismatch');
   if (object.size !== body.fileSizeBytes) throw new Error('R2 object size does not match upload');
-  return validateVideoObject(env, body.objectKey, body.metadata.assetId, object);
+  return classifyUploadedVideo(env, body.objectKey, body.metadata.assetId, object);
 
+};
+
+const startTranscode = async (env, rawBody) => {
+  if (!env.TRANSCODE_SERVICE) throw new Error('Cloudflare Container transcoder is not configured');
+  const response = await env.TRANSCODE_SERVICE.fetch(new Request('https://transcoder.internal/jobs', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: rawBody,
+  }));
+  const body = await response.text();
+  return new Response(body, {
+    status: response.status,
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+  });
 };
 
 const abortUpload = async (env, body, uploadId) => {
@@ -599,14 +627,29 @@ export default {
         const rawBody = await request.text();
         if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
         const body = JSON.parse(rawBody);
-        return json(await validateVideoObject(env, body.objectKey, body.assetId));
+        return json(await classifyUploadedVideo(env, body.objectKey, body.assetId));
+      }
+
+      if (url.pathname === '/transcodes' && request.method === 'POST') {
+        const rawBody = await request.text();
+        if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
+        return startTranscode(env, rawBody);
       }
 
       if (url.pathname === '/health' && request.method === 'POST') {
         const rawBody = await request.text();
         if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
         await env.MEDIA_BUCKET.list({ limit: 1 });
-        return json({ ready: true, delivery: 'r2-mp4' });
+        let transcoderReady = false;
+        let transcoderError;
+        try {
+          if (!env.TRANSCODE_SERVICE) throw new Error('Transcode service binding is missing');
+          const response = await env.TRANSCODE_SERVICE.fetch('https://transcoder.internal/health');
+          const result = await response.json();
+          transcoderReady = response.ok && result.ready === true;
+          if (!transcoderReady) transcoderError = result.error || `Transcoder health failed (${response.status})`;
+        } catch (error) { transcoderError = error instanceof Error ? error.message : 'Transcoder health failed'; }
+        return json({ ready: true, delivery: 'r2-hls', transcoderReady, transcoderError });
       }
 
       if (url.pathname === '/reconcile' && request.method === 'POST') {

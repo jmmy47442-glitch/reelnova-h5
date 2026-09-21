@@ -27,6 +27,8 @@ export default defineEventHandler(async (event) => {
   let paypalError: string | null = null;
   let mediaWorkerReady = false;
   let mediaWorkerError: string | null = null;
+  let transcoderReady = false;
+  let transcoderError: string | null = null;
   let lastWebhookAt: string | null = null;
   let failedWebhooks: Array<{ eventId: string; eventType: string; errorMessage: string | null; receivedAt: string; retryCount: number; replayable: boolean }> = [];
   const paypalConfiguration = await getPayPalConfigurationStatus(event);
@@ -47,9 +49,11 @@ export default defineEventHandler(async (event) => {
   }
   if (database && !missingCloudflareFields.mediaWorker.length) {
     try {
-      const health = await mediaWorkerRequest<{ ready: boolean; delivery: string }>(event, '/health', {});
-      mediaWorkerReady = health.ready && health.delivery === 'r2-mp4';
-      if (!mediaWorkerReady) mediaWorkerError = '请部署最新的 R2 MP4 媒体 Worker';
+      const health = await mediaWorkerRequest<{ ready: boolean; delivery: string; transcoderReady?: boolean; transcoderError?: string }>(event, '/health', {});
+      mediaWorkerReady = health.ready && ['r2-mp4', 'r2-hls'].includes(health.delivery);
+      transcoderReady = health.transcoderReady === true;
+      transcoderError = health.transcoderError || null;
+      if (!mediaWorkerReady) mediaWorkerError = '请部署最新的 R2/HLS 媒体 Worker';
     } catch (error) { mediaWorkerError = error instanceof Error ? error.message : 'Media Worker connection failed'; }
   }
   return ok({
@@ -58,10 +62,10 @@ export default defineEventHandler(async (event) => {
       database, databaseError, databaseSchema,
       mode: (event.context.cloudflare as { env?: { DB?: unknown } } | undefined)?.env?.DB ? 'D1 binding' : 'Cloudflare REST API',
       accountConfigured: Boolean(config.cloudflareAccountId), databaseConfigured: Boolean(config.cloudflareD1DatabaseId), apiTokenConfigured: Boolean(config.cloudflareApiToken),
-      delivery: 'r2-mp4',
-      mediaWorkerReady, mediaWorkerError,
-      uploadConfigured: Boolean(database && mediaWorkerReady),
-      mediaConfigured: Boolean(database && mediaWorkerReady && config.cloudflareMediaSigningSecret),
+      delivery: 'r2-hls',
+      mediaWorkerReady, mediaWorkerError, transcoderReady, transcoderError,
+      uploadConfigured: Boolean(database && mediaWorkerReady && transcoderReady),
+      mediaConfigured: Boolean(database && mediaWorkerReady && transcoderReady && config.cloudflareMediaSigningSecret),
       mediaWorkerConfigured: Boolean(config.cloudflareMediaWorkerUrl && config.cloudflareMediaWorkerSecret),
       mediaSigningConfigured: Boolean(config.cloudflareMediaSigningSecret),
       customHostnamesConfigured: domainAutomation.automationConfigured,

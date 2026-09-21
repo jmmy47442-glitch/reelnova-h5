@@ -98,27 +98,27 @@ export default defineEventHandler(async (event) => {
     episode = { episodeNo: localEpisode.episodeNo, isFree: localEpisode.isFree, videoStatus: localEpisode.mediaStatus || 'ready' };
   }
   const userSession = await userSessionPromise;
-  if (!userSession) throw createError({ statusCode: 401, statusMessage: 'Login required' });
-  const userId = userSession.userId;
+  if (!userSession && !episode.isFree) throw createError({ statusCode: 401, statusMessage: 'Login required to unlock paid episodes' });
+  const userId = userSession?.userId;
   const sessionId = String(query.sessionId || '');
   if (!sessionId || sessionId.length > 100) throw createError({ statusCode: 400, statusMessage: 'Playback session is required' });
   const playbackContext = await getPlaybackClientContext(event);
-  await enforcePlaybackRateLimits(event, playbackContext, userId, sessionId);
+  await enforcePlaybackRateLimits(event, playbackContext, userId || `guest:${playbackContext.deviceHash}`, sessionId);
   const entitlementPromise = episode.isFree
     ? Promise.resolve({ status: 'free' })
     : d1First<{ status: string }>(event, `SELECT status FROM (
       SELECT series_id, status FROM entitlements WHERE user_id = ?
       UNION ALL
       SELECT series_id, status FROM manual_entitlements WHERE user_id = ?
-    ) WHERE series_id = ? AND status = 'granted' LIMIT 1`, [userId, userId, series.id]);
-  const lastProgressPromise = hasD1Connection(event)
+    ) WHERE series_id = ? AND status = 'granted' LIMIT 1`, [userId!, userId!, series.id]);
+  const lastProgressPromise = userId && hasD1Connection(event)
     ? d1First<{ position_seconds: number; duration_seconds: number; completed: number }>(event,
       `SELECT position_seconds, duration_seconds, completed FROM watch_history
        WHERE user_id = ? AND series_id = ? AND episode_no = ? LIMIT 1`, [userId, series.id, episode.episodeNo])
     : null;
   const [, , entitlement, lastProgress] = await Promise.all([
-    upsertUserProfile(event, { userId }),
-    assertUserEnabled(event, userId),
+    userId ? upsertUserProfile(event, { userId }) : Promise.resolve(),
+    userId ? assertUserEnabled(event, userId) : Promise.resolve(),
     entitlementPromise,
     lastProgressPromise,
   ]);
@@ -130,9 +130,11 @@ export default defineEventHandler(async (event) => {
   }
   const trackingSecret = getPlaybackAuthorizationSecret(event);
   const expires = Math.floor(Date.now() / 1000) + 10 * 60;
-  await establishPlaybackSession(event, { sessionId, userId, seriesId: series.id, episodeNo: episode.episodeNo, context: playbackContext });
+  if (userId) await establishPlaybackSession(event, { sessionId, userId, seriesId: series.id, episodeNo: episode.episodeNo, context: playbackContext });
   const [trackingSignature, original] = await Promise.all([
-    signPlaybackAuthorization(`track:${userId}:${sessionId}:${series.id}:${episode.episodeNo}:${expires}`, trackingSecret),
+    userId
+      ? signPlaybackAuthorization(`track:${userId}:${sessionId}:${series.id}:${episode.episodeNo}:${expires}`, trackingSecret)
+      : Promise.resolve(''),
     streamHlsUrl ? createCloudflareStreamPlaybackUrl(event, streamHlsUrl).then(url => ({ url, delivery: 'hls' as const,
       originalUrl: undefined, prefetchUrls: undefined, rendition: undefined })) : mediaWorkerRequest<{ url: string; originalUrl?: string; delivery?: 'hls' | 'mp4'; prefetchUrls?: string[]; rendition?: 'original' | 'mobile' }>(event, '/original/token', {
       key: mediaAsset.source_object_key, assetId: mediaAsset.id, exp: expires, delivery: 'auto',
@@ -141,7 +143,7 @@ export default defineEventHandler(async (event) => {
     }),
   ]);
   setHeader(event, 'cache-control', 'no-store');
-  return ok({ authorized: true, signedUrl: original.url, originalUrl: original.delivery === 'hls' ? original.originalUrl : original.url, delivery: original.delivery || 'mp4', prefetchUrls: original.prefetchUrls, rendition: original.rendition || 'original', expiresAt: new Date(expires * 1000).toISOString(), trackingToken: `${expires}.${trackingSignature}`,
+  return ok({ authorized: true, signedUrl: original.url, originalUrl: original.delivery === 'hls' ? original.originalUrl : original.url, delivery: original.delivery || 'mp4', prefetchUrls: original.prefetchUrls, rendition: original.rendition || 'original', expiresAt: new Date(expires * 1000).toISOString(), trackingToken: userId ? `${expires}.${trackingSignature}` : '',
     // A completed episode should start from the beginning on the next visit.
     resumePositionSeconds: lastProgress?.completed ? 0 : Math.max(0, Number(lastProgress?.position_seconds || 0)),
     resumeDurationSeconds: Math.max(0, Number(lastProgress?.duration_seconds || 0)) });

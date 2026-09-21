@@ -1,15 +1,21 @@
 import { useUserAuth } from '~/composables/useUserAuth';
 import { useAccountSettings } from '~/composables/useAccountSettings';
+import { isPublicUserRoute } from '~/utils/user-route-access';
 
 export default defineNuxtRouteMiddleware(async (to) => {
   if (to.path.startsWith('/admin')) return;
 
-  if (to.path === '/terms') return;
-
   const isEntryRoute = to.path === '/login' || to.path === '/register';
+  const isPublicRoute = isPublicUserRoute(to.path);
   const { isAuthenticated, fetchSession } = useUserAuth();
   const accountSettings = useAccountSettings();
-  await fetchSession();
+  try {
+    await fetchSession();
+  } catch (error) {
+    // Public discovery and free playback must remain available when the
+    // optional account session check is temporarily unavailable.
+    if (!isPublicRoute) throw error;
+  }
 
   const getRedirect = () => typeof to.query.redirect === 'string'
     && to.query.redirect.startsWith('/')
@@ -21,6 +27,8 @@ export default defineNuxtRouteMiddleware(async (to) => {
     if (isAuthenticated.value) return navigateTo(getRedirect());
     return;
   }
+
+  if (isPublicRoute) return;
 
   if (!isAuthenticated.value) {
     return navigateTo({ path: '/login', query: { redirect: to.fullPath } });

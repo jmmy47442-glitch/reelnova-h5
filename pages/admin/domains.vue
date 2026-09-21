@@ -54,7 +54,7 @@ const mvpDomains = [
   },
   {
     host: 'media.iseedrama.com',
-    purpose: 'R2 MP4 媒体服务',
+    purpose: 'R2/HLS 媒体服务',
     target: 'reelnova-media Worker',
     behavior: 'Worker Custom Domain',
     label: '媒体',

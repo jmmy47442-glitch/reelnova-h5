@@ -13,6 +13,7 @@ const api = useContentApi();
 const { track } = useAnalytics();
 const { formatPrice } = useFormatters();
 const route = useRoute();
+const router = useRouter();
 const { isAuthenticated } = useUserAuth();
 const { getPaymentConfig } = usePaymentPreparation();
 const clientReady = ref(false);
@@ -410,9 +411,10 @@ const initialize = async () => {
     }
   }
 };
-const checkout = async () => {
+const continueToAccount = async (path: '/login' | '/register') => {
+  const redirect = router.resolve({ path: route.path, query: { ...route.query, unlock: '1' } }).fullPath;
   emit('close');
-  await navigateTo({ path: '/login', query: { redirect: route.fullPath } });
+  await navigateTo({ path, query: { redirect } });
 };
 const dispose = () => {
   generation++;
@@ -492,13 +494,14 @@ onBeforeUnmount(dispose);
             <div class="unlock-sheet__intro">
               <img :src="series.coverUrl" alt="" />
               <div>
-                <span class="eyebrow">ACCOUNT REQUIRED</span>
-                <h2 id="unlock-title">Sign in to unlock</h2>
-                <p>Watch the free preview first. Create an account or sign in when you are ready to buy this series.</p>
+                <span class="eyebrow">FREE PREVIEW COMPLETE</span>
+                <h2 id="unlock-title">Create an account to unlock</h2>
+                <p>Your free episodes stay free. Create an account only when you are ready to unlock the rest of this series.</p>
               </div>
             </div>
-            <button class="button button--primary button--wide" type="button" @click="checkout">Sign in or register</button>
-            <p class="legal-copy">Your preview position stays on this device.</p>
+            <button class="button button--primary button--wide" type="button" @click="continueToAccount('/register')">Create account and continue</button>
+            <button class="unlock-sheet__account-switch" type="button" @click="continueToAccount('/login')">Already have an account? Sign in</button>
+            <p class="legal-copy">You only need an account for purchases and synced watch progress.</p>
           </template>
 
           <div v-else v-show="status !== 'paid' && status !== 'processing'">

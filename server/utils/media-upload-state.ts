@@ -36,16 +36,61 @@ export interface UploadCompletionResult {
   uploadId: string;
   mediaAssetId: string;
   streamUid: string | null;
-  status: 'ready' | 'failed';
+  status: 'ready' | 'processing' | 'failed';
   errorMessage?: string;
 }
 
 export interface WorkerCompletion {
   etag: string;
+  sourceEtag?: string;
   valid: boolean;
+  status?: 'ready' | 'processing';
+  transcodeRequired?: boolean;
+  directPlayError?: string;
   errorMessage?: string;
   media?: { width: number; height: number; durationSeconds: number };
 }
+
+export const queueMediaTranscode = async (
+  event: H3Event,
+  upload: Pick<MediaUploadStateRow, 'media_asset_id' | 'object_key' | 'episode_id'>,
+  result: WorkerCompletion,
+  restart = false,
+) => {
+  const sourceEtag = String(result.sourceEtag || '').replace(/^"|"$/g, '');
+  if (!sourceEtag) throw createError({ statusCode: 502, statusMessage: 'R2 source ETag is missing for transcoding' });
+  const jobId = `transcode_${upload.media_asset_id}`;
+  const buildId = upload.media_asset_id.replace(/^media_/, '');
+  const now = new Date().toISOString();
+  await d1Batch(event, [
+    { sql: `INSERT INTO transcode_jobs
+        (id, media_asset_id, provider_job_id, attempt, status, progress, error_message, created_at, updated_at)
+        VALUES (?, ?, ?, 1, 'queued', 0, NULL, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET attempt = CASE WHEN ? THEN transcode_jobs.attempt + 1 ELSE transcode_jobs.attempt END,
+          status = 'queued', progress = 0, error_code = NULL, error_message = NULL, completed_at = NULL, updated_at = excluded.updated_at`,
+      params: [jobId, upload.media_asset_id, jobId, now, now, restart ? 1 : 0] },
+    { sql: `UPDATE media_assets SET source_etag = ?, status = 'processing', validation_status = 'pending',
+        validation_error = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL AND status <> 'superseded'`,
+      params: [sourceEtag, result.directPlayError || null, now, upload.media_asset_id] },
+    { sql: `UPDATE episodes SET video_status = 'processing', updated_at = ?
+        WHERE id = ? AND active_media_asset_id = ? AND deleted_at IS NULL`,
+      params: [now, upload.episode_id, upload.media_asset_id] },
+  ]);
+  try {
+    const started = await mediaWorkerRequest<{ workflowId: string }>(event, '/transcodes', {
+      jobId, assetId: upload.media_asset_id, sourceObjectKey: upload.object_key, sourceEtag, buildId, restart,
+    });
+    await d1Run(event, `UPDATE transcode_jobs SET provider_job_id = ?, status = 'processing', progress = MAX(progress, 1),
+      started_at = COALESCE(started_at, ?), error_message = NULL, updated_at = ? WHERE id = ?`,
+    [started.workflowId || jobId, now, now, jobId]);
+    return { jobId, workflowId: started.workflowId || jobId };
+  } catch (error) {
+    const message = errorMessage(error);
+    await d1Run(event, `UPDATE transcode_jobs SET status = 'queued', error_message = ?, updated_at = ? WHERE id = ?`,
+      [message, now, jobId]).catch(() => undefined);
+    throw error;
+  }
+};
 
 // Commit validation and episode state together. Stale completion/retry requests
 // must never reactivate a replaced or deleted asset.
@@ -102,9 +147,9 @@ export const completeMediaUpload = async (
   submittedParts: MediaUploadPart[] = [],
   audit = true,
 ): Promise<UploadCompletionResult> => {
-  if (initial.status === 'completed' && ['ready', 'failed'].includes(initial.asset_status)) {
+  if (initial.status === 'completed' && ['ready', 'processing', 'failed'].includes(initial.asset_status)) {
     return { uploadId: initial.id, mediaAssetId: initial.media_asset_id, streamUid: null,
-      status: initial.asset_status === 'ready' ? 'ready' : 'failed', errorMessage: initial.asset_error || undefined };
+      status: initial.asset_status as 'ready' | 'processing' | 'failed', errorMessage: initial.asset_error || undefined };
   }
   if (!['created', 'uploading', 'completing', 'failed', 'completed'].includes(initial.status)) {
     throw createError({ statusCode: 409, statusMessage: 'Upload cannot be completed in its current state' });
@@ -135,20 +180,23 @@ export const completeMediaUpload = async (
         metadata: { assetId: upload.media_asset_id, episodeId: upload.episode_id, seriesId: upload.series_id },
       });
     const now = new Date().toISOString();
-    await applyDirectMediaValidation(event, upload.media_asset_id, result);
+    if (result.transcodeRequired) await queueMediaTranscode(event, upload, result);
+    else await applyDirectMediaValidation(event, upload.media_asset_id, result);
+    const status = result.transcodeRequired ? 'processing' : result.valid ? 'ready' : 'failed';
     await d1Run(event, `UPDATE media_upload_sessions SET uploaded_bytes = file_size_bytes, source_etag = ?,
       r2_completed_at = COALESCE(r2_completed_at, ?), status = ?, completed_at = COALESCE(completed_at, ?),
       last_error = ?, reconciled_at = ?, updated_at = ? WHERE id = ?`,
-    [result.etag, now, result.valid ? 'completed' : 'failed', now, result.errorMessage || null, now, now, upload.id]);
+    [result.sourceEtag || result.etag, now, status === 'failed' ? 'failed' : 'completed', now,
+      result.errorMessage || null, now, now, upload.id]);
     if (audit) {
       await recordAdminAudit(event, {
-        module: '短剧管理', action: result.valid ? '视频上传完成' : '视频校验失败',
+        module: '短剧管理', action: status === 'processing' ? '视频转码已排队' : result.valid ? '视频上传完成' : '视频校验失败',
         target: `${upload.series_title} · Episode ${upload.episode_no}`,
-        detail: result.valid ? 'R2 MP4 签名直播放' : result.errorMessage || 'Invalid MP4',
+        detail: status === 'processing' ? 'Cloudflare Container FFmpeg HLS' : result.valid ? 'R2 兼容 MP4 签名直播放' : result.errorMessage || 'Invalid video',
       }).catch(() => undefined);
     }
     return { uploadId: upload.id, mediaAssetId: upload.media_asset_id, streamUid: null,
-      status: result.valid ? 'ready' : 'failed', errorMessage: result.errorMessage };
+      status, errorMessage: result.errorMessage };
   } catch (error) {
     const now = new Date().toISOString();
     await d1Run(event, `UPDATE media_upload_sessions SET status = 'completing', last_error = ?, updated_at = ?

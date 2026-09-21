@@ -40,7 +40,7 @@
 | `media.iseedrama.com` DNS/证书 | 已解析并签发，当前指向媒体 Worker |
 | `www.iseedrama.com` DNS/证书 | 已解析并签发；Redirect Rule 尚未创建，当前错误进入 Nuxt 登录跳转 |
 | SaaS CNAME 接入目标 | MVP 不需要；开通 Cloudflare for SaaS 后填写 |
-| 媒体方案 | R2 MP4 签名直播放，Stream 已停用 |
+| 媒体方案 | R2 原片 + Container FFmpeg HLS，Stream 已停用 |
 
 ## 3. 正式业务入口
 
@@ -52,7 +52,7 @@
 | API 根路径 | `https://iseedrama.com/api` |
 | PayPal Webhook | `https://iseedrama.com/api/paypal/webhook` |
 | PayPal return URL | `https://iseedrama.com/api/paypal/return` |
-| 媒体校验 | R2 上传完成后校验 MP4，无转码回调 |
+| 媒体处理 | R2 上传后由 Workflows 调度 Cloudflare Container FFmpeg，转为多清晰度 HLS 并签名回调 |
 
 PayPal Developer Dashboard 和所有来源白名单必须使用 HTTPS 正式地址。不要把 `localhost`、预览域名或媒体 Worker 地址配置为生产支付回调。
 
@@ -80,7 +80,7 @@ PayPal Developer Dashboard 和所有来源白名单必须使用 HTTPS 正式地�
 | `admin.iseedrama.com` Pages/Workers 自定义域名 | Cloudflare 项目 | 已绑定并签发证书；最新代码待发布 |
 | `media.iseedrama.com` Worker 自定义域名 | `wrangler.media.toml` | 已发布，Worker 版本 `2dba0524-6574-4ae7-96a7-099f536843ac` |
 | 媒体 Worker 正式地址与 Secret | Cloudflare Worker Secret | 待部署/配置 |
-| R2 MP4 Worker | R2 binding + 共享签名 Secret | 按新方案部署并验证 |
+| R2/HLS Worker | R2 binding + Transcode Service Binding + 共享签名 Secret | 按新方案部署并验证 |
 | PayPal Sandbox/Production Client ID、Secret、Webhook ID | 部署 Secret | 待商户后台确认 |
 | 公司主体、注册地址、税务与 PayPal 商户信息 | 合规资料 | 待业务方提供 |
 | Terms、Privacy、Refund Policy 最终法律文本 | 法务资料 | 待审核 |

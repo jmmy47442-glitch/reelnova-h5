@@ -385,7 +385,7 @@ test('series cover uploads require a signed grant and become immutable public im
   assert.deepEqual([...new Uint8Array(await publicImage.arrayBuffer())], [...imageBytes]);
 });
 
-test('unsupported formats are rejected by the Worker even when browser validation is bypassed', async () => {
+test('unsupported direct-play formats are routed to container transcoding', async () => {
   const bucket = createBucket();
   const env = { MEDIA_BUCKET: bucket, MEDIA_WORKER_SECRET: secret };
   for (const name of ['unsupported-video']) {
@@ -393,7 +393,11 @@ test('unsupported formats are rejected by the Worker even when browser validatio
     await bucket.put(key, fixture(name), { httpMetadata: { contentType: 'video/mp4' }, customMetadata: { assetId: 'asset' } });
     const response = await worker.fetch(await signedRequest('/videos/verify', { objectKey: key, assetId: 'asset' }), env);
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).valid, false);
+    const result = await response.json();
+    assert.equal(result.valid, false);
+    assert.equal(result.status, 'processing');
+    assert.equal(result.transcodeRequired, true);
+    assert.equal(result.sourceEtag, `etag:${key}`);
   }
   assert.throws(() => inspectDirectMp4(new ArrayBuffer(32)), /MP4/);
 });
@@ -428,12 +432,28 @@ test('private playback rejects expired and tampered tokens and supports HEAD and
 });
 
 test('health checks verify the private R2 binding with server authentication', async () => {
-  const env = { MEDIA_BUCKET: createBucket(), MEDIA_WORKER_SECRET: secret };
+  const env = { MEDIA_BUCKET: createBucket(), MEDIA_WORKER_SECRET: secret,
+    TRANSCODE_SERVICE: { fetch: async () => Response.json({ ready: true, engine: 'cloudflare-containers-ffmpeg' }) } };
   const response = await worker.fetch(await signedRequest('/health', {}), env);
-  assert.deepEqual(await response.json(), { ready: true, delivery: 'r2-mp4' });
+  assert.deepEqual(await response.json(), { ready: true, delivery: 'r2-hls', transcoderReady: true });
   const unsigned = new Request('https://media.example.test/health', { method: 'POST', body: '{}' });
   assert.equal((await worker.fetch(unsigned, env)).status, 401);
   assert.equal((await worker.fetch(await signedRequest('/stream/token', {}), env)).status, 404);
+});
+
+test('signed transcode requests are forwarded only through the private service binding', async () => {
+  let forwarded;
+  const env = { MEDIA_BUCKET: createBucket(), MEDIA_WORKER_SECRET: secret,
+    TRANSCODE_SERVICE: { fetch: async (request) => {
+      forwarded = { url: request.url, body: await request.json() };
+      return Response.json({ jobId: forwarded.body.jobId, workflowId: forwarded.body.jobId });
+    } } };
+  const body = { jobId: 'transcode_media_11111111-1111-4111-8111-111111111111' };
+  const response = await worker.fetch(await signedRequest('/transcodes', body), env);
+  assert.equal(response.status, 200);
+  assert.equal(forwarded.url, 'https://transcoder.internal/jobs');
+  assert.deepEqual(forwarded.body, body);
+  assert.equal((await worker.fetch(new Request('https://media.example.test/transcodes', { method: 'POST', body: '{}' }), env)).status, 401);
 });
 
 test('mobile selection uses only the matching original version and falls back when missing or invalid', async () => {

@@ -55,7 +55,8 @@ export const mediaWorkerRequest = async <T>(event: H3Event, path: string, body: 
 export const listAdminEpisodes = async (event: H3Event, seriesId: string, _sync = true): Promise<AdminEpisode[]> => {
   const rows = await d1All<EpisodeMediaRow>(event, `SELECT e.id, e.episode_no, e.title, e.duration_seconds, e.is_free, e.video_status, e.thumbnail_url,
       a.id AS media_asset_id, u.id AS upload_id, a.source_file_name, a.source_size_bytes, a.source_object_key, a.status AS asset_status,
-      0 AS progress, a.validation_error AS error_message
+      COALESCE((SELECT progress FROM transcode_jobs j WHERE j.media_asset_id = a.id ORDER BY j.attempt DESC LIMIT 1), 0) AS progress,
+      COALESCE((SELECT error_message FROM transcode_jobs j WHERE j.media_asset_id = a.id ORDER BY j.attempt DESC LIMIT 1), a.validation_error) AS error_message
     FROM episodes e
     LEFT JOIN media_assets a ON a.id = e.active_media_asset_id OR (e.active_media_asset_id IS NULL AND a.id = (
       SELECT id FROM media_assets candidate WHERE candidate.episode_id = e.id AND candidate.deleted_at IS NULL ORDER BY candidate.created_at DESC LIMIT 1))

@@ -6,6 +6,7 @@ import {
   EyeOff,
   LockKeyhole,
   Mail,
+  Play,
   ShieldCheck,
   Sparkles,
   UserRound,
@@ -31,7 +32,7 @@ const alternateTo = computed(() => ({
   query: route.query.redirect ? { redirect: route.query.redirect } : undefined,
 }));
 const headingLabel = computed(() => isRegister.value ? 'START YOUR STORY' : 'WELCOME BACK');
-const headingTitle = computed(() => isRegister.value ? 'Create your account' : 'Sign in to watch');
+const headingTitle = computed(() => isRegister.value ? 'Create your account' : 'Sign in to your account');
 const headingCopy = computed(() => isRegister.value
     ? 'Keep purchases and watch progress connected.'
     : 'Pick up from the exact moment you left.');
@@ -149,6 +150,11 @@ const submit = async () => {
           </button>
         </form>
 
+        <div class="consumer-auth__guest-divider"><span>or</span></div>
+        <NuxtLink class="consumer-auth__guest" to="/">
+          <Play :size="17" fill="currentColor" />
+          Continue as guest
+        </NuxtLink>
         <p class="consumer-auth__alternate">{{ isRegister ? 'Already have an account?' : 'New to ReelNova?' }} <NuxtLink :to="alternateTo">{{ isRegister ? 'Sign in' : 'Register' }}</NuxtLink></p>
       </div>
       <p class="consumer-auth__legal">By continuing, you confirm you are 18 or older.</p>

@@ -24,6 +24,12 @@ const purchasable = computed(() => Number(series.value?.price) > 0);
 watch(series, (value) => {
   if (value) void track('detail_open', { seriesId: value.id, seriesTitle: value.title });
 }, { immediate: true });
+watch(series, (value) => {
+  if (!import.meta.client || !value || route.query.unlock !== '1' || value.purchased || !purchasable.value) return;
+  showUnlock.value = true;
+  const { unlock: _unlock, ...query } = route.query;
+  void navigateTo({ path: route.path, query }, { replace: true });
+}, { immediate: true });
 
 onMounted(async () => {
   const orderNo = String(route.query.orderNo || '');

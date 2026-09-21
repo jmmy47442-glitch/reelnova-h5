@@ -3,8 +3,16 @@ import { recordAdminAudit } from '~/server/utils/admin-audit';
 import { d1First, d1Run } from '~/server/utils/cloudflare-d1';
 import { mediaWorkerRequest, requireMediaPipeline } from '~/server/utils/media-pipeline';
 
-const allowedTypes = new Set(['video/mp4']);
-const allowedExtensions = new Set(['mp4']);
+const allowedInputs = new Map<string, Set<string>>([
+  ['mp4', new Set(['video/mp4'])],
+  ['m4v', new Set(['video/mp4', 'video/x-m4v'])],
+  ['mov', new Set(['video/quicktime'])],
+  ['mkv', new Set(['video/x-matroska', 'application/octet-stream'])],
+  ['webm', new Set(['video/webm'])],
+  ['avi', new Set(['video/x-msvideo', 'video/avi'])],
+  ['mpg', new Set(['video/mpeg'])],
+  ['mpeg', new Set(['video/mpeg'])],
+]);
 
 interface WorkerUpload {
   uploadId: string;
@@ -42,13 +50,14 @@ export default defineEventHandler(async (event) => {
   const durationSeconds = Number(body?.durationSeconds);
   const width = Number(body?.width);
   const height = Number(body?.height);
+  const probeValid = Number.isFinite(durationSeconds) && durationSeconds > 0 && durationSeconds <= 6 * 60 * 60
+    && Number.isInteger(width) && width > 0 && Number.isInteger(height) && height > 0
+    && body?.hasVideo === true && body?.hasAudio === true;
   if (!/^upload:[0-9a-f-]{36}$/i.test(idempotencyKey)
     || !Number.isInteger(episodeNo) || episodeNo < 1 || episodeNo > 10_000 || !title || title.length > 120
-    || !fileName || fileName.length > 240 || !allowedTypes.has(contentType) || !allowedExtensions.has(extension)
-    || !Number.isSafeInteger(fileSizeBytes) || fileSizeBytes < 1024 || fileSizeBytes > 20 * 1024 * 1024 * 1024
-    || !Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 6 * 60 * 60
-    || !Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0 || body?.hasVideo !== true || body?.hasAudio !== true) {
-    throw createError({ statusCode: 400, statusMessage: 'Only H.264/AAC MP4 videos up to 20 GB are accepted' });
+    || !fileName || fileName.length > 240 || !allowedInputs.get(extension)?.has(contentType)
+    || !Number.isSafeInteger(fileSizeBytes) || fileSizeBytes < 1024 || fileSizeBytes > 20 * 1024 * 1024 * 1024) {
+    throw createError({ statusCode: 400, statusMessage: 'Supported inputs: MP4, M4V, MOV, MKV, WebM, AVI and MPEG up to 20 GB' });
   }
 
   const previous = await d1First<ExistingUpload>(event, `SELECT u.id, u.provider_upload_id AS uploadId, u.object_key AS objectKey,
@@ -90,7 +99,7 @@ export default defineEventHandler(async (event) => {
 
   if (existing) {
     // Keep replaced media out of the active catalogue and reconciliation set.
-    // The new asset becomes active only after the stored MP4 passes validation.
+    // The new asset becomes active only after direct validation or container transcoding succeeds.
     await d1Run(event, `UPDATE media_assets SET status = 'superseded', deleted_at = COALESCE(deleted_at, ?), updated_at = ?
       WHERE episode_id = ? AND deleted_at IS NULL AND status <> 'superseded'`, [now, now, episodeId]);
     await d1Run(event, `UPDATE episodes SET title = ?, video_status = 'uploading', active_media_asset_id = NULL,
@@ -103,8 +112,10 @@ export default defineEventHandler(async (event) => {
   await d1Run(event, `INSERT INTO media_assets
     (id, episode_id, kind, storage_provider, source_object_key, source_file_name, source_content_type,
      source_size_bytes, width, height, duration_seconds, has_video, has_audio, validation_status, status, created_at, updated_at)
-    VALUES (?, ?, 'video', 'r2', ?, ?, ?, ?, ?, ?, ?, 1, 1, 'pending', 'uploading', ?, ?)`,
-  [assetId, episodeId, objectKey, fileName, contentType, fileSizeBytes, width, height, durationSeconds, now, now]);
+    VALUES (?, ?, 'video', 'r2', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'uploading', ?, ?)`,
+  [assetId, episodeId, objectKey, fileName, contentType, fileSizeBytes,
+    probeValid ? width : null, probeValid ? height : null, probeValid ? durationSeconds : null,
+    probeValid ? 1 : null, probeValid ? 1 : null, now, now]);
   await d1Run(event, 'UPDATE episodes SET active_media_asset_id = ? WHERE id = ?', [assetId, episodeId]);
   await d1Run(event, `INSERT INTO media_upload_sessions
     (id, media_asset_id, provider_upload_id, object_key, part_size_bytes, file_size_bytes, status, expires_at,

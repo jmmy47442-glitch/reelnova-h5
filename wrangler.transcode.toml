@@ -1,0 +1,40 @@
+name = "reelnova-transcoder"
+main = "workers/transcode-worker.mjs"
+compatibility_date = "2026-09-20"
+workers_dev = false
+
+[observability]
+enabled = true
+
+[[r2_buckets]]
+binding = "MEDIA_BUCKET"
+bucket_name = "reelnova-media-private"
+
+[[containers]]
+class_name = "MediaTranscodeContainer"
+image = "./containers/transcoder/Dockerfile"
+max_instances = 4
+instance_type = "standard-3"
+
+[[durable_objects.bindings]]
+name = "MEDIA_TRANSCODER"
+class_name = "MediaTranscodeContainer"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MediaTranscodeContainer"]
+
+[[workflows]]
+name = "reelnova-media-transcode"
+binding = "MEDIA_TRANSCODE_WORKFLOW"
+class_name = "MediaTranscodeWorkflow"
+
+[vars]
+APP_BASE_URL = "https://iseedrama.com"
+R2_BUCKET_NAME = "reelnova-media-private"
+
+# Configure as encrypted Worker secrets:
+# MEDIA_WORKER_SECRET (same value as the media Worker)
+# R2_ACCOUNT_ID
+# R2_ACCESS_KEY_ID
+# R2_SECRET_ACCESS_KEY
