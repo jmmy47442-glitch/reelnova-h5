@@ -135,7 +135,7 @@ Set the application's `CLOUDFLARE_MEDIA_WORKER_URL=https://media.iseedrama.com`,
 
 Deploy the Worker before deploying the Nuxt application. `/admin/system` performs an authenticated Worker/R2 health check. Configure `PUBLIC_BASE_URL`, `APP_BASE_URL` and `APP_ORIGINS` in `wrangler.media.toml`; retain the admin origin for upload and preview CORS. Keep the hourly Cron: it recovers interrupted completions, cleans expired multipart uploads and invokes PayPal reconciliation.
 
-Uploads must be H.264 8-bit + AAC-LC, non-fragmented MP4 with faststart, at most 20 GB and six hours. Both browser and Worker inspect metadata (within the first 16 MiB). The Worker verifies object ownership and byte count before completion. Successful validation is cached in private R2 by immutable object ETag. Only validated objects become playable; no online transcoding or adaptive quality is provided. Covers are uploaded independently.
+Uploads must be H.264 8-bit + AAC-LC, non-fragmented MP4, at most 20 GB and six hours. Faststart is recommended for faster startup but is not required. Both browser and Worker follow MP4 offsets to inspect metadata with at most 16 MiB of reads, including `moov` stored after `mdat`. The Worker verifies object ownership and byte count before completion. Successful validation is cached in private R2 by immutable object ETag. Only validated objects become playable; no online transcoding or adaptive quality is provided. Covers are uploaded independently.
 
 See [R2 MP4 delivery and migration](./R2-MP4-DELIVERY.md) for export commands, existing-video handling and deployment acceptance steps.
 

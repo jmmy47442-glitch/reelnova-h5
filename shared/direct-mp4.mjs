@@ -52,10 +52,9 @@ export const inspectDirectMp4 = (buffer) => {
   } finally { inspector.parser.stop(); }
 };
 
-// Existing R2 originals may have moov after mdat. Browsers can play those via
-// Range requests. Follow the parser's offsets to skip video bytes while still
-// checking codecs/tracks, with bounded reads even for corrupt object metadata.
-// New uploads continue to require faststart through inspectDirectMp4 above.
+// MP4 files may have moov after mdat. Browsers can play those via Range
+// requests. Follow the parser's offsets to skip video bytes while still
+// checking codecs/tracks, with bounded reads even for corrupt metadata.
 export const inspectStoredMp4 = async (size, readRange) => {
   if (!Number.isSafeInteger(size) || size <= 0) throw new Error('Invalid MP4 object size');
   const inspector = createInspector(false);
@@ -74,6 +73,6 @@ export const inspectStoredMp4 = async (size, readRange) => {
       if (!Number.isSafeInteger(nextOffset) || nextOffset <= offset || nextOffset >= size) break;
       offset = nextOffset;
     }
-    throw new Error('MP4 metadata is incomplete or exceeds the inspection limit');
+    throw new Error('MP4 元数据不完整或超过 16 MB 校验上限，请重新导出');
   } finally { inspector.parser.stop(); }
 };

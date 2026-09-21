@@ -15,6 +15,7 @@ const { formatPrice } = useFormatters();
 const route = useRoute();
 const { isAuthenticated } = useUserAuth();
 const { getPaymentConfig } = usePaymentPreparation();
+const clientReady = ref(false);
 const { data: paymentConfig, refresh: refreshPaymentConfig, error: paymentConfigError } = useAsyncData('paypal-checkout-config', async () => {
   return getPaymentConfig();
 }, { server: false, lazy: true, dedupe: 'defer' });
@@ -22,7 +23,7 @@ const status = ref<OrderStatus>('pending');
 const error = ref('');
 const paymentMethod = ref<PaymentMethod>('paypal');
 // Preparation stays silent until the customer chooses a payment button.
-const methodSelected = ref(true);
+const methodSelected = ref(false);
 const paypalContainer = ref<HTMLElement | null>(null);
 const cardContainer = ref<HTMLElement | null>(null);
 const loading = ref(false);
@@ -427,6 +428,22 @@ const dispose = () => {
   methodSelected.value = false;
   cardValidationAttempted.value = false; cardValidationMessage.value = ''; cardFieldErrors.value = {};
 };
+const pause = () => {
+  clearTimeout(pollTimer);
+  clearTimeout(slowPaymentTimer);
+  slowPayment.value = false;
+  try { appleSession?.abort(); } catch { /* Session may already be complete. */ }
+  if (appleSession) busy.value = false;
+  appleSession = null;
+  // Keep PayPal's isolated fields mounted for a fast reopen, but never retain
+  // card details or local validation state after the customer closes checkout.
+  for (const field of renderedFields) {
+    try { void Promise.resolve(field.clear?.()).catch(() => undefined); } catch { /* Provider field may already be empty. */ }
+  }
+  cardValidationAttempted.value = false;
+  cardValidationMessage.value = '';
+  cardFieldErrors.value = {};
+};
 const retryPaymentOptions = () => {
   if (processing.value) return;
   error.value = '';
@@ -449,21 +466,22 @@ watch([paymentConfig, isAuthenticated], () => {
 const close = () => { if (!busy.value) emit('close'); };
 watch(() => props.open, (open) => {
   if (!import.meta.client) return;
-  if (!open) { dispose(); return; }
-  methodSelected.value = false;
+  if (!open) { pause(); return; }
   void track('payment_sheet_open', { seriesId: props.series.id, seriesTitle: props.series.title });
   if (status.value === 'processing') { polls = 0; void checkPayment(); }
   else if (status.value !== 'paid') { error.value = ''; status.value = 'pending'; }
-  cardMessage.value = ''; appleMessage.value = '';
+  if (methodSelected.value) void nextTick(initialize);
 }, { immediate: true });
 watch(isAuthenticated, () => { if (props.open) void nextTick(initialize); });
+onMounted(() => { clientReady.value = true; });
+onDeactivated(dispose);
 onBeforeUnmount(dispose);
 </script>
 
 <template>
   <Teleport to="body">
     <Transition name="sheet">
-      <div v-if="open && purchasable" class="sheet-backdrop" role="presentation" @click.self="close">
+      <div v-if="clientReady" v-show="open && purchasable" class="sheet-backdrop" role="presentation" @click.self="close">
         <section class="unlock-sheet" role="dialog" aria-modal="true" aria-labelledby="unlock-title">
           <div class="sheet-grabber" />
           <button class="icon-button unlock-sheet__close" type="button" aria-label="Close" :disabled="busy" @click="close">

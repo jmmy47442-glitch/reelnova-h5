@@ -48,7 +48,7 @@ export default defineEventHandler(async (event) => {
     || !Number.isSafeInteger(fileSizeBytes) || fileSizeBytes < 1024 || fileSizeBytes > 20 * 1024 * 1024 * 1024
     || !Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 6 * 60 * 60
     || !Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0 || body?.hasVideo !== true || body?.hasAudio !== true) {
-    throw createError({ statusCode: 400, statusMessage: 'Only H.264/AAC faststart MP4 videos up to 20 GB are accepted' });
+    throw createError({ statusCode: 400, statusMessage: 'Only H.264/AAC MP4 videos up to 20 GB are accepted' });
   }
 
   const previous = await d1First<ExistingUpload>(event, `SELECT u.id, u.provider_upload_id AS uploadId, u.object_key AS objectKey,

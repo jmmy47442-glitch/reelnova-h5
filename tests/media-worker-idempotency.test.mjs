@@ -97,7 +97,7 @@ const createBucket = () => {
   };
 };
 
-test('legacy moov-at-end originals play without relaxing upload validation or sharing its cache', async () => {
+test('moov-at-end originals pass playback and upload validation', async () => {
   const bucket = createBucket();
   const assetId = 'media_11111111-1111-4111-8111-111111111111';
   const key = `originals/series_1/episode_1/${assetId}/legacy.mp4`;
@@ -115,7 +115,7 @@ test('legacy moov-at-end originals play without relaxing upload validation or sh
     assert.deepEqual(new Uint8Array(await response.arrayBuffer()), bytes.slice(-1024));
   }
   const upload = await worker.fetch(await signedRequest('/videos/verify', { objectKey: key, assetId }), env);
-  assert.equal((await upload.json()).valid, false, 'playback cache must not bypass faststart upload validation');
+  assert.equal((await upload.json()).valid, true);
 });
 
 test('stored MP4 inspection skips a large mdat to validate tail metadata with bounded reads', async () => {
@@ -159,7 +159,7 @@ test('stored MP4 inspection still rejects unsupported codecs and truncated metad
     const bytes = new Uint8Array(length);
     if (offset === 0) { new DataView(bytes.buffer).setUint32(0, 64 * 1024 * 1024); bytes.set(encoder.encode('moov'), 4); }
     return bytes.buffer;
-  }), /inspection limit/);
+  }), /16 MB/);
   assert.ok(calls <= 32);
   assert.ok(total <= MP4_PROBE_BYTES);
 });
@@ -385,10 +385,10 @@ test('series cover uploads require a signed grant and become immutable public im
   assert.deepEqual([...new Uint8Array(await publicImage.arrayBuffer())], [...imageBytes]);
 });
 
-test('invalid formats are rejected by the Worker even when browser validation is bypassed', async () => {
+test('unsupported formats are rejected by the Worker even when browser validation is bypassed', async () => {
   const bucket = createBucket();
   const env = { MEDIA_BUCKET: bucket, MEDIA_WORKER_SECRET: secret };
-  for (const name of ['no-faststart', 'unsupported-video']) {
+  for (const name of ['unsupported-video']) {
     const key = `originals/series/episode/asset/${name}.mp4`;
     await bucket.put(key, fixture(name), { httpMetadata: { contentType: 'video/mp4' }, customMetadata: { assetId: 'asset' } });
     const response = await worker.fetch(await signedRequest('/videos/verify', { objectKey: key, assetId: 'asset' }), env);

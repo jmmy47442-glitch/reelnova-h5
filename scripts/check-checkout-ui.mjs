@@ -20,6 +20,9 @@ async function scenario(name, options, run, beforeOpen) {
     window.__testOptions = options;
     window.__appleResults = [];
     window.__submitCount = 0;
+    window.__paypalRenderCount = 0;
+    window.__cardRenderCount = 0;
+    window.__cardClearCount = 0;
     if (options.apple !== false) {
       window.ApplePaySession = class {
         static supportsVersion() { return true; }
@@ -42,7 +45,7 @@ async function scenario(name, options, run, beforeOpen) {
       window.paypal = {
         FUNDING: { PAYPAL: 'paypal' },
         Buttons: (callbacks) => ({
-          render: async (host) => { const button = document.createElement('button'); button.textContent = 'Mock PayPal checkout'; button.onclick = async () => { try { const orderID = await callbacks.createOrder(); if (window.__testOptions.cancel) await callbacks.onCancel(); else await callbacks.onApprove({ orderID }); } catch (error) { callbacks.onError(error); } }; host.appendChild(button); if (window.__testOptions.slowPayPalRender) await new Promise(resolve => { window.__finishPayPalRender = resolve; }); }, close: () => {},
+          render: async (host) => { window.__paypalRenderCount++; const button = document.createElement('button'); button.textContent = 'Mock PayPal checkout'; button.onclick = async () => { try { const orderID = await callbacks.createOrder(); if (window.__testOptions.cancel) await callbacks.onCancel(); else await callbacks.onApprove({ orderID }); } catch (error) { callbacks.onError(error); } }; host.appendChild(button); if (window.__testOptions.slowPayPalRender) await new Promise(resolve => { window.__finishPayPalRender = resolve; }); }, close: () => {},
         }),
         CardFields: (callbacks) => {
           const getState = () => window.__testOptions.missingCardDetails ? {
@@ -52,7 +55,7 @@ async function scenario(name, options, run, beforeOpen) {
             },
           } : { isFormValid: window.__testOptions.invalidCard !== true };
           window.__correctCardDetails = () => { window.__testOptions.missingCardDetails = false; callbacks.inputEvents?.onChange?.(getState()); };
-          const field = () => ({ render: async (host) => { if (window.__testOptions.slowCardRender) await new Promise(() => {}); const input = document.createElement('input'); input.setAttribute('aria-label', 'Hosted field'); host.appendChild(input); }, close: () => {} });
+          const field = () => { let input; return { render: async (host) => { if (window.__testOptions.slowCardRender) await new Promise(() => {}); window.__cardRenderCount++; input = document.createElement('input'); input.setAttribute('aria-label', 'Hosted field'); host.appendChild(input); }, clear: () => { window.__cardClearCount++; if (input) input.value = ''; }, close: () => {} }; };
           return { isEligible: () => window.__testOptions.cardEligible !== false,
             NameField: field, NumberField: field, ExpiryField: field, CVVField: field,
             getState: async () => getState(),
@@ -114,7 +117,7 @@ async function scenario(name, options, run, beforeOpen) {
   } finally { await context.close(); }
 }
 try {
-  await scenario('payment buttons appear before configuration; loading starts only after selection', { configStalled: true }, async ({ page, calls }) => {
+  await scenario('payment buttons appear before configuration and keep an in-flight selection on reopen', { configStalled: true }, async ({ page, calls, configRequests }) => {
     await page.screenshot({ path: 'artifacts/screenshots/checkout-buttons-375.png', fullPage: true });
     await page.getByRole('button', { name: 'Apple Pay', exact: true }).click();
     await page.getByText('Preparing Apple Pay…', { exact: true }).waitFor({ timeout: 1000 });
@@ -123,8 +126,9 @@ try {
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
     await page.getByRole('button', { name: 'Close', exact: true }).click();
     await page.locator('.detail-actions .button--ghost').click();
-    await page.getByText('Choose how you would like to pay.', { exact: true }).waitFor();
-    assert.equal(await page.locator('.checkout-loading:visible').count(), 0);
+    await page.getByText('Preparing Credit or debit card…', { exact: true }).waitFor({ timeout: 1000 });
+    assert.equal(await page.locator('.payment-method[aria-pressed="true"]').getAttribute('aria-label'), 'Credit or debit card');
+    assert.equal(configRequests(), 1);
   });
   await scenario('site entry warms providers while only the selected UI mounts', {}, async ({ page, calls }) => {
     await page.waitForFunction(() => window.__appleConfigCalls === 1);
@@ -153,7 +157,8 @@ try {
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
   }, async ({ page, calls }) => {
     await page.waitForFunction(() => window.__appleConfigCalls === 1);
-    assert.equal(await page.getByRole('dialog').count(), 0);
+    await page.locator('.unlock-sheet').first().waitFor({ state: 'attached' });
+    assert.equal(await page.locator('.unlock-sheet').evaluateAll((sheets) => sheets.length > 0 && sheets.every((sheet) => !sheet.checkVisibility())), true);
     assert.equal(await page.evaluate(() => window.__appleConfigCalls), 1);
     assert.equal(await page.evaluate(() => window.__appleSession), undefined);
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
@@ -174,7 +179,7 @@ try {
     await page.getByText('Preparing PayPal…', { exact: true }).waitFor();
     await page.getByText('Taking longer than usual.', { exact: false }).waitFor({ timeout: 5000 });
     assert.equal(await page.locator('.checkout-loading').isVisible(), true);
-    assert.equal(await page.locator('.paypal-buttons').isVisible(), false);
+    assert.equal(await page.locator('.paypal-buttons:visible').count(), 0);
     assert.equal(await page.getByRole('button', { name: 'Continue to PayPal', exact: true }).count(), 0);
     assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
     await page.screenshot({ path: 'artifacts/screenshots/checkout-loading-375.png', fullPage: true });
@@ -183,8 +188,8 @@ try {
     await page.getByRole('button', { name: 'Credit or debit card', exact: true }).click();
     await page.getByRole('button', { name: 'Pay $9.99 USD', exact: true }).waitFor();
     assert.equal(await page.locator('.paypal-card-fields input').count(), 4);
-    assert.equal(await page.locator('.payment-method svg, .payment-method img').count(), 3);
-    const cardFieldBox = await page.locator('[data-card-number]').boundingBox();
+    assert.equal(await page.locator('.payment-method:visible svg, .payment-method:visible img').count(), 3);
+    const cardFieldBox = await page.getByRole('dialog').locator('[data-card-number]').boundingBox();
     assert.ok(cardFieldBox && cardFieldBox.height >= 64 && cardFieldBox.height <= 70, `card field height was ${cardFieldBox?.height}`);
     await page.screenshot({ path: 'artifacts/screenshots/checkout-card-375.png', fullPage: true });
     await page.getByRole('button', { name: 'Pay $9.99 USD', exact: true }).click();
@@ -250,7 +255,7 @@ try {
     await page.locator('.checkout-loading').waitFor({ state: 'hidden' });
     await page.evaluate(() => window.__finishPayPalRender());
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.equal(await page.locator('.paypal-buttons').isVisible(), false);
+    assert.equal(await page.locator('.paypal-buttons:visible').count(), 0);
     assert.equal(await page.getByRole('button', { name: 'Retry PayPal', exact: true }).isVisible(), true);
   });
   await scenario('stalled card and Apple Pay do not block a ready PayPal wallet', { slowCardRender: true, slowAppleConfig: true }, async ({ page }) => {
@@ -354,6 +359,33 @@ try {
     await page.getByRole('button', { name: 'Credit or debit card', exact: true }).click();
     await page.getByRole('button', { name: 'Pay $9.99 USD', exact: true }).waitFor();
     assert.equal(await page.locator('.paypal-card-fields input').count(), 4);
+  });
+  await scenario('loaded payment controls reopen instantly without retaining card details', {}, async ({ page, calls, configRequests, sdkRequests }) => {
+    await page.getByRole('button', { name: 'PayPal', exact: true }).click();
+    await page.getByRole('button', { name: 'Mock PayPal checkout' }).waitFor();
+    await page.getByRole('button', { name: 'Credit or debit card', exact: true }).click();
+    await page.getByRole('button', { name: 'Pay $9.99 USD', exact: true }).waitFor();
+    await page.locator('.paypal-card-fields input').evaluateAll((inputs) => inputs.forEach((input) => { input.value = 'private'; }));
+    assert.deepEqual(await page.evaluate(() => ({ paypal: window.__paypalRenderCount, card: window.__cardRenderCount })), { paypal: 1, card: 4 });
+    assert.equal(configRequests(), 1);
+    assert.equal(sdkRequests(), 1);
+
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await page.locator('.unlock-sheet:visible').waitFor({ state: 'hidden' });
+    assert.equal(await page.locator('.unlock-sheet').evaluateAll((sheets) => sheets.length > 0 && sheets.every((sheet) => !sheet.checkVisibility())), true);
+    assert.equal(await page.locator('.paypal-card-fields input').evaluateAll((inputs) => inputs.every((input) => input.value === '')), true);
+    assert.equal(await page.evaluate(() => window.__cardClearCount), 4);
+
+    await page.locator('.detail-actions .button--ghost').click();
+    await page.getByRole('dialog').waitFor();
+    assert.equal(await page.locator('.payment-method[aria-pressed="true"]').getAttribute('aria-label'), 'Credit or debit card');
+    assert.equal(await page.getByRole('button', { name: 'Pay $9.99 USD', exact: true }).isVisible(), true);
+    await page.getByRole('button', { name: 'PayPal', exact: true }).click();
+    assert.equal(await page.getByRole('button', { name: 'Mock PayPal checkout' }).isVisible(), true);
+    assert.deepEqual(await page.evaluate(() => ({ paypal: window.__paypalRenderCount, card: window.__cardRenderCount })), { paypal: 1, card: 4 });
+    assert.equal(configRequests(), 1);
+    assert.equal(sdkRequests(), 1);
+    assert.equal(calls.filter((call) => call.path === '/api/orders').length, 0);
   });
 } finally { await browser.close(); }
 console.log(`${results.length} checkout browser scenarios passed (mock providers; no live charge).`);

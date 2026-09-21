@@ -5,7 +5,7 @@
 ## 视频要求
 
 - `.mp4`，单条 H.264 8 位视频轨 + 单条 AAC-LC 音轨。
-- 普通 MP4（非 fragmented MP4），开启 faststart，使完整 moov 元数据位于文件前 16 MiB。
+- 普通 MP4（非 fragmented MP4）。支持 moov 元数据位于文件尾部，但仍建议开启 faststart 以加快首帧。
 - 单文件不超过 20 GB，时长不超过 6 小时。
 - 普通上传不自动转码。可使用下方离线工具生成低码率移动版；省流量、蜂窝或低速网络优先选择已就绪的移动版，没有合格移动版时播放原片。这一 MP4 回退模式在起播/续签时选源；生成下述 HLS 包后改为逐片自适应码率。
 - 封面通过后台单独上传，不再从 Stream 获取缩略图。
@@ -16,13 +16,13 @@
 ffmpeg -i input.mov -map 0:v:0 -map 0:a:0 -c:v libx264 -profile:v high -pix_fmt yuv420p -crf 23 -preset medium -c:a aac -profile:a aac_low -b:a 128k -movflags +faststart output.mp4
 ```
 
-已经是兼容 H.264 + AAC-LC、只缺 faststart 的文件，可仅重新封装：
+已经是兼容 H.264 + AAC-LC、只缺 faststart 的文件可直接上传；为了更快起播，也可仅重新封装：
 
 ```bash
 ffmpeg -i input.mp4 -map 0:v:0 -map 0:a:0 -c copy -movflags +faststart output.mp4
 ```
 
-后台浏览器会预检，Worker 再读取实际 R2 对象前 16 MiB 校验编码、时长、尺寸和 faststart，并核对上传归属及字节数。该检查不等同于逐帧解码质检，上线前仍须抽检画面和声音。校验结果缓存在私有 `validation/` 前缀下，按资源 ID 和对象 ETag 隔离。
+后台浏览器会预检，Worker 再校验实际 R2 对象。两者都会跟随 MP4 声明的偏移跳过媒体数据，最多读取 16 MiB 元数据，因此 moov 可以位于文件尾部。校验包括编码、时长、尺寸、上传归属和字节数；该检查不等同于逐帧解码质检，上线前仍须抽检画面和声音。校验结果缓存在私有 `validation/` 前缀下，按资源 ID 和对象 ETag 隔离。
 
 ## 鉴权后的边缘缓存
 
@@ -53,7 +53,7 @@ npm run media:prepare-mobile -- --input /path/source.mp4 --output /path/mobile.m
 
 工具默认只生成本地 MP4 和对应 `.json` 上传清单；不覆盖已存在的输出，也不改原片。检查效果后，在相同命令添加 `--upload` 将文件上传到私有 bucket（需 Wrangler 凭据），可用 `--bucket` 指定 bucket。对象键为 `variants/{assetId}/{encodeURIComponent(originalEtag)}/mobile.mp4`。原片更新后旧移动版不会被选中，须针对新 ETag 重新生成；旧 variants 的清理由运维单独处理。
 
-Worker 仅从上述确定路径选取比原片更小且通过编码/faststart 校验的文件。服务端接受 `profile=mobile` 或 `Save-Data: on`；客户端根据 Network Information API 的 `saveData`、`type=cellular`、`effectiveType` 或 `downlink<2` 选择。浏览器不提供网络信息时默认原片。移动版标签显示 `Data saver`。不通过 `Accept` 猜测 HEVC 支持，继续使用目前跨浏览器已验证的 H.264。
+Worker 仅从上述确定路径选取比原片更小且通过媒体兼容性校验的文件。服务端接受 `profile=mobile` 或 `Save-Data: on`；客户端根据 Network Information API 的 `saveData`、`type=cellular`、`effectiveType` 或 `downlink<2` 选择。浏览器不提供网络信息时默认原片。移动版标签显示 `Data saver`。不通过 `Accept` 猜测 HEVC 支持，继续使用目前跨浏览器已验证的 H.264。
 
 ## 2 秒 HLS 分片与自适应码率
 
@@ -113,9 +113,9 @@ HLS_FIXTURE_DIR=/path/1080p-hls HLS_ORIGINAL_FIXTURE=/path/source-1080p.mp4 node
 
 ## 现有视频
 
-- 已就绪且 R2 原片为兼容 H.264 + AAC-LC MP4：首次获取签名地址时完成服务端校验，随后直接播放，无需重新上传。旧片的 moov 元数据可以位于文件尾；Worker 按元数据偏移读取并跳过视频数据，最多读取 16 MiB、32 次，浏览器通过 Range 请求播放。播放校验缓存与新上传的 faststart 校验缓存隔离。
+- 已就绪且 R2 原片为兼容 H.264 + AAC-LC MP4：首次获取签名地址时完成服务端校验，随后直接播放，无需重新上传。moov 元数据可以位于文件尾；Worker 按元数据偏移读取并跳过视频数据，最多读取 16 MiB、32 次，浏览器通过 Range 请求播放。
 - 旧分集停留在处理中或处理失败：在分集管理中点击“重新校验”，从现有 R2 文件恢复，不再提交转码。
-- MOV、HEVC、损坏或已无 R2 原片：转换后重新上传。新上传仍要求 faststart；旧片仅缺少 faststart 时可以直接播放，建议后续重新封装以改善首帧速度。不能假设所有旧 Stream 视频的原片都符合浏览器直播放要求。
+- MOV、HEVC、损坏或已无 R2 原片：转换后重新上传。仅缺少 faststart 的新旧原片均可以直接上传和播放，建议后续重新封装以改善首帧速度。不能假设所有旧 Stream 视频的原片都符合浏览器直播放要求。
 - 使用独立封面上传补齐封面；旧自动缩略图接口不再访问 Stream。
 - 上传完成响应丢失可重试；Cron 继续恢复 `completing` 会话和清理过期分片。格式不合格的文件进入 `failed`，需要重新导出上传。
 

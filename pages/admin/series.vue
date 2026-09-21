@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { CloudOff, Download, Eye, Film, FileVideo, GripVertical, ImagePlus, Plus, RefreshCw, Search, Trash2, Upload, X } from 'lucide-vue-next';
-import { inspectDirectMp4, MP4_PROBE_BYTES } from '~/shared/direct-mp4.mjs';
+import { inspectStoredMp4 } from '~/shared/direct-mp4.mjs';
 import Sortable from 'sortablejs';
 import { ElMessage, ElMessageBox, type UploadFile, type UploadFiles, type UploadInstance } from 'element-plus';
 import type { AdminEpisode, MediaUploadPart, MediaUploadSession, SeriesCoverUploadSession } from '~/types/admin';
@@ -574,7 +574,8 @@ const readResume = (key: string) => {
 const writeResume = (key: string, value: ResumeState) => localStorage.setItem(key, JSON.stringify(value));
 
 const inspectMedia = async (file: File): Promise<MediaProbe> => {
-  const media = inspectDirectMp4(await file.slice(0, MP4_PROBE_BYTES).arrayBuffer());
+  const media = await inspectStoredMp4(file.size, (offset: number, length: number) =>
+    file.slice(offset, offset + length).arrayBuffer());
   return { ...media, hasVideo: true, hasAudio: true };
 };
 
@@ -807,7 +808,8 @@ const startTranscode = async () => {
     }
     const message = reason instanceof Error ? reason.message : '上传中断';
     if (message.includes('原片已保存到 R2')) ElMessage.warning(`${message}，可重新点击上传或在分集列表重试。`);
-    else ElMessage.error(`${message}，重新点击可从已完成分片继续`);
+    else if (activeUploadSessionId.value) ElMessage.error(`${message}，重新点击可从已完成分片继续`);
+    else ElMessage.error(message);
     await loadEpisodes(false);
   } finally {
     if (activeUploadSessionId.value) {
@@ -988,7 +990,7 @@ const exportSeries = () => {
           </div>
           <div class="episode-upload-box">
             <Upload :size="26" />
-            <div><strong>{{ selectedFiles.length ? `已选择 ${selectedFiles.length} 个文件` : '选择 MP4 原片' }}</strong><span>H.264 + AAC、faststart；最大 20 GB，支持断点续传</span></div>
+            <div><strong>{{ selectedFiles.length ? `已选择 ${selectedFiles.length} 个文件` : '选择 MP4 原片' }}</strong><span>H.264 + AAC；推荐 faststart；最大 20 GB，支持断点续传</span></div>
             <el-upload ref="uploadControl" :auto-upload="false" :show-file-list="false" :multiple="true" :limit="50" accept="video/mp4,.mp4" :disabled="uploading || !mediaAvailable || Boolean(episodeError)" :on-change="onFileSelected" :on-remove="onFileSelected"><el-button :disabled="uploading || !mediaAvailable || Boolean(episodeError)"><FileVideo :size="15" />选择视频</el-button></el-upload>
             <el-button type="primary" :loading="uploading" :disabled="!mediaAvailable || Boolean(episodeError) || !selectedFiles.length || Boolean(blockedUploadAssignment)" @click="startTranscode">{{ uploading ? '正在上传' : '上传并校验' }}</el-button>
           </div>

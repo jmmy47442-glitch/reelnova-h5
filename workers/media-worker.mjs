@@ -1,6 +1,6 @@
 import { readHlsPackage, serveHlsFile } from './hls-delivery.mjs';
 import { mediaCache, streamCachedMedia, warmMediaStart } from './media-cache.mjs';
-import { inspectDirectMp4, inspectStoredMp4, MP4_PROBE_BYTES } from '../shared/direct-mp4.mjs';
+import { inspectStoredMp4 } from '../shared/direct-mp4.mjs';
 
 const encoder = new TextEncoder();
 
@@ -235,10 +235,10 @@ const validateVideoObject = async (env, key, assetId, suppliedObject, forPlaybac
   const object = suppliedObject || await env.MEDIA_BUCKET.head(key);
   if (!object || (!trustedVariant && object.customMetadata?.assetId !== assetId) || !assetId) throw new Error('Video object not found');
   if (object.httpMetadata?.contentType !== 'video/mp4' || !String(key).toLowerCase().endsWith('.mp4')) {
-    return { etag: object.httpEtag, valid: false, errorMessage: '仅支持 MP4，请重新上传 H.264 + AAC、faststart 视频' };
+    return { etag: object.httpEtag, valid: false, errorMessage: '仅支持 MP4，请重新上传 H.264 + AAC 视频' };
   }
-  // Playback compatibility must never make a non-faststart upload pass the
-  // stricter upload check. Keep their validation caches separate.
+  // Keep playback and upload markers separate so their lifecycle can evolve
+  // independently without allowing one path to bypass the other's checks.
   const markerKey = `validation/${forPlayback ? 'playback-v2/' : ''}${assetId}/${encodeURIComponent(object.httpEtag)}.json`;
   const cached = await env.MEDIA_BUCKET.get(markerKey);
   if (cached) return { etag: object.httpEtag, valid: true, media: await cached.json() };
@@ -249,9 +249,7 @@ const validateVideoObject = async (env, key, assetId, suppliedObject, forPlaybac
   };
   let media;
   try {
-    media = forPlayback
-      ? await inspectStoredMp4(object.size, readRange)
-      : inspectDirectMp4(await readRange(0, Math.min(object.size, MP4_PROBE_BYTES)));
+    media = await inspectStoredMp4(object.size, readRange);
   }
   catch (error) { return { etag: object.httpEtag, valid: false, errorMessage: error.message }; }
   await env.MEDIA_BUCKET.put(markerKey, JSON.stringify(media), {
