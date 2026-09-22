@@ -156,18 +156,25 @@ const errorMessage = (error: unknown) => {
   return 'Upload completion failed';
 };
 
+const assertUploadCompletable = (initial: MediaUploadStateRow) => {
+  if (!['created', 'uploading', 'completing', 'failed', 'completed'].includes(initial.status)) {
+    throw createError({ statusCode: 409, statusMessage: `Upload cannot be completed in its current state: ${initial.status}`, data: {
+      code: 'UPLOAD_NOT_COMPLETABLE', uploadId: initial.id, uploadStatus: initial.status,
+      recoverable: false,
+    } });
+  }
+};
+
 export const completeMediaUpload = async (
   event: H3Event,
   initial: MediaUploadStateRow,
   submittedParts: MediaUploadPart[] = [],
   audit = true,
 ): Promise<UploadCompletionResult> => {
+  assertUploadCompletable(initial);
   if (initial.status === 'completed' && ['ready', 'processing', 'failed'].includes(initial.asset_status)) {
     return { uploadId: initial.id, mediaAssetId: initial.media_asset_id, streamUid: null,
       status: initial.asset_status as 'ready' | 'processing' | 'failed', errorMessage: initial.asset_error || undefined };
-  }
-  if (!['created', 'uploading', 'completing', 'failed', 'completed'].includes(initial.status)) {
-    throw createError({ statusCode: 409, statusMessage: 'Upload cannot be completed in its current state' });
   }
   if (initial.provider_upload_id.startsWith('pending:')) {
     throw createError({ statusCode: 409, statusMessage: 'Multipart upload is still being provisioned' });
@@ -186,6 +193,7 @@ export const completeMediaUpload = async (
 
   const upload = await getMediaUploadState(event, initial.id);
   if (!upload) throw createError({ statusCode: 404, statusMessage: 'Upload session not found' });
+  assertUploadCompletable(upload);
   try {
     let result: WorkerCompletion;
     try {
@@ -210,13 +218,18 @@ export const completeMediaUpload = async (
         throw completionError;
       }
     }
+    // Cancellation in another tab may finish while the Worker is in flight.
+    // Never revive that terminal session or start a job for cancelled media.
+    const current = await getMediaUploadState(event, upload.id);
+    if (!current) throw createError({ statusCode: 404, statusMessage: 'Upload session not found' });
+    assertUploadCompletable(current);
     const now = new Date().toISOString();
     if (result.transcodeRequired) await queueMediaTranscode(event, upload, result);
     else await applyDirectMediaValidation(event, upload.media_asset_id, result);
     const status = result.transcodeRequired ? 'processing' : result.valid ? 'ready' : 'failed';
     await d1Run(event, `UPDATE media_upload_sessions SET uploaded_bytes = file_size_bytes, source_etag = ?,
       r2_completed_at = COALESCE(r2_completed_at, ?), status = ?, completed_at = COALESCE(completed_at, ?),
-      last_error = ?, reconciled_at = ?, updated_at = ? WHERE id = ?`,
+      last_error = ?, reconciled_at = ?, updated_at = ? WHERE id = ? AND status IN ('created', 'uploading', 'completing', 'failed', 'completed')`,
     [result.sourceEtag || result.etag, now, status === 'failed' ? 'failed' : 'completed', now,
       result.errorMessage || null, now, now, upload.id]);
     if (audit) {
@@ -231,7 +244,7 @@ export const completeMediaUpload = async (
   } catch (error) {
     const now = new Date().toISOString();
     await d1Run(event, `UPDATE media_upload_sessions SET status = 'completing', last_error = ?, updated_at = ?
-      WHERE id = ? AND status <> 'completed'`,
+      WHERE id = ? AND status IN ('created', 'uploading', 'completing', 'failed')`,
       [errorMessage(error), now, initial.id]).catch(() => undefined);
     throw error;
   }

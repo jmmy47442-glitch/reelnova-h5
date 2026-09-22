@@ -3,6 +3,7 @@ import { inspectDirectMp4, inspectStoredMp4, MP4_PROBE_BYTES } from '../shared/d
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import worker from '../workers/media-worker.mjs';
+import { createBucket } from './helpers/media-bucket.mjs';
 
 const fixture = (name = 'compatible') => new Uint8Array(readFileSync(new URL(`./fixtures/media/${name}.mp4`, import.meta.url)));
 const encoder = new TextEncoder();
@@ -25,77 +26,6 @@ const signedRequest = async (path, body, method = 'POST') => {
   });
 };
 
-const createBucket = () => {
-  const objects = new Map();
-  const uploads = new Map();
-  let creates = 0;
-  let aborts = 0;
-  const withMetadata = (value) => ({
-    ...value,
-    etag: value.httpEtag.replace(/^"|"$/g, ''),
-    writeHttpMetadata(headers) {
-      if (value.httpMetadata?.contentType) headers.set('content-type', value.httpMetadata.contentType);
-    },
-  });
-  const bodyObject = (value, options) => {
-    const bytes = typeof value.body === 'string' ? new TextEncoder().encode(value.body) : value.body;
-    const range = options?.range;
-    const body = range ? bytes.slice(range.offset, range.offset + range.length) : bytes;
-    return withMetadata({
-      ...value,
-      body,
-      async arrayBuffer() { return body.slice().buffer; },
-      async json() { return JSON.parse(new TextDecoder().decode(bytes)); },
-    });
-  };
-  return {
-    get createCount() { return creates; },
-    get abortCount() { return aborts; },
-    async createMultipartUpload(key, options) {
-      creates += 1;
-      const uploadId = `r2-upload-${creates}`;
-      const state = { key, uploadId, options, aborted: false, parts: new Map() };
-      uploads.set(uploadId, state);
-      return {
-        uploadId,
-        async abort() { state.aborted = true; },
-      };
-    },
-    resumeMultipartUpload(key, uploadId) {
-      const state = uploads.get(uploadId);
-      if (!state || state.key !== key || state.aborted) throw new Error('No such upload');
-      return {
-        async uploadPart(partNumber, body) { state.parts.set(partNumber, new Uint8Array(await new Response(body).arrayBuffer())); return { partNumber, etag: `etag-${partNumber}` }; },
-        async complete() {
-          const bytes = new Uint8Array(Buffer.concat([...state.parts.entries()].sort((a,b) => a[0]-b[0]).map(([,part]) => part)));
-          const object = {
-            key, httpEtag: 'completed-etag', customMetadata: state.options.customMetadata,
-            httpMetadata: state.options.httpMetadata, uploaded: new Date(), body: bytes, size: bytes.byteLength,
-          };
-          objects.set(key, object);
-          uploads.delete(uploadId);
-          return withMetadata(object);
-        },
-        async abort() { aborts += 1; uploads.delete(uploadId); },
-      };
-    },
-    async put(key, body, options) {
-      const bytes = typeof body === 'string' ? new TextEncoder().encode(body) : body;
-      objects.set(key, { key, body: bytes, size: bytes.byteLength, httpEtag: `etag:${key}`, httpMetadata: options?.httpMetadata,
-        customMetadata: options?.customMetadata || {}, uploaded: new Date() });
-    },
-    async get(key, options) {
-      if (options?.onlyIf) {
-        assert.ok(options.onlyIf.etagMatches, 'conditional reads require the raw object ETag');
-        assert.ok(!options.onlyIf.etagMatches.includes('"'), 'R2 rejects quoted conditional ETags');
-      }
-      return objects.has(key) ? bodyObject(objects.get(key), options) : null;
-    },
-    async head(key) { return objects.has(key) ? withMetadata(objects.get(key)) : null; },
-    async delete(key) { objects.delete(key); },
-    async list() { return { objects: [], truncated: false }; },
-  };
-};
 
 test('moov-at-end originals pass playback and upload validation', async () => {
   const bucket = createBucket();
@@ -387,7 +317,7 @@ test('series cover uploads require a signed grant and become immutable public im
 
 test('unsupported direct-play formats are routed to container transcoding', async () => {
   const bucket = createBucket();
-  const env = { MEDIA_BUCKET: bucket, MEDIA_WORKER_SECRET: secret };
+  const env = { MEDIA_BUCKET: bucket, MEDIA_WORKER_SECRET: secret, MEDIA_TRANSCODE_ENABLED: 'true' };
   for (const name of ['unsupported-video']) {
     const key = `originals/series/episode/asset/${name}.mp4`;
     await bucket.put(key, fixture(name), { httpMetadata: { contentType: 'video/mp4' }, customMetadata: { assetId: 'asset' } });
@@ -432,10 +362,10 @@ test('private playback rejects expired and tampered tokens and supports HEAD and
 });
 
 test('health checks verify the private R2 binding with server authentication', async () => {
-  const env = { MEDIA_BUCKET: createBucket(), MEDIA_WORKER_SECRET: secret,
+  const env = { MEDIA_BUCKET: createBucket(), MEDIA_WORKER_SECRET: secret, MEDIA_TRANSCODE_ENABLED: 'true',
     TRANSCODE_SERVICE: { fetch: async () => Response.json({ ready: true, engine: 'cloudflare-containers-ffmpeg' }) } };
   const response = await worker.fetch(await signedRequest('/health', {}), env);
-  assert.deepEqual(await response.json(), { ready: true, delivery: 'r2-hls', transcoderReady: true });
+  assert.deepEqual(await response.json(), { ready: true, delivery: 'r2-hls', transcodingEnabled: true, transcoderReady: true });
   const unsigned = new Request('https://media.example.test/health', { method: 'POST', body: '{}' });
   assert.equal((await worker.fetch(unsigned, env)).status, 401);
   assert.equal((await worker.fetch(await signedRequest('/stream/token', {}), env)).status, 404);
@@ -443,7 +373,7 @@ test('health checks verify the private R2 binding with server authentication', a
 
 test('signed transcode requests are forwarded only through the private service binding', async () => {
   let forwarded;
-  const env = { MEDIA_BUCKET: createBucket(), MEDIA_WORKER_SECRET: secret,
+  const env = { MEDIA_BUCKET: createBucket(), MEDIA_WORKER_SECRET: secret, MEDIA_TRANSCODE_ENABLED: 'true',
     TRANSCODE_SERVICE: { fetch: async (request) => {
       forwarded = { url: request.url, body: await request.json() };
       return Response.json({ jobId: forwarded.body.jobId, workflowId: forwarded.body.jobId });
@@ -454,6 +384,15 @@ test('signed transcode requests are forwarded only through the private service b
   assert.equal(forwarded.url, 'https://transcoder.internal/jobs');
   assert.deepEqual(forwarded.body, body);
   assert.equal((await worker.fetch(new Request('https://media.example.test/transcodes', { method: 'POST', body: '{}' }), env)).status, 401);
+});
+
+test('MP4 upload health and validation do not depend on a paid container', async () => {
+  const env = { MEDIA_BUCKET: createBucket(), MEDIA_WORKER_SECRET: secret,
+    TRANSCODE_SERVICE: { fetch: () => assert.fail('Free mode must never call the container') } };
+  const health = await worker.fetch(await signedRequest('/health', {}), env);
+  assert.deepEqual(await health.json(), { ready: true, delivery: 'r2-mp4', transcodingEnabled: false, transcoderReady: false });
+  const rejected = await worker.fetch(await signedRequest('/transcodes', {}), env);
+  assert.equal(rejected.status, 409);
 });
 
 test('mobile selection uses only the matching original version and falls back when missing or invalid', async () => {

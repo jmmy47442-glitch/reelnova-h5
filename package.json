@@ -23,7 +23,7 @@
     "check:checkout-ui": "node scripts/check-checkout-ui.mjs",
     "check:direct-playback-ui": "node scripts/check-direct-playback-ui.mjs",
     "check:media-worker": "node --check workers/media-worker.mjs",
-    "test:media-worker": "node --test tests/media-worker-idempotency.test.mjs tests/media-edge-cache.test.mjs tests/direct-media-api.test.mjs tests/hls-delivery.test.mjs tests/transcode-callback.test.mjs",
+    "test:media-worker": "node --test tests/media-worker-idempotency.test.mjs tests/media-edge-cache.test.mjs tests/direct-media-api.test.mjs tests/hls-delivery.test.mjs tests/transcode-callback.test.mjs tests/transcode-health.test.mjs tests/upload-flow.test.mjs",
     "check:transcoder": "node --check workers/transcode-worker.mjs && node --check containers/transcoder/server.mjs",
     "test:playback-prefetch": "node --experimental-strip-types --test tests/playback-prefetch.test.mjs",
     "media:prepare-mobile": "node scripts/prepare-mobile-video.mjs",

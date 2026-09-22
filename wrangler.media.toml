@@ -10,16 +10,13 @@ routes = [
 binding = "MEDIA_BUCKET"
 bucket_name = "reelnova-media-private"
 
-[[services]]
-binding = "TRANSCODE_SERVICE"
-service = "reelnova-transcoder"
-
 [vars]
 APP_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000,https://iseedrama.com,https://www.iseedrama.com,https://admin.iseedrama.com"
 APP_BASE_URL = "https://iseedrama.com"
 PUBLIC_BASE_URL = "https://media.iseedrama.com"
 MEDIA_EDGE_CACHE = "true"
 MEDIA_HLS = "true"
+MEDIA_TRANSCODE_ENABLED = "false"
 
 [triggers]
 crons = ["17 * * * *"]

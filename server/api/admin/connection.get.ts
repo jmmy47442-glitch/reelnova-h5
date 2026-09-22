@@ -29,6 +29,7 @@ export default defineEventHandler(async (event) => {
   let mediaWorkerError: string | null = null;
   let transcoderReady = false;
   let transcoderError: string | null = null;
+  let delivery: 'r2-mp4' | 'r2-hls' = 'r2-mp4';
   let lastWebhookAt: string | null = null;
   let failedWebhooks: Array<{ eventId: string; eventType: string; errorMessage: string | null; receivedAt: string; retryCount: number; replayable: boolean }> = [];
   const paypalConfiguration = await getPayPalConfigurationStatus(event);
@@ -51,6 +52,7 @@ export default defineEventHandler(async (event) => {
     try {
       const health = await mediaWorkerRequest<{ ready: boolean; delivery: string; transcoderReady?: boolean; transcoderError?: string }>(event, '/health', {});
       mediaWorkerReady = health.ready && ['r2-mp4', 'r2-hls'].includes(health.delivery);
+      delivery = health.delivery === 'r2-hls' ? 'r2-hls' : 'r2-mp4';
       transcoderReady = health.transcoderReady === true;
       transcoderError = health.transcoderError || null;
       if (!mediaWorkerReady) mediaWorkerError = '请部署最新的 R2/HLS 媒体 Worker';
@@ -62,10 +64,10 @@ export default defineEventHandler(async (event) => {
       database, databaseError, databaseSchema,
       mode: (event.context.cloudflare as { env?: { DB?: unknown } } | undefined)?.env?.DB ? 'D1 binding' : 'Cloudflare REST API',
       accountConfigured: Boolean(config.cloudflareAccountId), databaseConfigured: Boolean(config.cloudflareD1DatabaseId), apiTokenConfigured: Boolean(config.cloudflareApiToken),
-      delivery: 'r2-hls',
+      delivery,
       mediaWorkerReady, mediaWorkerError, transcoderReady, transcoderError,
-      uploadConfigured: Boolean(database && mediaWorkerReady && transcoderReady),
-      mediaConfigured: Boolean(database && mediaWorkerReady && transcoderReady && config.cloudflareMediaSigningSecret),
+      uploadConfigured: Boolean(database && mediaWorkerReady),
+      mediaConfigured: Boolean(database && mediaWorkerReady && config.cloudflareMediaSigningSecret),
       mediaWorkerConfigured: Boolean(config.cloudflareMediaWorkerUrl && config.cloudflareMediaWorkerSecret),
       mediaSigningConfigured: Boolean(config.cloudflareMediaSigningSecret),
       customHostnamesConfigured: domainAutomation.automationConfigured,

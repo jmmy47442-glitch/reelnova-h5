@@ -12,8 +12,9 @@ export const checkMediaHealth = async (env) => {
     headers: { 'content-type': 'application/json', 'x-reelnova-timestamp': timestamp, 'x-reelnova-signature': signature },
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload.ready !== true || payload.delivery !== 'r2-hls' || payload.transcoderReady !== true) {
+  if (!response.ok || payload.ready !== true || !['r2-mp4', 'r2-hls'].includes(payload.delivery)
+    || (payload.delivery === 'r2-hls' && payload.transcoderReady !== true)) {
     const detail = payload.transcoderError ? `: ${payload.transcoderError}` : '';
-    throw new Error(`R2/HLS media pipeline health check failed (HTTP ${response.status})${detail}; deploy the current media and transcode Workers and check their bindings and secrets`);
+    throw new Error(`Media pipeline health check failed (HTTP ${response.status})${detail}; check the media Worker, R2 binding and secrets`);
   }
 };

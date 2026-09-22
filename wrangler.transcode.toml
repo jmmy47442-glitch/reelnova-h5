@@ -13,6 +13,7 @@ bucket_name = "reelnova-media-private"
 [[containers]]
 class_name = "MediaTranscodeContainer"
 image = "./containers/transcoder/Dockerfile"
+build_args = { DEBIAN_MIRROR = "mirrors.ustc.edu.cn" }
 max_instances = 4
 instance_type = "standard-3"
 

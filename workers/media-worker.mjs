@@ -265,6 +265,10 @@ const classifyUploadedVideo = async (env, key, assetId, suppliedObject) => {
   const directCandidate = object.httpMetadata?.contentType === 'video/mp4' && String(key).toLowerCase().endsWith('.mp4');
   const directValidation = directCandidate ? await validateVideoObject(env, key, assetId, object) : null;
   if (directValidation?.valid) return { ...directValidation, sourceEtag: object.etag, status: 'ready', transcodeRequired: false };
+  if (env.MEDIA_TRANSCODE_ENABLED !== 'true') {
+    return { etag: object.httpEtag, sourceEtag: object.etag, valid: false, status: 'failed', transcodeRequired: false,
+      errorMessage: `${directValidation?.errorMessage || '视频格式不兼容'}；请先在本地转换为 H.264（8 位）+ AAC-LC MP4 后上传` };
+  }
   return {
     etag: object.httpEtag,
     sourceEtag: object.etag,
@@ -399,6 +403,9 @@ const createOrResumeUpload = async (env, origin, body) => {
   if (!/^upload:[0-9a-f-]{36}$/i.test(body.idempotencyKey || '') || !body.sessionId || !body.completionKey
     || !body.objectKey
     || !body.contentType || !Number.isFinite(body.fileSizeBytes)) throw new Error('Invalid upload request');
+  if (env.MEDIA_TRANSCODE_ENABLED !== 'true' && (body.contentType !== 'video/mp4' || !String(body.objectKey).toLowerCase().endsWith('.mp4'))) {
+    throw new Error('Only compatible H.264 + AAC-LC MP4 uploads are enabled; convert other formats locally');
+  }
   const existing = await readUploadMarker(env, body.idempotencyKey);
   let uploadId = existing?.uploadId;
   if (existing && (existing.sessionId !== body.sessionId || existing.objectKey !== body.objectKey)) {
@@ -457,6 +464,7 @@ const completeUpload = async (env, body, uploadId) => {
 };
 
 const startTranscode = async (env, rawBody) => {
+  if (env.MEDIA_TRANSCODE_ENABLED !== 'true') return json({ error: 'Automatic transcoding is disabled; convert the video to H.264 + AAC-LC MP4 locally' }, 409);
   if (!env.TRANSCODE_SERVICE) throw new Error('Cloudflare Container transcoder is not configured');
   const response = await env.TRANSCODE_SERVICE.fetch(new Request('https://transcoder.internal/jobs', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: rawBody,
@@ -640,6 +648,9 @@ export default {
         const rawBody = await request.text();
         if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
         await env.MEDIA_BUCKET.list({ limit: 1 });
+        if (env.MEDIA_TRANSCODE_ENABLED !== 'true') {
+          return json({ ready: true, delivery: 'r2-mp4', transcodingEnabled: false, transcoderReady: false });
+        }
         let transcoderReady = false;
         let transcoderError;
         try {
@@ -649,7 +660,7 @@ export default {
           transcoderReady = response.ok && result.ready === true;
           if (!transcoderReady) transcoderError = result.error || `Transcoder health failed (${response.status})`;
         } catch (error) { transcoderError = error instanceof Error ? error.message : 'Transcoder health failed'; }
-        return json({ ready: true, delivery: 'r2-hls', transcoderReady, transcoderError });
+        return json({ ready: true, delivery: 'r2-hls', transcodingEnabled: true, transcoderReady, transcoderError });
       }
 
       if (url.pathname === '/reconcile' && request.method === 'POST') {

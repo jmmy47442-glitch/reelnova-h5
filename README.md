@@ -51,8 +51,8 @@ npm run dev
 
 - 用户端与管理后台：TypeScript、Vue 3、Nuxt 3、Element Plus。
 - 服务端：Nuxt/Nitro API，Cloudflare D1 数据库。
-- 视频：原片存入 Cloudflare 私有 R2，Workflows 调度 Cloudflare Container 中的 FFmpeg 生成多清晰度 HLS，媒体 Worker 负责权益校验与签名分发；无需 Stream 订阅。
-- 上传支持 MP4、M4V、MOV、MKV、WebM、AVI 和 MPEG，单文件不超过 20 GB。已兼容的 H.264 + AAC MP4 可直接播放，其他原片自动转为 2 秒 HLS。部署见 [`docs/CLOUDFLARE-CONTAINER-TRANSCODING.md`](./docs/CLOUDFLARE-CONTAINER-TRANSCODING.md)，播放与旧视频处理见 [`docs/R2-MP4-DELIVERY.md`](./docs/R2-MP4-DELIVERY.md)。
+- 视频：兼容 MP4 分片写入 Cloudflare 私有 R2，媒体 Worker 校验 H.264（8 位）+ AAC-LC 并负责权益校验与签名分发；无需 Stream 或 Workers Paid。
+- 上传仅接受 MP4，单文件不超过 20 GB、最长 6 小时。MOV、MKV、WebM、AVI、MPEG、HEVC 或其他不兼容视频需先在本地转换。已有 HLS 资产仍可播放；可选的付费 Container 转码部署见 [`docs/CLOUDFLARE-CONTAINER-TRANSCODING.md`](./docs/CLOUDFLARE-CONTAINER-TRANSCODING.md)。
 - 支付：PayPal 订单、支付回调、权益与退款处理。
 
 真实支付和媒体上传需要对应服务凭据，缺少配置时入口禁用。

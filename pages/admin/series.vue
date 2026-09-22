@@ -2,6 +2,7 @@
 import { CloudOff, Download, Eye, Film, FileVideo, GripVertical, ImagePlus, Plus, RefreshCw, Search, Trash2, Upload, X } from 'lucide-vue-next';
 import { inspectStoredMp4 } from '~/shared/direct-mp4.mjs';
 import Sortable from 'sortablejs';
+import type Hls from 'hls.js';
 import { ElMessage, ElMessageBox, type UploadFile, type UploadFiles, type UploadInstance } from 'element-plus';
 import type { AdminEpisode, MediaUploadPart, MediaUploadSession, SeriesCoverUploadSession } from '~/types/admin';
 import type { AdminSeries, PublishStatus } from '~/composables/useAdminStore';
@@ -60,6 +61,8 @@ const episodeOrderAnnouncement = ref('');
 const previewVisible = ref(false);
 const previewVideo = ref<HTMLVideoElement | null>(null);
 const previewEpisode = ref<AdminEpisode | null>(null);
+let previewHls: Hls | undefined;
+let previewRequestId = 0;
 let episodePoll: ReturnType<typeof setInterval> | undefined;
 let episodeSortable: Sortable | undefined;
 let episodeLoadRequestId = 0;
@@ -559,27 +562,32 @@ const onFileSelected = (_file: UploadFile, files: UploadFiles) => {
 };
 
 const removeSelectedFile = (file: UploadFile) => uploadControl.value?.handleRemove(file);
+const canResumeUpload = (file: UploadFile, episode?: AdminEpisode) => {
+  if (!file.raw || !selectedSeries.value || !episode?.uploadId) return false;
+  const saved = readResume(resumeKey(selectedSeries.value.id, episode.episodeNo, file.raw));
+  return saved?.session.id === episode.uploadId;
+};
 const selectedUploadAssignments = computed(() => selectedUploadFiles.value.map((file, index) => {
   const episodeNo = episodeStart.value + index;
   const existingEpisode = episodes.value.find((episode) => episode.episodeNo === episodeNo);
   return { file, episodeNo, existingEpisode };
 }));
-const blockedUploadAssignment = computed(() => selectedUploadAssignments.value.find(({ existingEpisode }) =>
-  existingEpisode && ['uploading', 'validating', 'processing'].includes(existingEpisode.videoStatus)));
+const blockedUploadAssignment = computed(() => selectedUploadAssignments.value.find(({ file, existingEpisode }) =>
+  existingEpisode && ['uploading', 'validating', 'processing'].includes(existingEpisode.videoStatus)
+    && !canResumeUpload(file, existingEpisode)));
 
 interface ResumeState { session: MediaUploadSession; parts: MediaUploadPart[] }
 interface MediaProbe { durationSeconds: number; width: number; height: number; hasVideo: boolean; hasAudio: boolean }
-const videoInputTypes: Record<string, string> = {
-  mp4: 'video/mp4', m4v: 'video/x-m4v', mov: 'video/quicktime', mkv: 'video/x-matroska',
-  webm: 'video/webm', avi: 'video/x-msvideo', mpg: 'video/mpeg', mpeg: 'video/mpeg',
-};
+const videoInputTypes: Record<string, string> = { mp4: 'video/mp4' };
 const videoExtension = (file: File) => file.name.split('.').pop()?.toLowerCase() || '';
 const videoContentType = (file: File) => videoInputTypes[videoExtension(file)] || file.type || 'application/octet-stream';
 const resumeKey = (seriesId: string, episodeNo: number, file: File) => `reelnova-upload:${seriesId}:${episodeNo}:${file.name}:${file.size}:${file.lastModified}`;
 const readResume = (key: string) => {
   try {
     const value = JSON.parse(localStorage.getItem(key) || '') as ResumeState;
-    if (value.session?.id && Date.parse(value.session.expiresAt) > Date.now()) return value;
+    // Check durable state before discarding an expired token: the upload may
+    // already be completed, or the same multipart can receive a fresh token.
+    if (value.session?.id && Array.isArray(value.parts)) return value;
     localStorage.removeItem(key);
     return null;
   } catch {
@@ -590,14 +598,14 @@ const readResume = (key: string) => {
 const writeResume = (key: string, value: ResumeState) => localStorage.setItem(key, JSON.stringify(value));
 
 const inspectMedia = async (file: File): Promise<MediaProbe> => {
-  if (videoExtension(file) === 'mp4') {
-    try {
-      const media = await inspectStoredMp4(file.size, (offset: number, length: number) =>
-        file.slice(offset, offset + length).arrayBuffer());
-      return { ...media, hasVideo: true, hasAudio: true };
-    } catch { /* The FFmpeg container will inspect and transcode non-direct MP4 inputs. */ }
+  if (videoExtension(file) !== 'mp4') throw new Error('仅支持兼容 MP4，请先在本地转换为 H.264（8 位）+ AAC-LC 后上传');
+  try {
+    const media = await inspectStoredMp4(file.size, (offset: number, length: number) =>
+      file.slice(offset, offset + length).arrayBuffer());
+    return { ...media, hasVideo: true, hasAudio: true };
+  } catch (error) {
+    throw new Error(`${error instanceof Error ? error.message : '视频格式不兼容'}；请先在本地转换为 H.264（8 位）+ AAC-LC MP4 后上传`);
   }
-  return { durationSeconds: 0, width: 0, height: 0, hasVideo: false, hasAudio: false };
 };
 
 const uploadPart = (url: string, token: string, blob: Blob, onProgress: (loaded: number) => void) => new Promise<MediaUploadPart>((resolve, reject) => {
@@ -619,7 +627,10 @@ const uploadPart = (url: string, token: string, blob: Blob, onProgress: (loaded:
 });
 
 const cancelUpload = () => {
-  if (!uploading.value || uploadCancelled.value) return;
+  // The completion request is not an abortable multipart PUT. Cancelling at
+  // this point races the server's R2 finalize call and can mark the session
+  // aborted while the finalize request is still returning, producing a 409.
+  if (!uploading.value || uploadCancelled.value || uploadFinalizing.value) return;
   uploadCancelled.value = true;
   uploadLabel.value = '正在取消上传…';
   uploadSpeed.value = 0;
@@ -665,17 +676,36 @@ const cancelEpisode = async (episode: AdminEpisode) => {
   }
 };
 
-const uploadOne = async (file: File, episodeNo: number, completedBefore: number, totalBytes: number) => {
+const uploadOne = async (file: File, episodeNo: number, completedBefore: number, totalBytes: number, recoveryAttempt = 0): Promise<'ready' | 'processing' | undefined> => {
   if (!selectedSeries.value) return;
   const key = resumeKey(selectedSeries.value.id, episodeNo, file);
   const idempotencyStorageKey = `${key}:idempotency`;
   activeUploadResumeKey = key;
   activeUploadIdempotencyKey = idempotencyStorageKey;
+  uploadFinalizing.value = false;
   let resume = readResume(key);
-  if (!resume) {
-    uploadLabel.value = `正在校验 Episode ${episodeNo} · ${file.name}`;
-    const probe = await inspectMedia(file);
+  if (resume) {
+    const persisted = await api.getEpisodeUpload(resume.session.id).catch((error) => {
+      if (error?.statusCode === 404 || error?.response?.status === 404) return null;
+      throw error; // A network failure is not evidence that the session is gone.
+    });
     if (uploadCancelled.value) throw new DOMException('上传已取消', 'AbortError');
+    if (!persisted || ['aborted', 'expired'].includes(persisted.status)) {
+      localStorage.removeItem(key);
+      localStorage.removeItem(idempotencyStorageKey);
+      resume = null;
+    } else if (persisted.status === 'completed') {
+      const completion = await api.completeEpisodeUpload(resume.session.id, []);
+      if (completion.status === 'failed') throw new Error(`视频处理失败：${mediaErrorMessage(completion.errorMessage || '请在分集列表重试')}`);
+      localStorage.removeItem(key);
+      localStorage.removeItem(idempotencyStorageKey);
+      return completion.status;
+    }
+  }
+  uploadLabel.value = `正在校验 Episode ${episodeNo} · ${file.name}`;
+  const probe = await inspectMedia(file);
+  if (uploadCancelled.value) throw new DOMException('上传已取消', 'AbortError');
+  if (!resume || !(Date.parse(resume.session.expiresAt) > Date.now())) {
     const createSession = (idempotencyKey: string) => api.createEpisodeUpload(selectedSeries.value!.id, {
       idempotencyKey,
       episodeNo, title: `Episode ${episodeNo}`, fileName: file.name,
@@ -696,7 +726,7 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
       localStorage.setItem(idempotencyStorageKey, idempotencyKey);
       session = await createSession(idempotencyKey);
     }
-    resume = { session, parts: [] };
+    resume = { session, parts: resume?.session.id === session.id ? resume.parts : [] };
     writeResume(key, resume);
   }
   const { session } = resume;
@@ -777,10 +807,25 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
     // prevents a harmless Cloudflare 502 from making the operator upload the
     // same file again.
     const persisted = await api.getEpisodeUpload(session.id).catch(() => null);
+    // A previous tab or an administrator may have cancelled/expired this
+    // session while the current tab was uploading. The local resume record
+    // then points at a terminal session and every completion retry returns
+    // 409. Rotate the idempotency key and start a fresh session for the same
+    // file instead of trapping the operator in the stale session.
+    if (!uploadCancelled.value && persisted && ['aborted', 'expired'].includes(persisted.status)) {
+      localStorage.removeItem(key);
+      localStorage.removeItem(idempotencyStorageKey);
+      activeUploadSessionId.value = null;
+      activeUploadResumeKey = '';
+      activeUploadIdempotencyKey = '';
+      uploadFinalizing.value = false;
+      if (recoveryAttempt >= 1) throw new Error('上传会话再次被取消或过期，请确认其他页面没有同时操作该分集后重试');
+      return uploadOne(file, episodeNo, completedBefore, totalBytes, recoveryAttempt + 1);
+    }
     if (persisted?.status === 'completed' || persisted?.r2Completed) {
       await loadEpisodes(false);
       const current = episodes.value.find((episode) => episode.episodeNo === episodeNo);
-      if (current && ['ready', 'processing'].includes(current.videoStatus)) {
+      if (current?.mediaAssetId === session.mediaAssetId && ['ready', 'processing'].includes(current.videoStatus)) {
         localStorage.removeItem(key);
         localStorage.removeItem(idempotencyStorageKey);
         activeUploadSessionId.value = null;
@@ -838,7 +883,7 @@ const startTranscode = async () => {
     selectedUploadFiles.value = [];
     uploadControl.value?.clearFiles();
     ElMessage.success(processingCount
-      ? `${processingCount} 个视频已上传，Cloudflare Container 正在转码`
+      ? `${processingCount} 个视频已上传，正在处理`
       : '视频已写入 R2 并通过校验，可预览和上架');
     await Promise.all([loadEpisodes(), loadSeries()]);
   } catch (reason) {
@@ -882,19 +927,40 @@ const retryTranscode = async (episode: AdminEpisode) => {
   try {
     const result = await api.retryTranscode(episode.mediaAssetId);
     if (result.status === 'failed') throw new Error(result.errorMessage || '视频格式不兼容，请重新导出后上传');
-    ElMessage.success(result.status === 'processing' ? '已重新提交 Cloudflare Container 转码' : '视频校验通过');
+    ElMessage.success(result.status === 'processing' ? '视频正在处理' : '视频校验通过');
     await loadEpisodes();
   } catch (reason: any) { ElMessage.error(reason?.data?.statusMessage || reason?.message || '视频校验失败'); }
 };
 
 const openPreview = async (episode: AdminEpisode) => {
-  if (!episode.previewUrl) return;
+  if (!episode.previewUrl || !episode.mediaAssetId) return;
+  const requestId = ++previewRequestId;
+  previewHls?.destroy();
+  previewHls = undefined;
   previewEpisode.value = episode;
   previewVisible.value = true;
-  await nextTick();
-  if (!previewVideo.value) return;
-  previewVideo.value.src = episode.previewUrl;
-  previewVideo.value.load();
+  try {
+    const grant = await api.getMediaPreview(episode.mediaAssetId);
+    await nextTick();
+    if (requestId !== previewRequestId || !previewVisible.value || !previewVideo.value) return;
+    const video = previewVideo.value;
+    if (grant.delivery === 'hls' && !video.canPlayType('application/vnd.apple.mpegurl')) {
+      const { default: HlsPlayer } = await import('hls.js');
+      if (requestId !== previewRequestId || !previewVisible.value) return;
+      if (!HlsPlayer.isSupported()) throw new Error('当前浏览器不支持此视频预览，请使用新版 Chrome 或 Safari');
+      previewHls = new HlsPlayer();
+      previewHls.on(HlsPlayer.Events.ERROR, (_event, data) => {
+        if (data.fatal && requestId === previewRequestId) ElMessage.error('视频预览加载失败，请关闭后重试');
+      });
+      previewHls.loadSource(grant.url);
+      previewHls.attachMedia(video);
+    } else {
+      video.src = grant.url;
+      video.load();
+    }
+  } catch (error: any) {
+    if (requestId === previewRequestId) ElMessage.error(error?.data?.statusMessage || error?.message || '视频预览失败');
+  }
 };
 
 watch(episodeDrawer, (open) => {
@@ -910,6 +976,9 @@ watch([episodeOrderSaving, () => deletingEpisodeIds.value.length], ([savingOrder
 });
 watch(previewVisible, (open) => {
   if (!open) {
+    previewRequestId += 1;
+    previewHls?.destroy();
+    previewHls = undefined;
     previewVideo.value?.pause();
     previewVideo.value?.removeAttribute('src');
     previewVideo.value?.load();
@@ -917,6 +986,8 @@ watch(previewVisible, (open) => {
   }
 });
 onBeforeUnmount(() => {
+  previewRequestId += 1;
+  previewHls?.destroy();
   if (episodePoll) clearInterval(episodePoll);
   episodeSortable?.destroy();
   activeCoverRequest?.abort();
@@ -1039,25 +1110,27 @@ const exportSeries = () => {
         <section class="episode-upload-section">
           <el-alert v-if="!mediaAvailabilityLoading && !mediaAvailable" title="R2 上传链路不可用，请在站点与支付中检查 D1、Media Worker 和私有 R2。" type="warning" :closable="false" show-icon />
           <div class="episode-section-heading">
-            <div><strong>上传原片</strong><span>文件按选择顺序对应连续集号</span></div>
-            <label class="episode-upload-target" for="episode-upload-start"><span>起始集数</span><el-input-number id="episode-upload-start" v-model="episodeStart" aria-label="起始集数" :min="1" :max="10000" :disabled="uploading || !mediaAvailable || Boolean(episodeError)" controls-position="right" /></label>
+            <div><strong>上传 MP4</strong><span>文件按选择顺序对应连续集号</span></div>
+            <!-- Element Plus sets the native aria-disabled only on mount.
+                 Recreate on state changes so assistive tools see the actual availability. -->
+            <label class="episode-upload-target" for="episode-upload-start"><span>起始集数</span><el-input-number :key="uploading || !mediaAvailable || Boolean(episodeError) ? 'disabled' : 'enabled'" id="episode-upload-start" v-model="episodeStart" aria-label="起始集数" :min="1" :max="10000" :disabled="uploading || !mediaAvailable || Boolean(episodeError)" controls-position="right" /></label>
           </div>
           <div class="episode-upload-box">
             <Upload :size="26" />
-            <div><strong>{{ selectedFiles.length ? `已选择 ${selectedFiles.length} 个文件` : '选择视频原片' }}</strong><span>MP4、MOV、MKV、WebM、AVI、MPEG；最大 20 GB，自动转 HLS</span></div>
-            <el-upload ref="uploadControl" :auto-upload="false" :show-file-list="false" :multiple="true" :limit="50" accept="video/mp4,video/quicktime,video/x-m4v,video/x-matroska,video/webm,video/x-msvideo,video/mpeg,.mp4,.m4v,.mov,.mkv,.webm,.avi,.mpg,.mpeg" :disabled="uploading || !mediaAvailable || Boolean(episodeError)" :on-change="onFileSelected" :on-remove="onFileSelected"><el-button :disabled="uploading || !mediaAvailable || Boolean(episodeError)"><FileVideo :size="15" />选择视频</el-button></el-upload>
+            <div><strong>{{ selectedFiles.length ? `已选择 ${selectedFiles.length} 个文件` : '选择 MP4 视频' }}</strong><span>H.264（8 位）+ AAC-LC MP4，最大 20 GB；其他格式请先在本地转换</span></div>
+            <el-upload ref="uploadControl" :auto-upload="false" :show-file-list="false" :multiple="true" :limit="50" accept="video/mp4,.mp4" :disabled="uploading || !mediaAvailable || Boolean(episodeError)" :on-change="onFileSelected" :on-remove="onFileSelected"><el-button :disabled="uploading || !mediaAvailable || Boolean(episodeError)"><FileVideo :size="15" />选择视频</el-button></el-upload>
             <el-button type="primary" :loading="uploading" :disabled="!mediaAvailable || Boolean(episodeError) || !selectedFiles.length || Boolean(blockedUploadAssignment)" @click="startTranscode">{{ uploading ? '正在上传' : '上传并校验' }}</el-button>
           </div>
           <div v-if="selectedUploadAssignments.length" class="episode-upload-assignments" aria-label="视频与剧集对应关系">
             <div v-for="assignment in selectedUploadAssignments" :key="assignment.file.uid" class="episode-upload-assignment">
               <span class="episode-index">{{ String(assignment.episodeNo).padStart(2, '0') }}</span>
               <div><strong>第 {{ assignment.episodeNo }} 集</strong><span>{{ assignment.file.name }} · {{ formatBytes(assignment.file.size || null) }}</span></div>
-              <el-tag size="small" :type="assignment.existingEpisode && ['uploading', 'validating', 'processing'].includes(assignment.existingEpisode.videoStatus) ? 'danger' : assignment.existingEpisode ? 'warning' : 'success'" effect="plain">{{ assignment.existingEpisode && ['uploading', 'validating', 'processing'].includes(assignment.existingEpisode.videoStatus) ? '任务进行中' : assignment.existingEpisode ? '替换视频' : '新剧集' }}</el-tag>
+              <el-tag size="small" :type="canResumeUpload(assignment.file, assignment.existingEpisode) ? 'warning' : assignment.existingEpisode && ['uploading', 'validating', 'processing'].includes(assignment.existingEpisode.videoStatus) ? 'danger' : assignment.existingEpisode ? 'warning' : 'success'" effect="plain">{{ canResumeUpload(assignment.file, assignment.existingEpisode) ? '继续上传' : assignment.existingEpisode && ['uploading', 'validating', 'processing'].includes(assignment.existingEpisode.videoStatus) ? '任务进行中' : assignment.existingEpisode ? '替换视频' : '新剧集' }}</el-tag>
               <el-tooltip content="移除此文件" placement="top"><el-button circle text :disabled="uploading" :aria-label="`移除 ${assignment.file.name}`" @click="removeSelectedFile(assignment.file)"><X :size="15" /></el-button></el-tooltip>
             </div>
           </div>
           <div v-if="uploading || uploadProgress" class="episode-upload-progress">
-            <div class="episode-upload-progress__heading" aria-live="polite"><span>{{ uploadLabel || '上传完成' }}</span><div><strong>{{ uploadProgress }}%</strong><el-button v-if="uploading" text type="danger" size="small" :disabled="uploadCancelled" :aria-label="uploadCancelled ? '正在取消上传' : '取消当前视频上传'" @click="cancelUpload"><X :size="14" />{{ uploadCancelled ? '取消中' : (uploadFinalizing ? '取消完成' : '取消上传') }}</el-button></div></div>
+            <div class="episode-upload-progress__heading" aria-live="polite"><span>{{ uploadLabel || '上传完成' }}</span><div><strong>{{ uploadProgress }}%</strong><el-button v-if="uploading" text type="danger" size="small" :disabled="uploadCancelled || uploadFinalizing" :aria-label="uploadCancelled ? '正在取消上传' : uploadFinalizing ? '视频正在完成' : '取消当前视频上传'" @click="cancelUpload"><X :size="14" />{{ uploadCancelled ? '取消中' : (uploadFinalizing ? '正在完成' : '取消上传') }}</el-button></div></div>
             <el-progress :percentage="uploadProgress" :show-text="false" :status="uploadProgress === 100 ? 'success' : undefined" />
             <div class="episode-upload-progress__stats"><span>{{ formatBytes(uploadUploadedBytes) }} / {{ formatBytes(uploadTotalBytes) }}</span><strong>{{ formatUploadSpeed(uploadSpeed) }}</strong></div>
           </div>
@@ -1075,7 +1148,7 @@ const exportSeries = () => {
             <el-switch :model-value="episode.isFree" inline-prompt active-text="试看" inactive-text="收费" :loading="episodeAccessSavingIds.includes(episode.id)" :aria-label="`设置第 ${episode.episodeNo} 集为${episode.isFree ? '收费' : '试看'}`" @change="(value) => toggleEpisodeAccess(episode, Boolean(value))" />
             <el-tag :type="mediaStatus(episode)[1] as any" effect="light">{{ mediaStatus(episode)[0] }}</el-tag>
             <el-tooltip v-if="episode.previewUrl" content="发布前预览" placement="top"><el-button circle text aria-label="发布前预览" @click="openPreview(episode)"><Eye :size="16" /></el-button></el-tooltip>
-            <el-tooltip v-if="episode.videoStatus === 'failed' || (episode.videoStatus === 'validating' && episode.errorMessage)" content="重新校验或转码" placement="top"><el-button circle text aria-label="重新校验或转码" @click="retryTranscode(episode)"><RefreshCw :size="16" /></el-button></el-tooltip>
+            <el-tooltip v-if="episode.videoStatus === 'failed' || (episode.videoStatus === 'validating' && episode.errorMessage)" content="重新校验视频" placement="top"><el-button circle text aria-label="重新校验视频" @click="retryTranscode(episode)"><RefreshCw :size="16" /></el-button></el-tooltip>
             <el-tooltip :content="episodeHasActiveUpload(episode) ? '请先取消正在进行的上传' : '删除剧集'" placement="top">
               <el-button class="episode-delete" circle text type="danger" :loading="deletingEpisodeIds.includes(episode.id)" :disabled="episodeHasActiveUpload(episode) || deletingEpisodeIds.includes(episode.id)" :aria-label="`删除第 ${episode.episodeNo} 集`" @click="removeEpisode(episode)"><Trash2 :size="16" /></el-button>
             </el-tooltip>

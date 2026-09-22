@@ -135,7 +135,7 @@ Set the application's `CLOUDFLARE_MEDIA_WORKER_URL=https://media.iseedrama.com`,
 
 Deploy the Worker before deploying the Nuxt application. `/admin/system` performs an authenticated Worker/R2 health check. Configure `PUBLIC_BASE_URL`, `APP_BASE_URL` and `APP_ORIGINS` in `wrangler.media.toml`; retain the admin origin for upload and preview CORS. Keep the hourly Cron: it recovers interrupted completions, cleans expired multipart uploads and invokes PayPal reconciliation.
 
-Uploads accept MP4, M4V, MOV, MKV, WebM, AVI and MPEG, at most 20 GB and six hours. Compatible H.264 8-bit + AAC-LC MP4 follows the direct-play path. Other inputs are queued in a durable Workflow and transcoded by FFmpeg in a Cloudflare Container into four-rendition, two-second HLS. The source and output remain in private R2; the existing media Worker signs every manifest and segment request. Covers are uploaded independently. See [Cloudflare Container transcoding](./CLOUDFLARE-CONTAINER-TRANSCODING.md) for deployment and secrets.
+The production free-plan mode accepts H.264 8-bit + AAC-LC MP4, at most 20 GB and six hours. Other containers or codecs must be converted locally before upload. Files are stored in private R2 and served only through signed Media Worker URLs. Existing HLS packages remain playable, while new uploads use signed MP4 delivery. Covers are uploaded independently. Optional Workers Paid transcoding is documented in [Cloudflare Container transcoding](./CLOUDFLARE-CONTAINER-TRANSCODING.md).
 
 See [R2/HLS delivery and migration](./R2-MP4-DELIVERY.md) for export commands, existing-video handling and deployment acceptance steps.
 

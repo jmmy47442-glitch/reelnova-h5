@@ -29,7 +29,7 @@ export const useAdminApi = () => {
       cloudflare: {
         database: boolean; databaseError: string | null; mode: string; accountConfigured: boolean; databaseConfigured: boolean; apiTokenConfigured: boolean;
         databaseSchema: { healthy: boolean; latestRequiredMigration: number; latestAppliedMigration: number; migrationHistoryValid: boolean; migrationError: string | null; missing: { tables: string[]; columns: string[]; indexes: string[]; triggers: string[] } } | null;
-        delivery: 'r2-hls'; mediaWorkerReady: boolean; mediaWorkerError: string | null; transcoderReady: boolean; transcoderError: string | null;
+        delivery: 'r2-mp4' | 'r2-hls'; mediaWorkerReady: boolean; mediaWorkerError: string | null; transcoderReady: boolean; transcoderError: string | null;
         uploadConfigured: boolean; mediaConfigured: boolean; mediaWorkerConfigured: boolean; mediaSigningConfigured: boolean; customHostnamesConfigured: boolean;
         customHostnamesMissingFields: Array<'zoneId' | 'apiToken' | 'cnameTarget'>;
         domainMode: 'custom-domains-mvp' | 'cloudflare-saas'; cloudflareForSaasEnabled: boolean; cloudflareForSaasStatus: '已开通' | '待 Cloudflare for SaaS 开通';
@@ -75,6 +75,7 @@ export const useAdminApi = () => {
       retryStatusCodes: [408, 429, 500, 502, 503, 504],
     }),
     retryTranscode: (assetId: string) => request<{ assetId: string; status: 'ready' | 'processing' | 'failed'; errorMessage?: string }>(`/admin/media/${encodeURIComponent(assetId)}/retry`, { method: 'POST' }),
+    getMediaPreview: (assetId: string) => request<{ url: string; delivery: 'mp4' | 'hls' }>(`/admin/media/${encodeURIComponent(assetId)}/preview`, { query: { format: 'json' } }),
     getTaxonomy: () => request<{ items: TaxonomyItem[] }>('/admin/taxonomy'),
     saveTaxonomy: (items: TaxonomyItem[]) => request<{ items: TaxonomyItem[] }>('/admin/taxonomy', { method: 'PUT', body: { items } }),
     getDomains: () => request<{

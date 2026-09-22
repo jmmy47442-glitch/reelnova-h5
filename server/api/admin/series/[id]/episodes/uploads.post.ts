@@ -5,13 +5,6 @@ import { mediaWorkerRequest, requireMediaPipeline } from '~/server/utils/media-p
 
 const allowedInputs = new Map<string, Set<string>>([
   ['mp4', new Set(['video/mp4'])],
-  ['m4v', new Set(['video/mp4', 'video/x-m4v'])],
-  ['mov', new Set(['video/quicktime'])],
-  ['mkv', new Set(['video/x-matroska', 'application/octet-stream'])],
-  ['webm', new Set(['video/webm'])],
-  ['avi', new Set(['video/x-msvideo', 'video/avi'])],
-  ['mpg', new Set(['video/mpeg'])],
-  ['mpeg', new Set(['video/mpeg'])],
 ]);
 
 interface WorkerUpload {
@@ -57,7 +50,7 @@ export default defineEventHandler(async (event) => {
     || !Number.isInteger(episodeNo) || episodeNo < 1 || episodeNo > 10_000 || !title || title.length > 120
     || !fileName || fileName.length > 240 || !allowedInputs.get(extension)?.has(contentType)
     || !Number.isSafeInteger(fileSizeBytes) || fileSizeBytes < 1024 || fileSizeBytes > 20 * 1024 * 1024 * 1024) {
-    throw createError({ statusCode: 400, statusMessage: 'Supported inputs: MP4, M4V, MOV, MKV, WebM, AVI and MPEG up to 20 GB' });
+    throw createError({ statusCode: 400, statusMessage: 'Only H.264 (8-bit) + AAC-LC MP4 up to 20 GB is supported. Convert other formats locally before uploading.' });
   }
 
   const previous = await d1First<ExistingUpload>(event, `SELECT u.id, u.provider_upload_id AS uploadId, u.object_key AS objectKey,
