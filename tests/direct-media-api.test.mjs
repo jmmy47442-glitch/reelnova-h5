@@ -49,7 +49,14 @@ const harness = () => {
         assert.equal(body.sourceEtag, 'abcdef123456');
         return { workflowId: body.jobId };
       }
+      if (path === '/videos/verify' && workerMode === 'response-lost') {
+        assert.equal(body.objectKey, 'originals/series/episode/asset/video.mp4');
+        assert.equal(body.assetId, 'asset');
+        return { etag: 'etag', sourceEtag: 'etag', valid: true, status: 'ready', transcodeRequired: false,
+          media: { width: 160, height: 90, durationSeconds: 12 } };
+      }
       assert.equal(path, '/uploads/provider-upload/complete');
+      if (workerMode === 'response-lost') throw new Error('Media Worker request failed: upstream response lost');
       if (workerMode === 'valid') return { etag: 'etag', valid: true, media: { width: 160, height: 90, durationSeconds: 12 } };
       if (workerMode === 'transcode') return { etag: '"abcdef123456"', sourceEtag: 'abcdef123456', valid: false,
         status: 'processing', transcodeRequired: true, directPlayError: 'Unsupported codec' };
@@ -92,6 +99,7 @@ const harness = () => {
   return { db, upload, playback: load('server/api/playback.get.ts').default,
     setWorkerPlayback: value => { workerPlayback = value; },
     setInvalid: () => { workerMode = 'invalid'; }, setTranscode: () => { workerMode = 'transcode'; },
+    setResponseLost: () => { workerMode = 'response-lost'; },
     failWrite: () => { failSessionWrite = true; }, calls: () => workerCalls };
 };
 const complete = async h => h.upload.completeMediaUpload({}, await h.upload.getMediaUploadState({}, 'upload'), [{ partNumber: 1, etag: 'part' }]);
@@ -152,6 +160,17 @@ test('interrupted D1 completion can recover from stored parts without another up
     assert.equal(state.status, 'completing');
     assert.equal((await h.upload.completeMediaUpload({}, state)).status, 'ready');
     assert.equal(h.db.prepare('SELECT COUNT(*) AS count FROM media_assets').get().count, 1);
+  } finally { h.db.close(); }
+});
+
+test('completion probes the committed R2 object when the finalize response is lost', async () => {
+  const h = harness();
+  try {
+    h.setResponseLost();
+    assert.equal((await complete(h)).status, 'ready');
+    assert.equal(h.db.prepare('SELECT status FROM media_upload_sessions').get().status, 'completed');
+    assert.equal(h.db.prepare('SELECT video_status FROM episodes').get().video_status, 'ready');
+    assert.equal(h.calls(), 2);
   } finally { h.db.close(); }
 });
 

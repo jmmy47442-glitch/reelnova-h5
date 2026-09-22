@@ -187,13 +187,29 @@ export const completeMediaUpload = async (
   const upload = await getMediaUploadState(event, initial.id);
   if (!upload) throw createError({ statusCode: 404, statusMessage: 'Upload session not found' });
   try {
-    const result = await mediaWorkerRequest<WorkerCompletion>(event,
-      `/uploads/${encodeURIComponent(upload.provider_upload_id)}/complete`, {
-        uploadId: upload.provider_upload_id, sessionId: upload.id,
-        completionKey: upload.r2_completion_key, objectKey: upload.object_key,
-        fileSizeBytes: upload.file_size_bytes, parts,
-        metadata: { assetId: upload.media_asset_id, episodeId: upload.episode_id, seriesId: upload.series_id },
-      });
+    let result: WorkerCompletion;
+    try {
+      result = await mediaWorkerRequest<WorkerCompletion>(event,
+        `/uploads/${encodeURIComponent(upload.provider_upload_id)}/complete`, {
+          uploadId: upload.provider_upload_id, sessionId: upload.id,
+          completionKey: upload.r2_completion_key, objectKey: upload.object_key,
+          fileSizeBytes: upload.file_size_bytes, parts,
+          metadata: { assetId: upload.media_asset_id, episodeId: upload.episode_id, seriesId: upload.series_id },
+        });
+    } catch (completionError) {
+      // R2 multipart completion is committed independently from the Worker
+      // response. If the response is dropped (or classification times out),
+      // the object is already durable and a second multipart completion can
+      // still fail at the provider. Probe the object through the idempotent
+      // verification endpoint before surfacing a 502 to the admin client.
+      try {
+        result = await mediaWorkerRequest<WorkerCompletion>(event, '/videos/verify', {
+          objectKey: upload.object_key, assetId: upload.media_asset_id,
+        }, 'POST', { maxAttempts: 1, timeoutMs: 5_000 });
+      } catch {
+        throw completionError;
+      }
+    }
     const now = new Date().toISOString();
     if (result.transcodeRequired) await queueMediaTranscode(event, upload, result);
     else await applyDirectMediaValidation(event, upload.media_asset_id, result);

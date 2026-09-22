@@ -36,28 +36,43 @@ export const requireMediaPipeline = (event: H3Event) => {
   return { workerUrl, secret };
 };
 
-export const mediaWorkerRequest = async <T>(event: H3Event, path: string, body: unknown, method = 'POST'): Promise<T> => {
+interface MediaWorkerRequestOptions {
+  maxAttempts?: number;
+  timeoutMs?: number;
+}
+
+export const mediaWorkerRequest = async <T>(
+  event: H3Event,
+  path: string,
+  body: unknown,
+  method = 'POST',
+  options: MediaWorkerRequestOptions = {},
+): Promise<T> => {
   const { workerUrl, secret } = requireMediaPipeline(event);
   const rawBody = JSON.stringify(body);
-  const timestamp = String(Math.floor(Date.now() / 1000));
-  const signature = await signHex(`${timestamp}.${rawBody}`, secret);
   // R2 multipart completion is idempotent (the completion key and object
   // metadata are checked by the Worker), so a short retry is safe when the
   // edge drops a response after R2 has already committed the object. This is
   // especially important for Pages deployments where a transient Worker 5xx
   // otherwise leaves the upload stuck in `completing` until the hourly cron.
   const retryablePath = method === 'POST' && (/\/complete$/.test(path) || path === '/videos/verify' || path === '/transcodes');
-  const maxAttempts = retryablePath ? 2 : 1;
+  // Keep retries below the Cloudflare Pages function request budget. Two
+  // 15-second attempts can make the origin itself emit a gateway 502 before
+  // the application has a chance to return its durable upload state.
+  const maxAttempts = options.maxAttempts ?? (retryablePath ? 2 : 1);
+  const timeoutMs = options.timeoutMs ?? (retryablePath ? 10_000 : 15_000);
   let lastError: unknown;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 350));
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = await signHex(`${timestamp}.${rawBody}`, secret);
     let response: Response;
     try {
       response = await fetch(`${workerUrl}${path}`, {
         method,
         headers: { 'content-type': 'application/json', 'x-reelnova-timestamp': timestamp, 'x-reelnova-signature': signature },
         body: rawBody,
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       lastError = error;
