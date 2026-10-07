@@ -46,7 +46,11 @@ const cancellingUploadIds = ref<string[]>([]);
 let activeUploadResumeKey = '';
 let activeUploadIdempotencyKey = '';
 const activeUploadRequests = new Set<XMLHttpRequest>();
-const uploadPartConcurrency = 3;
+// Cloudflare's custom-domain HTTP/2 edge is more reliable when a Worker
+// receives one large multipart PUT at a time. The Worker buffers each part
+// before writing it to R2, so keeping one request in flight also prevents the
+// browser from resetting sibling streams under sustained upload pressure.
+const uploadPartConcurrency = 1;
 const mediaAvailable = ref(false);
 const mediaAvailabilityLoading = ref(true);
 const episodes = ref<AdminEpisode[]>([]);
@@ -607,8 +611,10 @@ const uploadPart = (url: string, token: string, blob: Blob, onProgress: (loaded:
   request.open('PUT', url);
   request.setRequestHeader('Authorization', `Bearer ${token}`);
   request.setRequestHeader('Content-Type', 'application/octet-stream');
+  request.timeout = 120_000;
   request.upload.onprogress = (event) => onProgress(event.loaded);
   request.onerror = () => reject(new Error('分片网络请求失败'));
+  request.ontimeout = () => reject(new Error('分片上传超时，请重试'));
   request.onabort = () => reject(new DOMException('上传已取消', 'AbortError'));
   request.onloadend = () => { activeUploadRequests.delete(request); };
   request.onload = () => {
@@ -744,6 +750,7 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
         updateUploadProgress();
         if (uploadCancelled.value || (error instanceof DOMException && error.name === 'AbortError')) throw error;
         lastError = error;
+        if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
       }
     }
     if (!uploaded) throw lastError || new Error('分片上传失败');

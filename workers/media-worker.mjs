@@ -1,4 +1,9 @@
 const encoder = new TextEncoder();
+// Keep the browser-to-Worker body bounded before handing it to R2. Passing a
+// live HTTP/2 ReadableStream directly to R2 can reset the client stream on
+// custom domains (Chrome reports ERR_HTTP2_PROTOCOL_ERROR), especially when
+// several multipart requests are in flight. The client uses 10 MiB parts.
+const maximumUploadPartBytes = 10 * 1024 * 1024;
 
 const bytesToHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 const base64Url = (value) => btoa(String.fromCharCode(...value)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, '');
@@ -282,8 +287,15 @@ export default {
         const uploadId = decodeURIComponent(partMatch[1]);
         const partNumber = Number(partMatch[2]);
         if (!payload || payload.uploadId !== uploadId || partNumber < 1 || partNumber > 10000 || !request.body) return json({ error: 'Invalid upload token' }, 401, requestCors);
+        // Materialize the request before calling R2. This avoids forwarding a
+        // client-owned HTTP/2 stream across the Worker/R2 boundary and makes
+        // retries deterministic when Chrome or the edge resets a stream.
+        const bytes = await request.arrayBuffer();
+        if (!bytes.byteLength || bytes.byteLength > maximumUploadPartBytes) {
+          return json({ error: 'Upload part exceeds the 10 MiB part limit' }, 413, requestCors);
+        }
         const upload = env.MEDIA_BUCKET.resumeMultipartUpload(payload.key, uploadId);
-        const part = await upload.uploadPart(partNumber, request.body);
+        const part = await upload.uploadPart(partNumber, bytes);
         return json({ partNumber: part.partNumber, etag: part.etag }, 200, { ...requestCors, etag: part.etag });
       }
 
