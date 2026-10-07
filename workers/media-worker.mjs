@@ -301,6 +301,10 @@ export default {
         if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
         const body = JSON.parse(rawBody);
         if (!body.objectKey || !body.streamIdempotencyKey) return json({ error: 'Object key and idempotency key are required' }, 400);
+        // Never ask Stream to ingest a stale or missing R2 key. This is
+        // especially important for rebuilds, which intentionally reuse the
+        // original private object instead of uploading another copy.
+        if (!await env.MEDIA_BUCKET.head(body.objectKey)) return json({ error: 'R2 source object not found' }, 404);
         const stream = await startStreamCopy(env, body.objectKey, body.metadata || {}, body.streamIdempotencyKey);
         return json({ streamUid: stream.uid });
       }

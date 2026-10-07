@@ -76,6 +76,7 @@ export const useAdminApi = () => {
       retryStatusCodes: [408, 429, 500, 502, 503, 504],
     }),
     retryTranscode: (assetId: string) => request<{ assetId: string; status: 'ready' | 'processing' | 'failed'; errorMessage?: string }>(`/admin/media/${encodeURIComponent(assetId)}/retry`, { method: 'POST' }),
+    rebuildStreamFromR2: (assetId: string) => request<{ assetId: string; streamUid: string; attempt: number; status: 'processing' }>(`/admin/media/${encodeURIComponent(assetId)}/rebuild`, { method: 'POST' }),
     getTaxonomy: () => request<{ items: TaxonomyItem[] }>('/admin/taxonomy'),
     saveTaxonomy: (items: TaxonomyItem[]) => request<{ items: TaxonomyItem[] }>('/admin/taxonomy', { method: 'PUT', body: { items } }),
     getDomains: () => request<{

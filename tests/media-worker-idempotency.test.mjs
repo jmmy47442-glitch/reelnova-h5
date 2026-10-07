@@ -124,6 +124,14 @@ test('repeated upload creation and completion reuse R2 and Stream resources', as
     const secondCompletion = await (await worker.fetch(await signedRequest(`/uploads/${first.uploadId}/complete`, completion), env)).json();
     assert.equal(firstCompletion.streamUid, secondCompletion.streamUid);
     assert.equal(streamCopies, 1);
+
+    const rebuild = { objectKey: creation.objectKey, streamIdempotencyKey: 'reelnova:rebuild:asset_1:2', metadata: { assetId: 'asset_1', rebuild: 'true' } };
+    const rebuilt = await worker.fetch(await signedRequest('/transcodes', rebuild), env);
+    assert.equal(rebuilt.status, 200);
+    assert.equal((await rebuilt.json()).streamUid, 'stream-2');
+    const missing = await worker.fetch(await signedRequest('/transcodes', { ...rebuild, objectKey: 'originals/missing.mp4' }), env);
+    assert.equal(missing.status, 404);
+    assert.equal(streamCopies, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }

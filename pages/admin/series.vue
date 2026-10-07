@@ -53,6 +53,7 @@ const episodes = ref<AdminEpisode[]>([]);
 const episodesLoading = ref(false);
 const episodeError = ref('');
 const deletingEpisodeIds = ref<string[]>([]);
+const rebuildingAssetIds = ref<string[]>([]);
 const episodeListElement = ref<HTMLElement | null>(null);
 const episodeOrderSaving = ref(false);
 const episodeAccessSavingIds = ref<string[]>([]);
@@ -887,6 +888,27 @@ const retryTranscode = async (episode: AdminEpisode) => {
   } catch (reason: any) { ElMessage.error(reason?.data?.statusMessage || reason?.message || '视频校验失败'); }
 };
 
+const rebuildStreamFromR2 = async (episode: AdminEpisode) => {
+  if (!episode.mediaAssetId || rebuildingAssetIds.value.includes(episode.mediaAssetId)) return;
+  try {
+    await ElMessageBox.confirm(
+      `将从 R2 中已有的原片重新创建 Cloudflare Stream 视频，并在提交成功后更新播放引用。转码期间本集可能暂时无法播放；若 R2 原片不存在，请改为重新上传本地原文件。确定继续？`,
+      '从 R2 原片重建 Stream',
+      { type: 'warning', confirmButtonText: '开始重建', cancelButtonText: '取消' },
+    );
+  } catch { return; }
+  rebuildingAssetIds.value = [...rebuildingAssetIds.value, episode.mediaAssetId];
+  try {
+    await api.rebuildStreamFromR2(episode.mediaAssetId);
+    ElMessage.success('已从 R2 原片提交 Stream 重建，正在转码');
+    await loadEpisodes();
+  } catch (reason: any) {
+    ElMessage.error(reason?.data?.statusMessage || reason?.message || 'Stream 重建失败');
+  } finally {
+    rebuildingAssetIds.value = rebuildingAssetIds.value.filter((id) => id !== episode.mediaAssetId);
+  }
+};
+
 const openPreview = async (episode: AdminEpisode) => {
   if (!episode.previewUrl) return;
   previewEpisode.value = episode;
@@ -1076,6 +1098,7 @@ const exportSeries = () => {
             <el-tag :type="mediaStatus(episode)[1] as any" effect="light">{{ mediaStatus(episode)[0] }}</el-tag>
             <el-tooltip v-if="episode.previewUrl" content="发布前预览" placement="top"><el-button circle text aria-label="发布前预览" @click="openPreview(episode)"><Eye :size="16" /></el-button></el-tooltip>
             <el-tooltip v-if="episode.videoStatus === 'failed' || (episode.videoStatus === 'validating' && episode.errorMessage)" content="重新校验或转码" placement="top"><el-button circle text aria-label="重新校验或转码" @click="retryTranscode(episode)"><RefreshCw :size="16" /></el-button></el-tooltip>
+            <el-tooltip v-if="episode.videoStatus === 'ready' && episode.mediaAssetId" content="从现有 R2 原片重建 Stream" placement="top"><el-button circle text :loading="rebuildingAssetIds.includes(episode.mediaAssetId)" :disabled="rebuildingAssetIds.includes(episode.mediaAssetId)" aria-label="从现有 R2 原片重建 Stream" @click="rebuildStreamFromR2(episode)"><RefreshCw :size="16" /></el-button></el-tooltip>
             <el-tooltip :content="episodeHasActiveUpload(episode) ? '请先取消正在进行的上传' : '删除剧集'" placement="top">
               <el-button class="episode-delete" circle text type="danger" :loading="deletingEpisodeIds.includes(episode.id)" :disabled="episodeHasActiveUpload(episode) || deletingEpisodeIds.includes(episode.id)" :aria-label="`删除第 ${episode.episodeNo} 集`" @click="removeEpisode(episode)"><Trash2 :size="16" /></el-button>
             </el-tooltip>
