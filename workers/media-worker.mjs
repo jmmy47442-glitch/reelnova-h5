@@ -137,7 +137,8 @@ const createOrResumeUpload = async (env, origin, body) => {
       throw error;
     }
   }
-  const uploadToken = await createToken({ key: body.objectKey, uploadId, expires }, env.MEDIA_WORKER_SECRET);
+  const uploadToken = await createToken({ key: body.objectKey, uploadId, expires,
+    fileSizeBytes: body.fileSizeBytes, partSizeBytes: 10 * 1024 * 1024 }, env.MEDIA_WORKER_SECRET);
   return {
     uploadId,
     objectKey: body.objectKey,
@@ -294,9 +295,20 @@ export default {
         if (!bytes.byteLength || bytes.byteLength > maximumUploadPartBytes) {
           return json({ error: 'Upload part exceeds the 10 MiB part limit' }, 413, requestCors);
         }
+        // R2 requires every non-final part to have the same size. Validate the
+        // materialized body before handing it to R2 so a truncated HTTP/2
+        // request is retried as a part upload instead of failing multipart
+        // completion with the opaque "object size does not match upload" error.
+        if (Number.isSafeInteger(payload.fileSizeBytes) && Number.isSafeInteger(payload.partSizeBytes)) {
+          const expectedBytes = Math.min(payload.partSizeBytes,
+            payload.fileSizeBytes - (partNumber - 1) * payload.partSizeBytes);
+          if (expectedBytes <= 0 || bytes.byteLength !== expectedBytes) {
+            return json({ error: 'Upload part size mismatch', expectedBytes, receivedBytes: bytes.byteLength, retryable: true }, 400, requestCors);
+          }
+        }
         const upload = env.MEDIA_BUCKET.resumeMultipartUpload(payload.key, uploadId);
         const part = await upload.uploadPart(partNumber, bytes);
-        return json({ partNumber: part.partNumber, etag: part.etag }, 200, { ...requestCors, etag: part.etag });
+        return json({ partNumber: part.partNumber, etag: part.etag, size: bytes.byteLength }, 200, { ...requestCors, etag: part.etag });
       }
 
       const completeMatch = url.pathname.match(/^\/uploads\/([^/]+)\/complete$/);

@@ -71,7 +71,7 @@ export const useAdminApi = () => {
     // R2 completion can finish just before a transient edge 502 is returned.
     // Give the idempotent endpoint enough time for one retry, then let the
     // uploader reconcile the persisted session state below.
-    completeEpisodeUpload: (uploadId: string, parts: MediaUploadPart[]) => request<{ uploadId: string; mediaAssetId: string; streamUid: string | null; status: 'ready' | 'processing' | 'failed'; errorMessage?: string }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}/complete`, {
+    completeEpisodeUpload: (uploadId: string, parts: MediaUploadPart[]) => request<{ uploadId: string; mediaAssetId: string; streamUid: string | null; status: 'ready' | 'processing' | 'completing' | 'failed'; errorMessage?: string }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}/complete`, {
       method: 'POST', body: { parts }, timeout: 60_000, retry: 1, retryDelay: 500,
       retryStatusCodes: [408, 429, 500, 502, 503, 504],
     }),

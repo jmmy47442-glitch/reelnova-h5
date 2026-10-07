@@ -17,6 +17,20 @@ export default defineNuxtConfig({
     port: Number.isFinite(devPort) ? devPort : 3000,
   },
   devtools: { enabled: false },
+  experimental: {
+    defaults: {
+      // Sidebar links are all visible at once in the admin shell. Prefetch on
+      // visibility downloads every admin route during the first paint and
+      // saturates slower connections. Keep the useful hover/focus prefetch
+      // while removing that burst of speculative requests.
+      nuxtLink: {
+        prefetchOn: {
+          visibility: false,
+          interaction: true,
+        },
+      },
+    },
+  },
   css: ['~/assets/css/main.css'],
   modules: ['@nuxtjs/google-fonts', '@element-plus/nuxt'],
   googleFonts: {

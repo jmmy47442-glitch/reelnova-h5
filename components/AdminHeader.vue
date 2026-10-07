@@ -58,7 +58,14 @@ const onKeydown = (event: KeyboardEvent) => { if ((event.metaKey || event.ctrlKe
 onMounted(() => {
   window.addEventListener('keydown', onKeydown);
   if (can('dashboard.read')) {
-    void loadPendingItems();
+    // Notifications are secondary to the page being opened. Start this D1
+    // query when the browser is idle so it cannot compete with the current
+    // route's code/data during the first paint.
+    if ('requestIdleCallback' in window) {
+      window.requestIdleCallback(() => void loadPendingItems(), { timeout: 1200 });
+    } else {
+      globalThis.setTimeout(() => void loadPendingItems(), 500);
+    }
     pendingRefreshTimer = window.setInterval(() => void loadPendingItems(), 60_000);
   }
 });

@@ -4,10 +4,17 @@ import type { AdminPermission } from '~/shared/admin-rbac';
 import { adminRoleLabels, getAdminLandingPath, hasAdminPermission } from '~/shared/admin-rbac';
 import { deriveAdminPasswordProof } from '~/shared/admin-password-proof';
 
+// Several rapid menu clicks can enter the global route middleware before the
+// first session request finishes. Share that in-flight request on the client
+// so navigation cannot create a queue of identical /admin/auth/session calls.
+let pendingSessionRequest: Promise<AdminSession | null> | undefined;
+
 export const useAdminAuth = () => {
   const baseURL = useRuntimeConfig().public.apiBase;
   const session = useState<AdminSession | null>('admin-session', () => null);
   const sessionChecked = useState('admin-session-checked', () => false);
+  const sessionCheckedAt = useState<number>('admin-session-checked-at', () => 0);
+  const sessionCacheTtl = 60_000;
 
   const isAuthenticated = computed(() => Boolean(session.value?.id));
   const isSuperAdmin = computed(() => session.value?.role === 'super_admin');
@@ -24,16 +31,27 @@ export const useAdminAuth = () => {
   });
 
   const fetchSession = async (force = false) => {
-    if (sessionChecked.value && !force) return session.value;
+    if (sessionChecked.value && !force && Date.now() - sessionCheckedAt.value < sessionCacheTtl) return session.value;
+    if (import.meta.client && pendingSessionRequest) return pendingSessionRequest;
+
+    const request = (async () => {
+      try {
+        const response = await $fetch<ApiEnvelope<AdminSession>>('/admin/auth/session', { baseURL, credentials: 'include' });
+        session.value = response.data;
+      } catch {
+        session.value = null;
+      } finally {
+        sessionChecked.value = true;
+        sessionCheckedAt.value = Date.now();
+      }
+      return session.value;
+    })();
+    if (import.meta.client) pendingSessionRequest = request;
     try {
-      const response = await $fetch<ApiEnvelope<AdminSession>>('/admin/auth/session', { baseURL, credentials: 'include' });
-      session.value = response.data;
-    } catch {
-      session.value = null;
+      return await request;
     } finally {
-      sessionChecked.value = true;
+      if (import.meta.client && pendingSessionRequest === request) pendingSessionRequest = undefined;
     }
-    return session.value;
   };
 
   const login = async (details: { email: string; password: string; remember: boolean }) => {
@@ -52,6 +70,7 @@ export const useAdminAuth = () => {
     });
     session.value = response.data;
     sessionChecked.value = true;
+    sessionCheckedAt.value = Date.now();
     return response.data;
   };
 
@@ -61,6 +80,7 @@ export const useAdminAuth = () => {
     } finally {
       session.value = null;
       sessionChecked.value = true;
+      sessionCheckedAt.value = Date.now();
     }
   };
 

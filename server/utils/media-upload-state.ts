@@ -37,6 +37,12 @@ export interface UploadCompletionResult {
   errorMessage?: string;
 }
 
+export interface PreparedMediaUploadCompletion {
+  upload: MediaUploadStateRow;
+  parts: MediaUploadPart[];
+  alreadyCompleted?: UploadCompletionResult;
+}
+
 interface WorkerCompletion {
   etag: string;
   streamUid: string | null;
@@ -66,26 +72,32 @@ const validateParts = (upload: MediaUploadStateRow, parts: MediaUploadPart[]) =>
   const normalized = normalizeParts(parts);
   const expectedCount = Math.ceil(upload.file_size_bytes / upload.part_size_bytes);
   if (normalized.length !== expectedCount
-    || normalized.some((part, index) => part.partNumber !== index + 1 || !part.etag || part.etag.length > 200)) {
+    || normalized.some((part, index) => {
+      const expectedSize = Math.min(upload.part_size_bytes, upload.file_size_bytes - index * upload.part_size_bytes);
+      return part.partNumber !== index + 1 || !part.etag || part.etag.length > 200
+        || (part.size !== undefined && part.size !== expectedSize);
+    })) {
     throw createError({ statusCode: 400, statusMessage: 'Uploaded part list is incomplete' });
   }
   return normalized;
 };
 
-const errorMessage = (error: unknown) => {
-  if (error instanceof Error) return error.message;
-  if (typeof error === 'object' && error && 'statusMessage' in error) return String(error.statusMessage || 'Upload completion failed');
-  return 'Upload completion failed';
-};
-
-export const completeMediaUpload = async (
+/**
+ * Persist the completion parts before doing any remote work. Cloudflare Pages
+ * can terminate a request while R2/Stream is still finishing, so this state
+ * must be durable and safe for a later reconciliation attempt.
+ */
+export const prepareMediaUploadCompletion = async (
   event: H3Event,
   initial: MediaUploadStateRow,
   submittedParts: MediaUploadPart[] = [],
-  audit = true,
-): Promise<UploadCompletionResult> => {
+): Promise<PreparedMediaUploadCompletion> => {
   if (initial.status === 'completed') {
-    return { uploadId: initial.id, mediaAssetId: initial.media_asset_id, streamUid: initial.stream_uid, status: 'processing' };
+    return {
+      upload: initial,
+      parts: [],
+      alreadyCompleted: { uploadId: initial.id, mediaAssetId: initial.media_asset_id, streamUid: initial.stream_uid, status: 'processing' },
+    };
   }
   if (!['created', 'uploading', 'completing', 'failed'].includes(initial.status)) {
     throw createError({ statusCode: 409, statusMessage: 'Upload cannot be completed in its current state' });
@@ -107,6 +119,24 @@ export const completeMediaUpload = async (
 
   const upload = await getMediaUploadState(event, initial.id);
   if (!upload) throw createError({ statusCode: 404, statusMessage: 'Upload session not found' });
+  return { upload, parts };
+};
+
+const errorMessage = (error: unknown) => {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'object' && error && 'statusMessage' in error) return String(error.statusMessage || 'Upload completion failed');
+  return 'Upload completion failed';
+};
+
+export const completeMediaUpload = async (
+  event: H3Event,
+  initial: MediaUploadStateRow,
+  submittedParts: MediaUploadPart[] = [],
+  audit = true,
+): Promise<UploadCompletionResult> => {
+  const prepared = await prepareMediaUploadCompletion(event, initial, submittedParts);
+  if (prepared.alreadyCompleted) return prepared.alreadyCompleted;
+  const { upload, parts } = prepared;
   try {
     let result: WorkerCompletion;
     if (upload.source_etag && upload.stream_uid) {

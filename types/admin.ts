@@ -177,6 +177,7 @@ export interface SeriesCoverUploadSession {
 export interface MediaUploadPart {
   partNumber: number;
   etag: string;
+  size?: number;
 }
 
 export interface TaxonomyItem {

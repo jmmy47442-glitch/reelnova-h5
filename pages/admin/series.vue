@@ -33,6 +33,7 @@ let activeCoverRequest: XMLHttpRequest | undefined;
 const selectedFiles = ref<File[]>([]);
 const uploadControl = ref<UploadInstance>();
 const episodeStart = ref(1);
+const uploadEpisodeNumbers = ref<Record<string, number>>({});
 const uploadProgress = ref(0);
 const uploadLabel = ref('');
 const uploadSpeed = ref(0);
@@ -532,6 +533,7 @@ const nextEpisodeNo = () => Math.max(0, ...episodes.value.map((episode) => episo
 const openEpisodes = (row: AdminSeries, targetEpisodeNo?: number) => {
   selectedSeries.value = row;
   episodeStart.value = targetEpisodeNo || Math.max(1, row.episodeCount + 1);
+  uploadEpisodeNumbers.value = {};
   selectedFiles.value = [];
   selectedUploadFiles.value = [];
   uploadControl.value?.clearFiles();
@@ -557,6 +559,14 @@ const onFileSelected = (_file: UploadFile, files: UploadFiles) => {
     uploadTotalBytes.value = 0;
   }
   selectedUploadFiles.value = [...files];
+  const previousEpisodeNumbers = uploadEpisodeNumbers.value;
+  const nextEpisodeNumbers: Record<string, number> = {};
+  files.forEach((file, index) => {
+    if (!file.raw) return;
+    const key = String(file.uid);
+    nextEpisodeNumbers[key] = previousEpisodeNumbers[key] || episodeStart.value + index;
+  });
+  uploadEpisodeNumbers.value = nextEpisodeNumbers;
   selectedFiles.value = selectedUploadFiles.value.reduce<File[]>((result, item) => {
     if (item.raw) result.push(item.raw);
     return result;
@@ -565,12 +575,26 @@ const onFileSelected = (_file: UploadFile, files: UploadFiles) => {
 
 const removeSelectedFile = (file: UploadFile) => uploadControl.value?.handleRemove(file);
 const selectedUploadAssignments = computed(() => selectedUploadFiles.value.map((file, index) => {
-  const episodeNo = episodeStart.value + index;
+  const episodeNo = uploadEpisodeNumbers.value[String(file.uid)] || episodeStart.value + index;
   const existingEpisode = episodes.value.find((episode) => episode.episodeNo === episodeNo);
   return { file, episodeNo, existingEpisode };
 }));
+const duplicateUploadEpisodeNo = computed(() => {
+  const seen = new Set<number>();
+  for (const assignment of selectedUploadAssignments.value) {
+    if (seen.has(assignment.episodeNo)) return assignment.episodeNo;
+    seen.add(assignment.episodeNo);
+  }
+  return null;
+});
 const blockedUploadAssignment = computed(() => selectedUploadAssignments.value.find(({ existingEpisode }) =>
   existingEpisode && ['uploading', 'validating', 'processing'].includes(existingEpisode.videoStatus)));
+
+const updateUploadEpisodeNo = (file: UploadFile, value: number | undefined) => {
+  const next = Number(value);
+  if (!Number.isInteger(next) || next < 1 || next > 10_000) return;
+  uploadEpisodeNumbers.value = { ...uploadEpisodeNumbers.value, [String(file.uid)]: next };
+};
 
 interface ResumeState { session: MediaUploadSession; parts: MediaUploadPart[] }
 interface MediaProbe { durationSeconds: number; width: number; height: number; hasVideo: boolean; hasAudio: boolean }
@@ -776,28 +800,56 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
   if (uploadCancelled.value) throw new DOMException('上传已取消', 'AbortError');
   uploadFinalizing.value = true;
   uploadLabel.value = `正在提交 Episode ${episodeNo} · ${file.name}`;
-  let completion: { uploadId: string; mediaAssetId: string; streamUid: string | null; status: 'ready' | 'processing' | 'failed'; errorMessage?: string };
+  type Completion = { uploadId: string; mediaAssetId: string; streamUid: string | null; status: 'ready' | 'processing' | 'completing' | 'failed'; errorMessage?: string };
+  const waitForCompletion = async (): Promise<'ready' | 'processing'> => {
+    // The finalize request is intentionally short on Cloudflare. Keep the
+    // operator informed while the durable completing session is reconciled in
+    // the background, and retry the idempotent finalize call periodically.
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (uploadCancelled.value) throw new DOMException('上传已取消', 'AbortError');
+      await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 1000 : 3000));
+      const persisted = await api.getEpisodeUpload(session.id).catch(() => null);
+      if (persisted?.status === 'completed' || persisted?.r2Completed) {
+        await loadEpisodes(false);
+        const current = episodes.value.find((episode) => episode.episodeNo === episodeNo);
+        if (current && ['ready', 'processing'].includes(current.videoStatus)) {
+          return current.videoStatus === 'ready' ? 'ready' : 'processing';
+        }
+      }
+      if (persisted?.status === 'failed' && !persisted.r2Completed) {
+        throw new Error(persisted.errorMessage || '视频上传完成失败，请稍后重试');
+      }
+      if (persisted?.errorMessage && /size does not match|part size mismatch|uploaded part/i.test(persisted.errorMessage)
+        && !persisted.r2Completed) {
+        throw new Error('分片尺寸校验失败，请取消当前上传后重新上传原片');
+      }
+      // If the first request was lost before it could persist its state, this
+      // retry writes the parts and starts the same idempotent completion again.
+      if (!persisted || attempt % 3 === 2 || persisted.status === 'uploading') {
+        await api.completeEpisodeUpload(session.id, [...parts.values()]).catch(() => undefined);
+      }
+    }
+    throw new Error('原片已保存到 R2，视频正在后台完成处理，请稍后刷新分集列表');
+  };
+  let completion: Completion;
   try {
     completion = await api.completeEpisodeUpload(session.id, [...parts.values()]);
   } catch (error) {
-    // A response can be lost after R2/D1 committed the completion. Re-read the
-    // durable session before surfacing an error or offering cancellation; this
-    // prevents a harmless Cloudflare 502 from making the operator upload the
-    // same file again.
-    const persisted = await api.getEpisodeUpload(session.id).catch(() => null);
-    if (persisted?.status === 'completed' || persisted?.r2Completed) {
-      await loadEpisodes(false);
-      const current = episodes.value.find((episode) => episode.episodeNo === episodeNo);
-      if (current && ['ready', 'processing'].includes(current.videoStatus)) {
-        localStorage.removeItem(key);
-        localStorage.removeItem(idempotencyStorageKey);
-        activeUploadSessionId.value = null;
-        activeUploadResumeKey = '';
-        activeUploadIdempotencyKey = '';
-        return current.videoStatus === 'ready' ? 'ready' : 'processing';
-      }
-    }
-    throw error;
+    const statusCode = Number((error as any)?.statusCode || (error as any)?.response?.status || (error as any)?.data?.statusCode || 0);
+    if (statusCode >= 400 && statusCode < 500 && statusCode !== 408 && statusCode !== 429) throw error;
+    uploadLabel.value = '网络响应中断，正在后台确认上传状态…';
+    completion = { uploadId: session.id, mediaAssetId: session.mediaAssetId, streamUid: null, status: 'completing', errorMessage: error instanceof Error ? error.message : undefined };
+  }
+  if (completion.status === 'completing') {
+    uploadLabel.value = '原片已上传，正在提交转码…';
+    const recovered = await waitForCompletion();
+    uploadFinalizing.value = false;
+    localStorage.removeItem(key);
+    localStorage.removeItem(idempotencyStorageKey);
+    activeUploadSessionId.value = null;
+    activeUploadResumeKey = '';
+    activeUploadIdempotencyKey = '';
+    return recovered;
   }
   uploadFinalizing.value = false;
   if (uploadCancelled.value) throw new DOMException('上传已取消', 'AbortError');
@@ -818,6 +870,7 @@ const startTranscode = async () => {
   if (episodeError.value) return ElMessage.warning('请先重新加载分集，再选择要新增或替换的视频');
   if (!mediaAvailable.value) return ElMessage.warning('Cloudflare Stream 媒体链路尚未配置');
   if (!selectedFiles.value.length) return ElMessage.warning('请选择一个或多个视频文件');
+  if (duplicateUploadEpisodeNo.value) return ElMessage.warning(`第 ${duplicateUploadEpisodeNo.value} 集被重复选择，请为每个文件指定不同集数`);
   if (blockedUploadAssignment.value) return ElMessage.warning(`第 ${blockedUploadAssignment.value.episodeNo} 集正在处理媒体任务，请完成后再替换视频`);
   const invalid = selectedFiles.value.find((file) => !videoInputTypes[videoExtension(file)] || file.size < 1024 || file.size > 20 * 1024 ** 3);
   if (invalid) return ElMessage.error(`${invalid.name} 格式不支持，或文件超过 20 GB`);
@@ -832,10 +885,11 @@ const startTranscode = async () => {
   let completedBefore = 0;
   let processingCount = 0;
   try {
-    for (let index = 0; index < selectedFiles.value.length; index += 1) {
-      const file = selectedFiles.value[index];
-      uploadLabel.value = `Episode ${episodeStart.value + index} · ${file.name}`;
-      const status = await uploadOne(file, episodeStart.value + index, completedBefore, totalBytes);
+    for (const assignment of selectedUploadAssignments.value) {
+      const file = assignment.file.raw;
+      if (!file) continue;
+      uploadLabel.value = `Episode ${assignment.episodeNo} · ${file.name}`;
+      const status = await uploadOne(file, assignment.episodeNo, completedBefore, totalBytes);
       if (status === 'processing') processingCount += 1;
       completedBefore += file.size;
     }
@@ -1068,23 +1122,25 @@ const exportSeries = () => {
         <section class="episode-upload-section">
           <el-alert v-if="!mediaAvailabilityLoading && !mediaAvailable" title="Cloudflare Stream 媒体链路不可用，请在站点与支付中检查 D1、Media Worker、Stream API 和私有 R2。" type="warning" :closable="false" show-icon />
           <div class="episode-section-heading">
-            <div><strong>上传原片</strong><span>文件按选择顺序对应连续集号</span></div>
-            <label class="episode-upload-target" for="episode-upload-start"><span>起始集数</span><el-input-number id="episode-upload-start" v-model="episodeStart" aria-label="起始集数" :min="1" :max="10000" :disabled="uploading || !mediaAvailable || Boolean(episodeError)" controls-position="right" /></label>
+            <div><strong>上传原片</strong><span>可为每个文件单独指定集数；默认按顺序递增</span></div>
+            <label class="episode-upload-target" for="episode-upload-start"><span>默认起始集数</span><el-input-number id="episode-upload-start" v-model="episodeStart" aria-label="默认起始集数" :min="1" :max="10000" :disabled="uploading || !mediaAvailable || Boolean(episodeError)" controls-position="right" /></label>
           </div>
           <div class="episode-upload-box">
             <Upload :size="26" />
             <div><strong>{{ selectedFiles.length ? `已选择 ${selectedFiles.length} 个文件` : '选择视频原片' }}</strong><span>MP4、MOV、MKV、WebM、AVI、MPEG；最大 20 GB，自动转 HLS</span></div>
             <el-upload ref="uploadControl" :auto-upload="false" :show-file-list="false" :multiple="true" :limit="50" accept="video/mp4,video/quicktime,video/x-m4v,video/x-matroska,video/webm,video/x-msvideo,video/mpeg,.mp4,.m4v,.mov,.mkv,.webm,.avi,.mpg,.mpeg" :disabled="uploading || !mediaAvailable || Boolean(episodeError)" :on-change="onFileSelected" :on-remove="onFileSelected"><el-button :disabled="uploading || !mediaAvailable || Boolean(episodeError)"><FileVideo :size="15" />选择视频</el-button></el-upload>
-            <el-button type="primary" :loading="uploading" :disabled="!mediaAvailable || Boolean(episodeError) || !selectedFiles.length || Boolean(blockedUploadAssignment)" @click="startTranscode">{{ uploading ? '正在上传' : '上传并校验' }}</el-button>
+            <el-button type="primary" :loading="uploading" :disabled="!mediaAvailable || Boolean(episodeError) || !selectedFiles.length || Boolean(duplicateUploadEpisodeNo) || Boolean(blockedUploadAssignment)" @click="startTranscode">{{ uploading ? '正在上传' : '上传并校验' }}</el-button>
           </div>
           <div v-if="selectedUploadAssignments.length" class="episode-upload-assignments" aria-label="视频与剧集对应关系">
             <div v-for="assignment in selectedUploadAssignments" :key="assignment.file.uid" class="episode-upload-assignment">
               <span class="episode-index">{{ String(assignment.episodeNo).padStart(2, '0') }}</span>
               <div><strong>第 {{ assignment.episodeNo }} 集</strong><span>{{ assignment.file.name }} · {{ formatBytes(assignment.file.size || null) }}</span></div>
+              <label class="episode-upload-assignment__number"><span class="sr-only">{{ assignment.file.name }}对应集数</span><el-input-number :model-value="assignment.episodeNo" :min="1" :max="10000" :disabled="uploading" controls-position="right" @update:model-value="(value) => updateUploadEpisodeNo(assignment.file, value)" /></label>
               <el-tag size="small" :type="assignment.existingEpisode && ['uploading', 'validating', 'processing'].includes(assignment.existingEpisode.videoStatus) ? 'danger' : assignment.existingEpisode ? 'warning' : 'success'" effect="plain">{{ assignment.existingEpisode && ['uploading', 'validating', 'processing'].includes(assignment.existingEpisode.videoStatus) ? '任务进行中' : assignment.existingEpisode ? '替换视频' : '新剧集' }}</el-tag>
               <el-tooltip content="移除此文件" placement="top"><el-button circle text :disabled="uploading" :aria-label="`移除 ${assignment.file.name}`" @click="removeSelectedFile(assignment.file)"><X :size="15" /></el-button></el-tooltip>
             </div>
           </div>
+          <p v-if="duplicateUploadEpisodeNo" class="episode-upload-assignment-error" role="alert">第 {{ duplicateUploadEpisodeNo }} 集被重复选择，请修改集数。</p>
           <div v-if="uploading || uploadProgress" class="episode-upload-progress">
             <div class="episode-upload-progress__heading" aria-live="polite"><span>{{ uploadLabel || '上传完成' }}</span><div><strong>{{ uploadProgress }}%</strong><el-button v-if="uploading" text type="danger" size="small" :disabled="uploadCancelled" :aria-label="uploadCancelled ? '正在取消上传' : '取消当前视频上传'" @click="cancelUpload"><X :size="14" />{{ uploadCancelled ? '取消中' : (uploadFinalizing ? '取消完成' : '取消上传') }}</el-button></div></div>
             <el-progress :percentage="uploadProgress" :show-text="false" :status="uploadProgress === 100 ? 'success' : undefined" />
