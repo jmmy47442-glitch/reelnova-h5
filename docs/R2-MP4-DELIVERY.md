@@ -1,6 +1,6 @@
-# R2 HLS / MP4 签名播放
+# R2 原片与 Cloudflare Stream 迁移说明
 
-本项目不再依赖 Cloudflare Stream。后台把视频分片上传至私有 R2，Worker 校验实际文件后将分集标记为可发布。用户通过登录、免费集/购买权益、设备数量和频率检查后，获取有效期约 10 分钟的签名播放地址。每次媒体读取（包括拖动进度的 Range 请求）都校验签名；播放器会提前续签。
+当前媒体链路使用私有 R2 保存原片，并在上传完成后提交 Cloudflare Stream 转码与签名 HLS 播放。用户通过登录、免费集/购买权益、设备数量和频率检查后，获取有效期约 10 分钟的 Stream 播放 Token。R2 原片不直接暴露给用户。
 
 ## 视频要求
 
@@ -108,7 +108,7 @@ HLS_FIXTURE_DIR=/path/1080p-hls HLS_ORIGINAL_FIXTURE=/path/source-1080p.mp4 node
 4. Nuxt 配置 `CLOUDFLARE_MEDIA_WORKER_URL`、`CLOUDFLARE_MEDIA_WORKER_SECRET`（与 Worker 相同）、`CLOUDFLARE_MEDIA_SIGNING_SECRET`（独立密钥），以及已有 D1 配置。
 5. `/admin/system` 的“R2 连接”应显示“已连通”。这是签名请求实际访问 Worker 和 R2 binding 的结果。`npm run check:cloudflare`、`npm run check:production` 也改用该检查。
 
-应用和 Worker 均不再需要 Stream Customer Code、Stream Webhook Secret 或 Stream API 权限。旧 Stream 回调返回 410；Worker 不再提供 Stream Token/转码接口，定时清理也不会请求 Stream。数据库保留历史 Stream 字段及转码记录以避免破坏历史迁移，无新增数据库迁移。Cloudflare API Token 若仍用于 D1 REST、域名管理或部署，应继续保留对应权限。
+应用和 Worker 需要 Stream Customer Code、Stream Webhook Secret 以及 Stream API 权限。Stream 回调会更新媒体状态；定时清理会回收过期 R2 上传和孤立 Stream 资源。数据库保留历史 Stream 字段及转码记录，无新增数据库迁移。Cloudflare API Token 若仍用于 D1 REST、域名管理或部署，应继续保留对应权限。
 
 本次代码调整不自动取消 Cloudflare 账单订阅，也不删除远端 Stream 资源。先完成新链路与现有视频验收，再在 Cloudflare 后台处理 Stream 服务。
 

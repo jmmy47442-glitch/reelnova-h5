@@ -1,16 +1,13 @@
 import { d1First } from '~/server/utils/cloudflare-d1';
-import { mediaWorkerRequest } from '~/server/utils/media-pipeline';
-import { ok } from '~/server/utils/response';
+import { createStreamManifestUrl, createStreamPlaybackToken } from '~/server/utils/media-pipeline';
 
 export default defineEventHandler(async (event) => {
   const assetId = getRouterParam(event, 'assetId') || '';
-  const asset = await d1First<{ source_object_key: string; status: string }>(event,
-    'SELECT source_object_key, status FROM media_assets WHERE id = ? AND deleted_at IS NULL', [assetId]);
-  if (!asset?.source_object_key || asset.status !== 'ready') throw createError({ statusCode: 404, statusMessage: 'Preview is not ready' });
-  const grant = await mediaWorkerRequest<{ url: string; delivery?: 'mp4' | 'hls' }>(event, '/original/token', {
-    key: asset.source_object_key, assetId, delivery: 'auto', exp: Math.floor(Date.now() / 1000) + 600,
-  });
-  setHeader(event, 'cache-control', 'no-store');
-  if (getQuery(event).format === 'json') return ok({ url: grant.url, delivery: grant.delivery || 'mp4' });
-  return sendRedirect(event, grant.url, 302);
+  const asset = await d1First<{ stream_uid: string; hls_url: string | null; status: string }>(event,
+    'SELECT stream_uid, hls_url, status FROM media_assets WHERE id = ? AND deleted_at IS NULL', [assetId]);
+  if (!asset || asset.status !== 'ready' || !asset.stream_uid) throw createError({ statusCode: 404, statusMessage: 'Preview is not ready' });
+  const customerCode = String(useRuntimeConfig(event).cloudflareStreamCustomerCode || '');
+  if (!asset.hls_url && !customerCode) throw createError({ statusCode: 503, statusMessage: 'Cloudflare Stream delivery URL is not configured' });
+  const token = await createStreamPlaybackToken(event, asset.stream_uid);
+  return sendRedirect(event, createStreamManifestUrl(asset.stream_uid, token, asset.hls_url, customerCode) || '/', 302);
 });

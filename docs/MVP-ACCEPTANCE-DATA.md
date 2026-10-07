@@ -1,4 +1,4 @@
-> 媒体方案更新：当前 Workers 免费版使用私有 R2 + 兼容 MP4 签名播放，不使用 Stream 或 Container。`db:seed:acceptance` 仅创建/更新草稿目录。请在后台上传 H.264（8 位）+ AAC-LC MP4 和独立封面，校验完成并上架后再运行 `check:acceptance-data`。下文旧 Stream 验收记录仅供历史参考。
+> 媒体方案：当前使用私有 R2 + Cloudflare Stream + 签名 HLS。`db:seed:acceptance` 仅创建/更新草稿目录。请在后台上传原片和独立封面，等待 Stream 转码完成并上架后再运行 `check:acceptance-data`。
 
 # MVP acceptance data
 

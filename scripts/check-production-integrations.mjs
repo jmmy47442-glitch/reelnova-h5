@@ -102,12 +102,12 @@ if (localPayPalPartiallyConfigured) {
   }
 }
 
-const missingMedia = required(['CLOUDFLARE_MEDIA_WORKER_URL', 'CLOUDFLARE_MEDIA_WORKER_SECRET', 'CLOUDFLARE_MEDIA_SIGNING_SECRET']);
-report('R2/HLS media configuration', missingMedia.length === 0, missingMedia.length ? `missing ${missingMedia.join(', ')}` : 'configured');
+const missingMedia = required(['CLOUDFLARE_MEDIA_WORKER_URL', 'CLOUDFLARE_MEDIA_WORKER_SECRET', 'CLOUDFLARE_MEDIA_SIGNING_SECRET', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_STREAM_CUSTOMER_CODE', 'CLOUDFLARE_STREAM_WEBHOOK_SECRET']);
+report('Cloudflare Stream media configuration', missingMedia.length === 0, missingMedia.length ? `missing ${missingMedia.join(', ')}` : 'configured');
 blocked ||= missingMedia.length > 0;
 if (!missingMedia.length) {
-  try { await checkMediaHealth(env); report('R2/HLS media pipeline', true); }
-  catch (error) { report('R2/HLS media pipeline', false, error.message); blocked = true; }
+  try { await checkMediaHealth(env); report('Cloudflare Stream media pipeline', true); }
+  catch (error) { report('Cloudflare Stream media pipeline', false, error.message); blocked = true; }
 }
 
 const cloudflareForSaasEnabled = String(env.CLOUDFLARE_FOR_SAAS_ENABLED || '').trim().toLowerCase() === 'true';

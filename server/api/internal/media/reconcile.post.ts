@@ -1,7 +1,6 @@
 import { d1All, d1Run } from '~/server/utils/cloudflare-d1';
 import { completeMediaUpload, getMediaUploadState } from '~/server/utils/media-upload-state';
 import { mediaWorkerRequest } from '~/server/utils/media-pipeline';
-import { verifyMediaWorkerRequest } from '~/server/utils/internal-worker-auth';
 
 interface ExpiredUpload {
   id: string;
@@ -13,13 +12,29 @@ interface ExpiredUpload {
 interface CleanupResult {
   abortedSessionIds: string[];
   deletedObjectKeys: string[];
+  deletedStreamUids: string[];
   deletedMarkerKeys: string[];
   errors: Array<{ resource: string; message: string }>;
 }
 
+const encoder = new TextEncoder();
+const bytesToHex = (bytes: Uint8Array) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+
+const verifyWorker = async (event: Parameters<typeof readRawBody>[0], rawBody: string) => {
+  const timestamp = getHeader(event, 'x-reelnova-timestamp') || '';
+  const signature = getHeader(event, 'x-reelnova-signature') || '';
+  const secret = String(useRuntimeConfig(event).cloudflareMediaWorkerSecret || '');
+  if (!secret || !/^\d+$/.test(timestamp) || Math.abs(Date.now() / 1000 - Number(timestamp)) > 300 || !/^[0-9a-f]{64}$/i.test(signature)) return false;
+  const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const expected = bytesToHex(new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(`${timestamp}.${rawBody}`))));
+  let difference = 0;
+  for (let index = 0; index < expected.length; index += 1) difference |= expected.charCodeAt(index) ^ signature.charCodeAt(index);
+  return difference === 0;
+};
+
 export default defineEventHandler(async (event) => {
   const rawBody = await readRawBody(event, 'utf8') || '';
-  if (!await verifyMediaWorkerRequest(event, rawBody)) throw createError({ statusCode: 401, statusMessage: 'Invalid media reconciliation signature' });
+  if (!await verifyWorker(event, rawBody)) throw createError({ statusCode: 401, statusMessage: 'Invalid media reconciliation signature' });
 
   const staleBefore = new Date(Date.now() - 2 * 60 * 1000).toISOString();
   const recoverable = await d1All<{ id: string }>(event, `SELECT id FROM media_upload_sessions
@@ -31,7 +46,7 @@ export default defineEventHandler(async (event) => {
     if (!upload) continue;
     try {
       const completion = await completeMediaUpload(event, upload, [], false);
-      if (completion.status === 'ready') recovered.push(item.id);
+      if (completion.status === 'processing') recovered.push(item.id);
     } catch (error) {
       recoveryErrors.push({ uploadId: item.id, message: error instanceof Error ? error.message : 'Upload recovery failed' });
     }
@@ -44,9 +59,12 @@ export default defineEventHandler(async (event) => {
     WHERE source_object_key IS NOT NULL AND deleted_at IS NULL AND status <> 'superseded'
       AND NOT EXISTS (SELECT 1 FROM media_upload_sessions u WHERE u.media_asset_id = media_assets.id
         AND (u.status IN ('aborted', 'expired') OR (u.status IN ('created', 'uploading') AND u.expires_at < ?)))
-    `, [now]);
+    LIMIT 10000`, [now]);
+  const keepStreams = await d1All<{ value: string }>(event, `SELECT stream_uid AS value FROM media_assets
+    WHERE stream_uid IS NOT NULL AND deleted_at IS NULL AND status <> 'superseded'
+    UNION SELECT stream_uid AS value FROM media_upload_sessions WHERE stream_uid IS NOT NULL AND status = 'completing' LIMIT 10000`);
   const keepSessions = await d1All<{ value: string }>(event, `SELECT id AS value FROM media_upload_sessions
-    WHERE status IN ('created', 'uploading', 'completing') AND (expires_at >= ? OR status = 'completing')`, [now]);
+    WHERE status IN ('created', 'uploading', 'completing') AND (expires_at >= ? OR status = 'completing') LIMIT 10000`, [now]);
 
   const cleanup = await mediaWorkerRequest<CleanupResult>(event, '/reconcile', {
     graceHours: 24,
@@ -54,6 +72,7 @@ export default defineEventHandler(async (event) => {
       sessionId: upload.id, uploadId: upload.provider_upload_id, objectKey: upload.object_key, idempotencyKey: upload.idempotency_key,
     })),
     keepObjectKeys: keepObjects.map((item) => item.value),
+    keepStreamUids: keepStreams.map((item) => item.value),
     keepSessionIds: keepSessions.map((item) => item.value),
   });
 

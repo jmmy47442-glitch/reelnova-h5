@@ -17,9 +17,9 @@ The admin dashboard and administrator accounts never fall back to sample or in-m
 | Reconciliation | Cloudflare D1 aggregation | Paid amount minus PayPal fee and refunds |
 | Series and episodes | Cloudflare D1 normalized content tables | `series`, `episodes`, taxonomy associations and immutable version snapshots |
 | Original media | Private Cloudflare R2 bucket | Multipart source uploads; no public bucket URL |
-| Playback media | Private Cloudflare R2 + media Worker | Compatible MP4 with short-lived signed URLs and byte-range delivery |
+| Playback media | Cloudflare Stream | Stream-transcoded HLS with short-lived signed playback tokens |
 
-Playback uses private R2 originals and HLS packages. The Worker verifies a short-lived signature on every media request, including byte ranges. Each playback grant creates or renews a D1 `playback_sessions` row bound to the signed user session and an HttpOnly playback-device cookie, limits active playback to two devices per account, applies D1-backed fixed-window rate limits, and records rejected or suspicious requests in `playback_security_events` using HMAC hashes rather than raw IP/device values.
+Playback uses Cloudflare Stream HLS tokens. Each playback grant creates or renews a D1 `playback_sessions` row bound to the signed user session and an HttpOnly playback-device cookie, limits active playback to two devices per account, applies D1-backed fixed-window rate limits, and records rejected or suspicious requests in `playback_security_events` using HMAC hashes rather than raw IP/device values.
 
 Cloudflare Web Analytics request counts are not used as play counts. Page requests, bots, reloads and media segment requests do not represent a user starting an episode.
 
@@ -116,14 +116,14 @@ ADMIN_SESSION_SECRET
 ADMIN_CREDENTIAL_SECRET
 ```
 
-`CLOUDFLARE_MEDIA_SIGNING_SECRET` signs playback tracking authorization. The media Worker uses its separate shared secret to sign short-lived MP4 playback URLs. Stream credentials are no longer required.
+`CLOUDFLARE_MEDIA_SIGNING_SECRET` signs playback tracking authorization. Configure the Stream API token, Customer Code and Webhook Secret for media ingestion and signed HLS playback.
 `NUXT_PUBLIC_PAYPAL_CLIENT_ID` is intentionally public and must equal `PAYPAL_CLIENT_ID`. The same rule applies to `NUXT_PUBLIC_PAYPAL_PRODUCTION_CLIENT_ID` and `PAYPAL_PRODUCTION_CLIENT_ID`: these are two deployment variables containing the same Live App Client ID, not two separate credentials. Keep both empty until PayPal is available; setting only one leaves checkout disabled or marks the connection incomplete.
 The legacy `PAYPAL_*` values remain a fallback for the initial `PAYPAL_ENVIRONMENT`. Configure both named Sandbox and Production sets to enable environment switching from `/admin/system`. The selected environment is the only payment configuration stored in D1; Client Secrets remain encrypted deployment secrets. Each order also stores its immutable PayPal environment so later Capture, verification, refunds and Webhooks keep using the correct API after a switch. The first switch attributes pre-0016 orders to the currently active environment. A switch first verifies the target OAuth credentials and is blocked while pending payments, refunds, or risk-review orders exist.
 `SUPER_ADMIN_PASSWORD` initializes the preset super administrator on first use. `ADMIN_SESSION_SECRET` signs the HttpOnly admin session cookie. `ADMIN_CREDENTIAL_SECRET` encrypts the password verifier used by the low-CPU challenge login flow. Both secrets must be separate, stable, high-entropy production secrets; changing `ADMIN_CREDENTIAL_SECRET` requires resetting administrator credentials.
 
-## 4. Deploy the private R2/HLS media Worker
+## 4. Deploy the private R2 + Stream media Worker
 
-No Stream subscription, API permission, Customer Code or Webhook is required. Keep R2 private (disable public `r2.dev` and bucket custom-domain access).
+Keep R2 private (disable public `r2.dev` and bucket custom-domain access). The Worker needs Stream API access with Account / Stream / Edit permission.
 
 ```bash
 npx wrangler r2 bucket create reelnova-media-private
@@ -131,11 +131,11 @@ npx wrangler secret put MEDIA_WORKER_SECRET --config wrangler.media.toml
 npm run deploy:media-worker
 ```
 
-Set the application's `CLOUDFLARE_MEDIA_WORKER_URL=https://media.iseedrama.com`, `CLOUDFLARE_MEDIA_WORKER_SECRET` (same value as the Worker secret), and `CLOUDFLARE_MEDIA_SIGNING_SECRET` (separate random secret). The Worker only needs the `MEDIA_BUCKET` R2 binding and `MEDIA_WORKER_SECRET`; it no longer needs Cloudflare API credentials.
+Set the application's `CLOUDFLARE_MEDIA_WORKER_URL=https://media.iseedrama.com`, `CLOUDFLARE_MEDIA_WORKER_SECRET` (same value as the Worker secret), `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_STREAM_CUSTOMER_CODE` and `CLOUDFLARE_STREAM_WEBHOOK_SECRET`. The Worker needs the `MEDIA_BUCKET` R2 binding plus the Stream API credentials.
 
 Deploy the Worker before deploying the Nuxt application. `/admin/system` performs an authenticated Worker/R2 health check. Configure `PUBLIC_BASE_URL`, `APP_BASE_URL` and `APP_ORIGINS` in `wrangler.media.toml`; retain the admin origin for upload and preview CORS. Keep the hourly Cron: it recovers interrupted completions, cleans expired multipart uploads and invokes PayPal reconciliation.
 
-The production free-plan mode accepts H.264 8-bit + AAC-LC MP4, at most 20 GB and six hours. Other containers or codecs must be converted locally before upload. Files are stored in private R2 and served only through signed Media Worker URLs. Existing HLS packages remain playable, while new uploads use signed MP4 delivery. Covers are uploaded independently. Optional Workers Paid transcoding is documented in [Cloudflare Container transcoding](./CLOUDFLARE-CONTAINER-TRANSCODING.md).
+Uploads accept MP4, M4V, MOV, MKV, WebM, AVI and MPEG, at most 20 GB and six hours. After upload, the Worker submits the private source to Cloudflare Stream, which performs transcoding and serves signed HLS. Stream webhook events and the hourly reconciliation job update processing state and clean abandoned resources. Covers are uploaded independently.
 
 See [R2/HLS delivery and migration](./R2-MP4-DELIVERY.md) for export commands, existing-video handling and deployment acceptance steps.
 
@@ -271,7 +271,7 @@ Visit `/admin/system`. D1, PayPal and media delivery are checked independently. 
 6. Heartbeats update `watch_history`, and a second device resumes the same episode at the stored second.
 7. Clearing watch history empties Library/Profile progress without removing `playback_events` analytics.
 8. A stopped multipart upload resumes from locally recorded completed parts.
-9. MP4 completion validates the stored bytes, updates the episode to `ready`, and enables preview and publication without any Stream request.
+9. Upload completion stores the Stream UID and marks the episode `processing`; the Stream webhook (or reconciliation) marks it `ready` and enables preview and publication.
 
 The admin user page reads `GET /api/admin/users` from D1, the administrator page reads `GET /api/admin/administrators`, and the audit page reads `GET /api/admin/audit`. Run all migrations in numeric order before opening these pages; otherwise the UI will show the explicit database migration error state. Registration creates the `users` row, and authenticated playback or order activity refreshes its country, device and last-seen fields. Verified PayPal captures update order payer details and the user's country without replacing the login email. Administrator credentials and account state use `admin_accounts`; sessions are signed HttpOnly cookies and are revalidated against that table on every protected request.
 # Admin Access security

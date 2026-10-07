@@ -17,14 +17,16 @@ type PlaybackAsset = {
   hls_url: string | null;
 };
 
-const cloudflareStreamHlsUrl = (asset: PlaybackAsset) => {
-  if (asset.storage_provider !== 'stream' || !/^[a-f0-9]{32}$/i.test(asset.stream_uid || '')) return null;
+const cloudflareStreamHlsUrl = (asset: PlaybackAsset, customerCode: string) => {
+  if (!/^[a-f0-9]{32}$/i.test(asset.stream_uid || '')) return null;
   try {
     const url = new URL(asset.hls_url || '');
     if (url.protocol !== 'https:' || !/^customer-[a-z0-9]+\.cloudflarestream\.com$/i.test(url.hostname)
       || url.pathname !== `/${asset.stream_uid}/manifest/video.m3u8` || url.search || url.hash) return null;
     return url.href;
-  } catch { return null; }
+  } catch {
+    return customerCode ? `https://customer-${customerCode}.cloudflarestream.com/${asset.stream_uid}/manifest/video.m3u8` : null;
+  }
 };
 
 const createCloudflareStreamPlaybackUrl = async (event: H3Event, manifestUrl: string) => {
@@ -123,9 +125,8 @@ export default defineEventHandler(async (event) => {
     lastProgressPromise,
   ]);
   if (!entitlement) throw createError({ statusCode: 403, statusMessage: 'Entitlement required' });
-  const streamHlsUrl = mediaAsset ? cloudflareStreamHlsUrl(mediaAsset) : null;
-  if (!mediaAsset || episode.videoStatus !== 'ready'
-    || (mediaAsset.storage_provider === 'stream' ? !streamHlsUrl : !mediaAsset.source_object_key)) {
+  const streamHlsUrl = mediaAsset ? cloudflareStreamHlsUrl(mediaAsset, String(useRuntimeConfig(event).cloudflareStreamCustomerCode || '')) : null;
+  if (!mediaAsset || episode.videoStatus !== 'ready' || !streamHlsUrl) {
     throw createError({ statusCode: 503, statusMessage: 'Video playback is not ready' });
   }
   const trackingSecret = getPlaybackAuthorizationSecret(event);

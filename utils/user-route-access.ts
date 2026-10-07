@@ -1,6 +1,8 @@
 const publicUserRoutePatterns = [
   /^\/$/,
   /^\/explore$/,
+  /^\/library$/,
+  /^\/profile$/,
   /^\/series\/[^/]+$/,
   /^\/watch\/[^/]+\/[^/]+$/,
   /^\/terms$/,

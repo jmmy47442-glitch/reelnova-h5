@@ -35,6 +35,8 @@ export default defineNuxtConfig({
     cloudflareMediaSigningSecret: process.env.CLOUDFLARE_MEDIA_SIGNING_SECRET || '',
     cloudflareMediaWorkerUrl: process.env.CLOUDFLARE_MEDIA_WORKER_URL || '',
     cloudflareMediaWorkerSecret: process.env.CLOUDFLARE_MEDIA_WORKER_SECRET || '',
+    cloudflareStreamCustomerCode: process.env.CLOUDFLARE_STREAM_CUSTOMER_CODE || '',
+    cloudflareStreamWebhookSecret: process.env.CLOUDFLARE_STREAM_WEBHOOK_SECRET || '',
     cloudflareForSaasEnabled: process.env.CLOUDFLARE_FOR_SAAS_ENABLED || 'false',
     domainCnameTarget: process.env.CLOUDFLARE_DOMAIN_CNAME_TARGET || '',
     paypalClientId: process.env.PAYPAL_CLIENT_ID || '',

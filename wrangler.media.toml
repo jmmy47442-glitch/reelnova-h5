@@ -14,12 +14,11 @@ bucket_name = "reelnova-media-private"
 APP_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000,https://iseedrama.com,https://www.iseedrama.com,https://admin.iseedrama.com"
 APP_BASE_URL = "https://iseedrama.com"
 PUBLIC_BASE_URL = "https://media.iseedrama.com"
-MEDIA_EDGE_CACHE = "true"
-MEDIA_HLS = "true"
-MEDIA_TRANSCODE_ENABLED = "false"
 
 [triggers]
 crons = ["17 * * * *"]
 
 # Configure as encrypted Worker secrets:
 # MEDIA_WORKER_SECRET
+# CLOUDFLARE_ACCOUNT_ID
+# CLOUDFLARE_API_TOKEN (Account / Stream / Edit)

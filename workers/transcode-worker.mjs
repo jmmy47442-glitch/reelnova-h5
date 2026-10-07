@@ -71,13 +71,8 @@ export class MediaTranscodeWorkflow extends WorkflowEntrypoint {
         const response = await container.fetch(new Request('http://container/transcode', {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(job),
         }));
-        const raw = await response.text();
-        let body;
-        try { body = JSON.parse(raw); } catch { body = {}; }
-        if (!response.ok) throw new Error(body.error || `FFmpeg container failed (${response.status}): ${raw.slice(0, 800)}`);
-        if (!body.prefix || !body.media || !Array.isArray(body.renditions) || !body.renditions.length) {
-          throw new Error('FFmpeg container returned an incomplete result');
-        }
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || `FFmpeg container failed (${response.status})`);
         return body;
       });
     } catch (error) {
@@ -115,20 +110,6 @@ const startJob = async (env, body) => {
   return { jobId: job.jobId, workflowId: instance.id, status: await instance.status() };
 };
 
-const checkWorkflow = async (env) => {
-  if (!env.MEDIA_TRANSCODE_WORKFLOW) throw new Error('Transcode workflow binding is missing');
-  try {
-    // Reading a reserved instance ID verifies that the Workflow resource exists
-    // without creating a task or starting a paid container.
-    const instance = await env.MEDIA_TRANSCODE_WORKFLOW.get('reelnova-health-probe');
-    await instance.status();
-  } catch (error) {
-    // A missing instance is expected; a missing Workflow or any other failure
-    // must propagate so the upload readiness check cannot report a false success.
-    if (!/\binstance\.not_found\b/.test(errorText(error))) throw error;
-  }
-};
-
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -136,7 +117,6 @@ export default {
       if (request.method === 'POST' && url.pathname === '/jobs') return json(await startJob(env, await request.json()));
       if (request.method === 'GET' && url.pathname === '/health') {
         await env.MEDIA_BUCKET.list({ limit: 1 });
-        await checkWorkflow(env);
         return json({ ready: true, engine: 'cloudflare-containers-ffmpeg' });
       }
       return json({ error: 'Not found' }, 404);
