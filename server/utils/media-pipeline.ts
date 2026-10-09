@@ -49,19 +49,66 @@ export const requireMediaPipeline = (event: H3Event) => {
   return { workerUrl, secret };
 };
 
-export const mediaWorkerRequest = async <T>(event: H3Event, path: string, body: unknown, method = 'POST'): Promise<T> => {
+interface MediaWorkerRequestOptions {
+  maxAttempts?: number;
+  timeoutMs?: number;
+}
+
+export const mediaWorkerRequest = async <T>(
+  event: H3Event,
+  path: string,
+  body: unknown,
+  method = 'POST',
+  options: MediaWorkerRequestOptions = {},
+): Promise<T> => {
   const { workerUrl, secret } = requireMediaPipeline(event);
   const rawBody = JSON.stringify(body);
-  const timestamp = String(Math.floor(Date.now() / 1000));
-  const signature = await signHex(`${timestamp}.${rawBody}`, secret);
-  const response = await fetch(`${workerUrl}${path}`, {
-    method,
-    headers: { 'content-type': 'application/json', 'x-reelnova-timestamp': timestamp, 'x-reelnova-signature': signature },
-    body: rawBody,
-  });
-  const payload = await response.json().catch(() => ({})) as { error?: string } & T;
-  if (!response.ok) throw createError({ statusCode: 502, statusMessage: payload.error || `Media worker request failed (${response.status})` });
-  return payload;
+  // Upload creation is idempotent by design: the Worker stores the
+  // idempotency key in R2 before returning its token. Retrying it is safe and
+  // prevents a transient edge reset from leaving the admin task stuck.
+  const retryablePath = method === 'POST' && (
+    path === '/uploads' || path === '/images/uploads' || /\/complete$/.test(path)
+    || path === '/images/verify' || path === '/transcodes'
+  );
+  const maxAttempts = options.maxAttempts ?? (retryablePath ? 2 : 1);
+  const timeoutMs = options.timeoutMs ?? (retryablePath ? 8_000 : 15_000);
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 300));
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = await signHex(`${timestamp}.${rawBody}`, secret);
+    let response: Response;
+    try {
+      response = await fetch(`${workerUrl}${path}`, {
+        method,
+        headers: { 'content-type': 'application/json', 'x-reelnova-timestamp': timestamp, 'x-reelnova-signature': signature },
+        body: rawBody,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 < maxAttempts) continue;
+      const message = error instanceof Error ? error.message : 'Network request failed';
+      throw createError({ statusCode: 502, statusMessage: `Media worker request failed: ${message}` });
+    }
+
+    const responseText = await response.text().catch(() => '');
+    let payload: ({ error?: string } & T) | null = null;
+    try { payload = responseText ? JSON.parse(responseText) as ({ error?: string } & T) : null; } catch { /* handled below */ }
+    if (!response.ok) {
+      lastError = new Error(`Media worker request failed (${response.status})`);
+      if (attempt + 1 < maxAttempts && [408, 429, 500, 502, 503, 504].includes(response.status)) continue;
+      const detail = payload?.error || responseText.slice(0, 500).trim();
+      throw createError({ statusCode: 502, statusMessage: detail
+        ? `Media worker request failed (${response.status}): ${detail}`
+        : `Media worker request failed (${response.status})` });
+    }
+    if (!payload) throw createError({ statusCode: 502, statusMessage: `Media worker returned invalid JSON (${response.status})` });
+    return payload;
+  }
+
+  throw createError({ statusCode: 502, statusMessage: lastError instanceof Error ? lastError.message : 'Media worker request failed' });
 };
 
 const streamApiRequest = async <T>(event: H3Event, path: string, options: RequestInit = {}): Promise<T> => {
