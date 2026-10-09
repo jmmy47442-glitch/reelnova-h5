@@ -47,7 +47,7 @@ const cancellingUploadIds = ref<string[]>([]);
 let activeUploadResumeKey = '';
 let activeUploadIdempotencyKey = '';
 const activeUploadRequests = new Set<XMLHttpRequest>();
-// Keep several direct-to-R2 parts in flight to use the available bandwidth.
+// Keep several multipart parts in flight to use the available bandwidth.
 const uploadPartConcurrency = 3;
 const mediaAvailable = ref(false);
 const mediaAvailabilityLoading = ref(true);
@@ -643,10 +643,11 @@ const inspectMedia = async (file: File): Promise<MediaProbe> => {
   return { durationSeconds: 0, width: 0, height: 0, hasVideo: false, hasAudio: false };
 };
 
-const uploadPart = (url: string, partNumber: number, blob: Blob, onProgress: (loaded: number) => void) => new Promise<MediaUploadPart>((resolve, reject) => {
+const uploadPart = (session: MediaUploadSession, partNumber: number, blob: Blob, onProgress: (loaded: number) => void) => new Promise<MediaUploadPart>((resolve, reject) => {
   const request = new XMLHttpRequest();
   activeUploadRequests.add(request);
-  request.open('PUT', url);
+  request.open('PUT', `${session.uploadUrl}/parts/${partNumber}`);
+  request.setRequestHeader('Authorization', `Bearer ${session.uploadToken}`);
   request.setRequestHeader('Content-Type', 'application/octet-stream');
   request.timeout = 120_000;
   request.upload.onprogress = (event) => onProgress(event.loaded);
@@ -656,24 +657,16 @@ const uploadPart = (url: string, partNumber: number, blob: Blob, onProgress: (lo
   request.onloadend = () => { activeUploadRequests.delete(request); };
   request.onload = () => {
     if (request.status < 200 || request.status >= 300) return reject(new Error(`分片上传失败 (${request.status})`));
-    const etag = request.getResponseHeader('etag')?.replace(/^"|"$/g, '');
+    let etag = request.getResponseHeader('etag')?.replace(/^"|"$/g, '');
+    if (!etag) {
+      try { etag = (JSON.parse(request.responseText) as { etag?: string }).etag; }
+      catch { /* Report the missing R2 part receipt below. */ }
+    }
     if (!etag) return reject(new Error('R2 返回了无效分片响应'));
     resolve({ partNumber, etag, size: blob.size });
   };
   request.send(blob);
 });
-
-const presignParts = async (session: MediaUploadSession, partNumbers: number[]) => {
-  const response = await fetch(`${session.uploadUrl}/parts/presign`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${session.uploadToken}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ partNumbers }),
-  });
-  if (!response.ok) throw new Error(`获取 R2 直传地址失败 (${response.status})`);
-  const payload = await response.json() as { parts?: Array<{ partNumber: number; url: string }> };
-  if (!Array.isArray(payload.parts) || payload.parts.length !== partNumbers.length) throw new Error('R2 直传地址响应无效');
-  return new Map(payload.parts.map((part) => [part.partNumber, part.url]));
-};
 
 const cancelUpload = () => {
   if (!uploading.value || uploadCancelled.value) return;
@@ -820,9 +813,7 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
       if (uploadCancelled.value) throw new DOMException('上传已取消', 'AbortError');
       inFlightBytes.set(partNumber, 0);
       try {
-        const partUrl = (await presignParts(session, [partNumber])).get(partNumber);
-        if (!partUrl) throw new Error('R2 直传地址缺失');
-        uploaded = await uploadPart(partUrl, partNumber, blob, (loaded) => {
+        uploaded = await uploadPart(session, partNumber, blob, (loaded) => {
           inFlightBytes.set(partNumber, Math.min(blob.size, loaded));
           updateUploadProgress();
         });
