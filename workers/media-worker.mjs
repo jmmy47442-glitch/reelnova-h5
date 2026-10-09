@@ -312,6 +312,26 @@ export default {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: requestCors });
 
     try {
+      // Covers are stored in the private R2 bucket but their verified public
+      // URLs are served from the media custom domain. Keep this route
+      // deliberately narrow: only objects under `posters/` are public, while
+      // originals and upload markers remain inaccessible without a token.
+      const posterMatch = url.pathname.match(/^\/posters\/([^/]+)\/(cover-[0-9a-f-]+\.(?:jpg|jpeg|png|webp))$/i);
+      if (posterMatch && (request.method === 'GET' || request.method === 'HEAD')) {
+        const objectKey = `posters/${posterMatch[1]}/${posterMatch[2]}`;
+        const head = await env.MEDIA_BUCKET.head(objectKey);
+        if (!head) return new Response('Not found', { status: 404, headers: requestCors });
+        const headers = new Headers(requestCors);
+        headers.set('content-type', head.httpMetadata?.contentType || 'application/octet-stream');
+        headers.set('content-length', String(head.size || 0));
+        headers.set('etag', head.httpEtag);
+        headers.set('cache-control', 'public, max-age=31536000, immutable');
+        if (request.method === 'HEAD') return new Response(null, { status: 200, headers });
+        const object = await env.MEDIA_BUCKET.get(objectKey);
+        if (!object) return new Response('Not found', { status: 404, headers });
+        return new Response(object.body, { status: 200, headers });
+      }
+
       if (request.method === 'POST' && url.pathname === '/uploads') {
         const rawBody = await request.text();
         if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401);
