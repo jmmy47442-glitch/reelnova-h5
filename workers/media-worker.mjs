@@ -340,16 +340,44 @@ export default {
       }
 
       const ingestMatch = url.pathname.match(/^\/ingest\/(.+)$/);
-      if (ingestMatch && request.method === 'GET') {
+      if (ingestMatch && (request.method === 'GET' || request.method === 'HEAD')) {
         const payload = await readToken(decodeURIComponent(ingestMatch[1]), env.MEDIA_WORKER_SECRET);
         if (!payload?.key) return new Response('Expired ingest URL', { status: 403 });
-        const object = await env.MEDIA_BUCKET.get(payload.key);
-        if (!object) return new Response('Not found', { status: 404 });
+        // Cloudflare Stream probes a source URL with HEAD and byte ranges
+        // before starting a copy. R2's object response does not automatically
+        // expose those semantics through a Worker, so forward the metadata
+        // and requested range explicitly.
+        const head = await env.MEDIA_BUCKET.head(payload.key);
+        if (!head) return new Response('Not found', { status: 404 });
         const headers = new Headers();
-        object.writeHttpMetadata(headers);
-        headers.set('etag', object.httpEtag);
+        if (head.httpMetadata?.contentType) headers.set('content-type', head.httpMetadata.contentType);
+        if (head.httpMetadata?.cacheControl) headers.set('cache-control', head.httpMetadata.cacheControl);
+        headers.set('etag', head.httpEtag);
+        headers.set('accept-ranges', 'bytes');
+        const size = Number(head.size || 0);
+        headers.set('content-length', String(size));
         headers.set('cache-control', 'private, max-age=0');
-        return new Response(object.body, { headers });
+        if (request.method === 'HEAD') return new Response(null, { status: 200, headers });
+
+        const rangeHeader = request.headers.get('range');
+        let range;
+        if (rangeHeader) {
+          const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+          if (!match || (!match[1] && !match[2])) return new Response('Invalid range', { status: 416, headers });
+          const start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
+          const end = match[2] ? Number(match[2]) : size - 1;
+          if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= size) {
+            headers.set('content-range', `bytes */${size}`);
+            return new Response('Range not satisfiable', { status: 416, headers });
+          }
+          const boundedEnd = Math.min(end, size - 1);
+          range = { offset: start, length: boundedEnd - start + 1 };
+          headers.set('content-range', `bytes ${start}-${boundedEnd}/${size}`);
+          headers.set('content-length', String(range.length));
+        }
+        const object = await env.MEDIA_BUCKET.get(payload.key, range ? { range } : undefined);
+        if (!object) return new Response('Not found', { status: 404 });
+        return new Response(object.body, { status: range ? 206 : 200, headers });
       }
 
       return json({ error: 'Not found' }, 404, requestCors);

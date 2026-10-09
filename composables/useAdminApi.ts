@@ -61,7 +61,10 @@ export const useAdminApi = () => {
     reorderEpisodes: (seriesId: string, episodeIds: string[]) => request<{ items: AdminEpisode[] }>(`/admin/series/${encodeURIComponent(seriesId)}/episodes/order`, { method: 'PUT', body: { episodeIds } }),
     deleteEpisode: (seriesId: string, episodeId: string) => request<{ id: string; episodeNo: number; title: string; items: AdminEpisode[] }>(`/admin/series/${encodeURIComponent(seriesId)}/episodes/${encodeURIComponent(episodeId)}`, { method: 'DELETE' }),
     createEpisodeUpload: (seriesId: string, input: { idempotencyKey: string; episodeNo: number; title: string; fileName: string; contentType: string; fileSizeBytes: number; durationSeconds: number; width: number; height: number; hasVideo: boolean; hasAudio: boolean }) =>
-      request<MediaUploadSession>(`/admin/series/${encodeURIComponent(seriesId)}/episodes/uploads`, { method: 'POST', body: input }),
+      request<MediaUploadSession>(`/admin/series/${encodeURIComponent(seriesId)}/episodes/uploads`, {
+        method: 'POST', body: input, timeout: 30_000, retry: 1, retryDelay: 700,
+        retryStatusCodes: [408, 429, 500, 502, 503, 504],
+      }),
     reportUploadProgress: (uploadId: string, uploadedBytes: number) => request<{ uploadedBytes: number; fileSizeBytes: number }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}/progress`, { method: 'PATCH', body: { uploadedBytes } }),
     getEpisodeUpload: (uploadId: string) => request<{ uploadId: string; mediaAssetId: string; status: string; uploadedBytes: number; fileSizeBytes: number; r2Completed: boolean; streamUid: string | null; recoverable: boolean; errorMessage: string | null; updatedAt: string | null }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}`),
     cancelEpisodeUpload: (uploadId: string, episodeId?: string) => request<{ uploadId: string; mediaAssetId: string; episodeId: string; status: 'aborted'; cleanupPending: boolean }>(`/admin/media/uploads/${encodeURIComponent(uploadId)}`, {
