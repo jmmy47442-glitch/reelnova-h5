@@ -47,11 +47,8 @@ const cancellingUploadIds = ref<string[]>([]);
 let activeUploadResumeKey = '';
 let activeUploadIdempotencyKey = '';
 const activeUploadRequests = new Set<XMLHttpRequest>();
-// Cloudflare's custom-domain HTTP/2 edge is more reliable when a Worker
-// receives one large multipart PUT at a time. The Worker buffers each part
-// before writing it to R2, so keeping one request in flight also prevents the
-// browser from resetting sibling streams under sustained upload pressure.
-const uploadPartConcurrency = 1;
+// Keep several direct-to-R2 parts in flight to use the available bandwidth.
+const uploadPartConcurrency = 3;
 const mediaAvailable = ref(false);
 const mediaAvailabilityLoading = ref(true);
 const episodes = ref<AdminEpisode[]>([]);
@@ -618,6 +615,23 @@ const readResume = (key: string) => {
 };
 const writeResume = (key: string, value: ResumeState) => localStorage.setItem(key, JSON.stringify(value));
 
+// $fetch/Nitro errors are not shaped consistently across direct requests,
+// reverse proxies and older deployments. Keep the inactive-session check
+// independent of one particular wrapper so a stale browser idempotency key
+// can never trap the operator in a permanent 409 loop.
+const errorText = (error: any) => [
+  error?.data?.statusMessage,
+  error?.data?.message,
+  error?.statusMessage,
+  error?.message,
+  error?.response?._data?.statusMessage,
+  error?.response?._data?.message,
+].filter((value) => typeof value === 'string').join(' ');
+const errorStatus = (error: any) => Number(error?.statusCode || error?.status || error?.response?.status || error?.data?.statusCode || error?.response?._data?.statusCode || 0);
+const isInactiveUploadError = (error: any) => {
+  return errorStatus(error) === 409 && /upload session is no longer active|session is no longer active|upload session not found|session not found|expired|aborted/i.test(errorText(error));
+};
+
 const inspectMedia = async (file: File): Promise<MediaProbe> => {
   if (videoExtension(file) === 'mp4') {
     try {
@@ -629,11 +643,10 @@ const inspectMedia = async (file: File): Promise<MediaProbe> => {
   return { durationSeconds: 0, width: 0, height: 0, hasVideo: false, hasAudio: false };
 };
 
-const uploadPart = (url: string, token: string, blob: Blob, onProgress: (loaded: number) => void) => new Promise<MediaUploadPart>((resolve, reject) => {
+const uploadPart = (url: string, partNumber: number, blob: Blob, onProgress: (loaded: number) => void) => new Promise<MediaUploadPart>((resolve, reject) => {
   const request = new XMLHttpRequest();
   activeUploadRequests.add(request);
   request.open('PUT', url);
-  request.setRequestHeader('Authorization', `Bearer ${token}`);
   request.setRequestHeader('Content-Type', 'application/octet-stream');
   request.timeout = 120_000;
   request.upload.onprogress = (event) => onProgress(event.loaded);
@@ -643,11 +656,24 @@ const uploadPart = (url: string, token: string, blob: Blob, onProgress: (loaded:
   request.onloadend = () => { activeUploadRequests.delete(request); };
   request.onload = () => {
     if (request.status < 200 || request.status >= 300) return reject(new Error(`分片上传失败 (${request.status})`));
-    try { resolve(JSON.parse(request.responseText) as MediaUploadPart); }
-    catch { reject(new Error('媒体 Worker 返回了无效响应')); }
+    const etag = request.getResponseHeader('etag')?.replace(/^"|"$/g, '');
+    if (!etag) return reject(new Error('R2 返回了无效分片响应'));
+    resolve({ partNumber, etag, size: blob.size });
   };
   request.send(blob);
 });
+
+const presignParts = async (session: MediaUploadSession, partNumbers: number[]) => {
+  const response = await fetch(`${session.uploadUrl}/parts/presign`, {
+    method: 'POST', credentials: 'include',
+    headers: { authorization: `Bearer ${session.uploadToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ partNumbers }),
+  });
+  if (!response.ok) throw new Error(`获取 R2 直传地址失败 (${response.status})`);
+  const payload = await response.json() as { parts?: Array<{ partNumber: number; url: string }> };
+  if (!Array.isArray(payload.parts) || payload.parts.length !== partNumbers.length) throw new Error('R2 直传地址响应无效');
+  return new Map(payload.parts.map((part) => [part.partNumber, part.url]));
+};
 
 const cancelUpload = () => {
   if (!uploading.value || uploadCancelled.value) return;
@@ -703,6 +729,36 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
   activeUploadResumeKey = key;
   activeUploadIdempotencyKey = idempotencyStorageKey;
   let resume = readResume(key);
+  if (resume) {
+    // The local token can outlive the D1 row (for example after a cron
+    // reconciliation or an administrator cancellation). Validate it before
+    // sending parts; otherwise the browser keeps retrying a dead session.
+    let persisted: Awaited<ReturnType<typeof api.getEpisodeUpload>> | null = null;
+    let lookupFailed = false;
+    try { persisted = await api.getEpisodeUpload(resume.session.id); }
+    catch (error) {
+      lookupFailed = true;
+      if (errorStatus(error) !== 404) throw error;
+    }
+    const persistedStatus = String(persisted?.status || '').toLowerCase();
+    if ((persistedStatus === 'completed' || persisted?.r2Completed)
+      && !['aborted', 'expired'].includes(persistedStatus)) {
+      await loadEpisodes(false);
+      const current = episodes.value.find((episode) => episode.episodeNo === episodeNo);
+      const status = current?.videoStatus === 'ready' ? 'ready' : 'processing';
+      localStorage.removeItem(key);
+      localStorage.removeItem(idempotencyStorageKey);
+      activeUploadSessionId.value = null;
+      activeUploadResumeKey = '';
+      activeUploadIdempotencyKey = '';
+      return status;
+    }
+    if ((!lookupFailed && !persisted) || ['aborted', 'expired'].includes(persistedStatus)) {
+      localStorage.removeItem(key);
+      localStorage.removeItem(idempotencyStorageKey);
+      resume = null;
+    }
+  }
   if (!resume) {
     uploadLabel.value = `正在校验 Episode ${episodeNo} · ${file.name}`;
     const probe = await inspectMedia(file);
@@ -721,8 +777,7 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
     } catch (error: any) {
       // An expired/aborted server session cannot be resumed. Rotate the local
       // key so a retry creates a fresh episode upload instead of a permanent 409.
-      const statusMessage = String(error?.data?.statusMessage || error?.statusMessage || '');
-      if (!/no longer active|not found|expired|aborted/i.test(statusMessage)) throw error;
+      if (!isInactiveUploadError(error)) throw error;
       idempotencyKey = `upload:${crypto.randomUUID()}`;
       localStorage.setItem(idempotencyStorageKey, idempotencyKey);
       session = await createSession(idempotencyKey);
@@ -765,7 +820,9 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
       if (uploadCancelled.value) throw new DOMException('上传已取消', 'AbortError');
       inFlightBytes.set(partNumber, 0);
       try {
-        uploaded = await uploadPart(`${session.uploadUrl}/parts/${partNumber}`, session.uploadToken, blob, (loaded) => {
+        const partUrl = (await presignParts(session, [partNumber])).get(partNumber);
+        if (!partUrl) throw new Error('R2 直传地址缺失');
+        uploaded = await uploadPart(partUrl, partNumber, blob, (loaded) => {
           inFlightBytes.set(partNumber, Math.min(blob.size, loaded));
           updateUploadProgress();
         });

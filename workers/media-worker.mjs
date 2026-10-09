@@ -30,7 +30,7 @@ const cors = (request, env) => {
   const allowed = String(env.APP_ORIGINS || '').split(',').map((item) => item.trim()).filter(Boolean);
   return allowed.includes(origin) ? {
     'access-control-allow-origin': origin,
-    'access-control-allow-methods': 'PUT,DELETE,OPTIONS',
+    'access-control-allow-methods': 'GET,POST,PUT,DELETE,OPTIONS',
     'access-control-allow-headers': 'authorization,content-type',
     'access-control-expose-headers': 'etag',
     'access-control-max-age': '86400',
@@ -70,6 +70,44 @@ const readToken = async (token, secret) => {
   } catch {
     return null;
   }
+};
+
+const awsEncode = (value) => encodeURIComponent(value).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+const awsHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+const awsHmac = async (key, value) => new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(value)));
+
+const presignR2Part = async (env, payload, partNumber) => {
+  if (!env.R2_ACCOUNT_ID || !env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY || !env.R2_BUCKET_NAME) {
+    throw new Error('R2 S3 credentials are not configured for direct uploads');
+  }
+  const now = new Date();
+  const date = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
+  const day = date.slice(0, 8);
+  const host = `${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+  const path = `/${awsEncode(env.R2_BUCKET_NAME)}/${String(payload.key).split('/').map(awsEncode).join('/')}`;
+  const credentialScope = `${day}/auto/s3/aws4_request`;
+  const parameters = {
+    'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
+    'X-Amz-Credential': `${env.R2_ACCESS_KEY_ID}/${credentialScope}`,
+    'X-Amz-Date': date,
+    'X-Amz-Expires': '900',
+    'X-Amz-SignedHeaders': 'host',
+    partNumber: String(partNumber),
+    uploadId: payload.uploadId,
+  };
+  const canonicalQuery = Object.entries(parameters).map(([key, value]) => [awsEncode(key), awsEncode(value)])
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
+      (leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0))
+    .map(([key, value]) => `${key}=${value}`).join('&');
+  const canonicalRequest = `PUT\n${path}\n${canonicalQuery}\nhost:${host}\n\nhost\nUNSIGNED-PAYLOAD`;
+  const hash = awsHex(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(canonicalRequest))));
+  const stringToSign = `AWS4-HMAC-SHA256\n${date}\n${credentialScope}\n${hash}`;
+  const dateKey = await awsHmac(await crypto.subtle.importKey('raw', encoder.encode(`AWS4${env.R2_SECRET_ACCESS_KEY}`), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), day);
+  const regionKey = await awsHmac(await crypto.subtle.importKey('raw', dateKey, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), 'auto');
+  const serviceKey = await awsHmac(await crypto.subtle.importKey('raw', regionKey, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), 's3');
+  const signingKey = await crypto.subtle.importKey('raw', await awsHmac(await crypto.subtle.importKey('raw', serviceKey, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), 'aws4_request'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const signature = awsHex(await awsHmac(signingKey, stringToSign));
+  return `https://${host}${path}?${canonicalQuery}&X-Amz-Signature=${signature}`;
 };
 
 const streamApi = async (env, path, options = {}) => {
@@ -282,6 +320,22 @@ export default {
       }
 
       const partMatch = url.pathname.match(/^\/uploads\/([^/]+)\/parts\/(\d+)$/);
+      const partUrlMatch = url.pathname.match(/^\/uploads\/([^/]+)\/parts\/presign$/);
+      if (partUrlMatch && request.method === 'POST') {
+        const token = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
+        const payload = await readToken(token, env.MEDIA_WORKER_SECRET);
+        const uploadId = decodeURIComponent(partUrlMatch[1]);
+        const body = await request.json().catch(() => ({}));
+        const partNumbers = body.partNumbers;
+        if (!payload || payload.uploadId !== uploadId || !Array.isArray(partNumbers) || !partNumbers.length || partNumbers.length > 64
+          || partNumbers.some((partNumber) => !Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000)) {
+          return json({ error: 'Invalid upload token' }, 401, requestCors);
+        }
+        const partCount = Math.ceil(payload.fileSizeBytes / payload.partSizeBytes);
+        if (partNumbers.some((partNumber) => partNumber > partCount)) return json({ error: 'Invalid upload part number' }, 400, requestCors);
+        const parts = await Promise.all(partNumbers.map(async (partNumber) => ({ partNumber, url: await presignR2Part(env, payload, partNumber) })));
+        return json({ parts }, 200, requestCors);
+      }
       if (partMatch && request.method === 'PUT') {
         const token = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
         const payload = await readToken(token, env.MEDIA_WORKER_SECRET);

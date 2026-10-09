@@ -131,9 +131,11 @@ npx wrangler secret put MEDIA_WORKER_SECRET --config wrangler.media.toml
 npm run deploy:media-worker
 ```
 
-Set the application's `CLOUDFLARE_MEDIA_WORKER_URL=https://media.iseedrama.com`, `CLOUDFLARE_MEDIA_WORKER_SECRET` (same value as the Worker secret), `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_STREAM_CUSTOMER_CODE` and `CLOUDFLARE_STREAM_WEBHOOK_SECRET`. The Worker needs the `MEDIA_BUCKET` R2 binding plus the Stream API credentials.
+Set the application's `CLOUDFLARE_MEDIA_WORKER_URL=https://media.iseedrama.com`, `CLOUDFLARE_MEDIA_WORKER_SECRET` (same value as the Worker secret), `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_STREAM_CUSTOMER_CODE` and `CLOUDFLARE_STREAM_WEBHOOK_SECRET`. The Worker needs the `MEDIA_BUCKET` R2 binding plus the Stream API credentials. For browser direct multipart uploads, also configure the Worker secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET_NAME`; the browser only receives short-lived, object-scoped presigned part URLs.
 
 Deploy the Worker before deploying the Nuxt application. `/admin/system` performs an authenticated Worker/R2 health check. Configure `PUBLIC_BASE_URL`, `APP_BASE_URL` and `APP_ORIGINS` in `wrangler.media.toml`; retain the admin origin for upload and preview CORS. Keep the hourly Cron: it recovers interrupted completions, cleans expired multipart uploads and invokes PayPal reconciliation.
+
+R2 direct-upload CORS must also be enabled on `reelnova-media-private`. Allow the production admin origin (and localhost during development) for `PUT,HEAD,GET`, allow the `Content-Type` request header, and expose the `ETag` response header. The presigned URLs are valid for 15 minutes and are restricted to one multipart upload and part number.
 
 Uploads accept MP4, M4V, MOV, MKV, WebM, AVI and MPEG, at most 20 GB and six hours. After upload, the Worker submits the private source to Cloudflare Stream, which performs transcoding and serves signed HLS. Stream webhook events and the hourly reconciliation job update processing state and clean abandoned resources. Covers are uploaded independently.
 
