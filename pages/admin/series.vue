@@ -665,7 +665,7 @@ const uploadPart = (url: string, partNumber: number, blob: Blob, onProgress: (lo
 
 const presignParts = async (session: MediaUploadSession, partNumbers: number[]) => {
   const response = await fetch(`${session.uploadUrl}/parts/presign`, {
-    method: 'POST', credentials: 'include',
+    method: 'POST',
     headers: { authorization: `Bearer ${session.uploadToken}`, 'content-type': 'application/json' },
     body: JSON.stringify({ partNumbers }),
   });
