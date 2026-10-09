@@ -42,13 +42,16 @@ const uploadTotalBytes = ref(0);
 const uploadCancelled = ref(false);
 const uploadFinalizing = ref(false);
 const selectedUploadFiles = ref<UploadFile[]>([]);
-const activeUploadSessionId = ref<string | null>(null);
+const activeUploadSessionIds = ref<string[]>([]);
+const activeUploadSessionId = computed(() => activeUploadSessionIds.value.length === 1 ? activeUploadSessionIds.value[0] : null);
 const cancellingUploadIds = ref<string[]>([]);
-let activeUploadResumeKey = '';
-let activeUploadIdempotencyKey = '';
 const activeUploadRequests = new Set<XMLHttpRequest>();
+const activeUploadProgress = new Map<string, number>();
 // Keep several multipart parts in flight to use the available bandwidth.
 const uploadPartConcurrency = 3;
+// Upload a couple of episodes at once while keeping enough bandwidth for each
+// multipart worker and avoiding an excessive number of Stream sessions.
+const uploadEpisodeConcurrency = 2;
 const mediaAvailable = ref(false);
 const mediaAvailabilityLoading = ref(true);
 const episodes = ref<AdminEpisode[]>([]);
@@ -538,6 +541,8 @@ const openEpisodes = (row: AdminSeries, targetEpisodeNo?: number) => {
   uploadSpeed.value = 0;
   uploadUploadedBytes.value = 0;
   uploadTotalBytes.value = 0;
+  activeUploadProgress.clear();
+  activeUploadSessionIds.value = [];
   episodeDrawer.value = true;
   void loadEpisodes();
 };
@@ -673,9 +678,6 @@ const cancelUpload = () => {
   uploadCancelled.value = true;
   uploadLabel.value = '正在取消上传…';
   uploadSpeed.value = 0;
-  if (activeUploadSessionId.value && !cancellingUploadIds.value.includes(activeUploadSessionId.value)) {
-    cancellingUploadIds.value = [...cancellingUploadIds.value, activeUploadSessionId.value];
-  }
   for (const request of activeUploadRequests) request.abort();
 };
 
@@ -696,7 +698,7 @@ const cancelEpisode = async (episode: AdminEpisode) => {
   if (!episodeHasActiveUpload(episode)) return;
   const uploadKey = episodeUploadKey(episode);
   if (cancellingUploadIds.value.includes(uploadKey)) return;
-  if (episode.uploadId === activeUploadSessionId.value && uploading.value) {
+  if (episode.uploadId && activeUploadSessionIds.value.includes(episode.uploadId) && uploading.value) {
     cancelUpload();
     return;
   }
@@ -715,12 +717,19 @@ const cancelEpisode = async (episode: AdminEpisode) => {
   }
 };
 
-const uploadOne = async (file: File, episodeNo: number, completedBefore: number, totalBytes: number) => {
+const uploadOne = async (file: File, episodeNo: number, totalBytes: number) => {
   if (!selectedSeries.value) return;
   const key = resumeKey(selectedSeries.value.id, episodeNo, file);
   const idempotencyStorageKey = `${key}:idempotency`;
-  activeUploadResumeKey = key;
-  activeUploadIdempotencyKey = idempotencyStorageKey;
+  // Keep resume keys per episode so concurrent uploads never clean up one
+  // another's local state.
+  activeUploadProgress.set(key, 0);
+  const reportProgress = (bytes: number) => {
+    activeUploadProgress.set(key, Math.max(0, Math.min(file.size, bytes)));
+    const uploaded = [...activeUploadProgress.values()].reduce((sum, value) => sum + value, 0);
+    uploadUploadedBytes.value = uploaded;
+    uploadProgress.value = totalBytes ? Math.min(99, Math.round(uploaded / totalBytes * 100)) : 0;
+  };
   let resume = readResume(key);
   if (resume) {
     // The local token can outlive the D1 row (for example after a cron
@@ -741,9 +750,7 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
       const status = current?.videoStatus === 'ready' ? 'ready' : 'processing';
       localStorage.removeItem(key);
       localStorage.removeItem(idempotencyStorageKey);
-      activeUploadSessionId.value = null;
-      activeUploadResumeKey = '';
-      activeUploadIdempotencyKey = '';
+      reportProgress(file.size);
       return status;
     }
     if ((!lookupFailed && !persisted) || ['aborted', 'expired'].includes(persistedStatus)) {
@@ -779,20 +786,20 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
     writeResume(key, resume);
   }
   const { session } = resume;
-  activeUploadSessionId.value = session.id;
+  if (!activeUploadSessionIds.value.includes(session.id)) activeUploadSessionIds.value = [...activeUploadSessionIds.value, session.id];
   if (uploadCancelled.value) throw new DOMException('上传已取消', 'AbortError');
   const parts = new Map(resume.parts.map((part) => [part.partNumber, part]));
   const partCount = Math.ceil(file.size / session.partSizeBytes);
   let completedBytes = [...parts.keys()].reduce((sum, partNumber) => sum + Math.min(session.partSizeBytes, file.size - (partNumber - 1) * session.partSizeBytes), 0);
-  uploadUploadedBytes.value = completedBefore + completedBytes;
-  let speedSampleBytes = uploadUploadedBytes.value;
+  reportProgress(completedBytes);
+  let speedSampleBytes = completedBytes;
   let speedSampleTime = performance.now();
   const pendingPartNumbers = Array.from({ length: partCount }, (_, index) => index + 1).filter((partNumber) => !parts.has(partNumber));
   const inFlightBytes = new Map<number, number>();
   let nextPendingIndex = 0;
   let firstUploadError: unknown;
   const updateUploadProgress = () => {
-    const uploadedBytes = completedBefore + completedBytes + [...inFlightBytes.values()].reduce((sum, loaded) => sum + loaded, 0);
+    const uploadedBytes = completedBytes + [...inFlightBytes.values()].reduce((sum, loaded) => sum + loaded, 0);
     const now = performance.now();
     const elapsed = now - speedSampleTime;
     if (elapsed >= 250 && uploadedBytes >= speedSampleBytes) {
@@ -801,8 +808,7 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
       speedSampleBytes = uploadedBytes;
       speedSampleTime = now;
     }
-    uploadUploadedBytes.value = uploadedBytes;
-    uploadProgress.value = Math.min(99, Math.round(uploadedBytes / totalBytes * 100));
+    reportProgress(uploadedBytes);
   };
   const uploadPendingPart = async (partNumber: number) => {
     const start = (partNumber - 1) * session.partSizeBytes;
@@ -894,9 +900,8 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
     uploadFinalizing.value = false;
     localStorage.removeItem(key);
     localStorage.removeItem(idempotencyStorageKey);
-    activeUploadSessionId.value = null;
-    activeUploadResumeKey = '';
-    activeUploadIdempotencyKey = '';
+    activeUploadSessionIds.value = activeUploadSessionIds.value.filter((id) => id !== session.id);
+    reportProgress(file.size);
     return recovered;
   }
   uploadFinalizing.value = false;
@@ -907,9 +912,8 @@ const uploadOne = async (file: File, episodeNo: number, completedBefore: number,
   }
   localStorage.removeItem(key);
   localStorage.removeItem(idempotencyStorageKey);
-  activeUploadSessionId.value = null;
-  activeUploadResumeKey = '';
-  activeUploadIdempotencyKey = '';
+  activeUploadSessionIds.value = activeUploadSessionIds.value.filter((id) => id !== session.id);
+  reportProgress(file.size);
   return completion.status;
 };
 
@@ -928,19 +932,32 @@ const startTranscode = async () => {
   uploadProgress.value = 0;
   uploadSpeed.value = 0;
   uploadUploadedBytes.value = 0;
+  activeUploadProgress.clear();
+  activeUploadSessionIds.value = [];
   const totalBytes = selectedFiles.value.reduce((sum, file) => sum + file.size, 0);
   uploadTotalBytes.value = totalBytes;
-  let completedBefore = 0;
   let processingCount = 0;
   try {
-    for (const assignment of selectedUploadAssignments.value) {
-      const file = assignment.file.raw;
-      if (!file) continue;
-      uploadLabel.value = `Episode ${assignment.episodeNo} · ${file.name}`;
-      const status = await uploadOne(file, assignment.episodeNo, completedBefore, totalBytes);
-      if (status === 'processing') processingCount += 1;
-      completedBefore += file.size;
-    }
+    const assignments = selectedUploadAssignments.value.filter((assignment) => Boolean(assignment.file.raw));
+    let nextAssignmentIndex = 0;
+    let firstEpisodeError: unknown;
+    const uploadWorker = async () => {
+      while (!firstEpisodeError && nextAssignmentIndex < assignments.length) {
+        const assignment = assignments[nextAssignmentIndex++];
+        const file = assignment.file.raw;
+        if (!file) continue;
+        uploadLabel.value = `正在上传 Episode ${assignment.episodeNo} · ${file.name}`;
+        try {
+          const status = await uploadOne(file, assignment.episodeNo, totalBytes);
+          if (status === 'processing') processingCount += 1;
+        } catch (error) {
+          firstEpisodeError ||= error;
+          for (const request of activeUploadRequests) request.abort();
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(uploadEpisodeConcurrency, assignments.length) }, () => uploadWorker()));
+    if (firstEpisodeError) throw firstEpisodeError;
     uploadProgress.value = 100;
     uploadUploadedBytes.value = totalBytes;
     uploadLabel.value = '上传完成';
@@ -954,14 +971,14 @@ const startTranscode = async () => {
   } catch (reason) {
     if (uploadCancelled.value || (reason instanceof DOMException && reason.name === 'AbortError')) {
       uploadSpeed.value = 0;
-      const sessionId = activeUploadSessionId.value;
       try {
-        const result = sessionId ? await api.cancelEpisodeUpload(sessionId) : null;
-        if (sessionId) clearUploadResumeState(sessionId);
-        if (activeUploadResumeKey) localStorage.removeItem(activeUploadResumeKey);
-        if (activeUploadIdempotencyKey) localStorage.removeItem(activeUploadIdempotencyKey);
+        const sessionIds = [...activeUploadSessionIds.value];
+        const results = await Promise.all(sessionIds.map((sessionId) => api.cancelEpisodeUpload(sessionId).catch(() => null)));
+        for (const sessionId of sessionIds) clearUploadResumeState(sessionId);
+        activeUploadProgress.clear();
         uploadLabel.value = '上传已取消';
-        ElMessage.success(result?.cleanupPending ? '上传已取消，R2 分片将在后台清理' : '上传已取消');
+        if (results.some((result) => !result)) ElMessage.warning('本地上传已停止，但部分服务端会话取消失败，请在分集列表单独取消');
+        else ElMessage.success(results.some((result) => result?.cleanupPending) ? '上传已取消，R2 分片将在后台清理' : '上传已取消');
       } catch (cancelError: any) {
         uploadLabel.value = '已停止上传，可稍后重试';
         ElMessage.warning(cancelError?.data?.statusMessage || '已停止本次上传，但服务端会话取消失败');
@@ -971,17 +988,14 @@ const startTranscode = async () => {
     }
     const message = uploadRequestErrorMessage(reason);
     if (message.includes('原片已保存到 R2')) ElMessage.warning(`${message}，可重新点击上传或在分集列表重试。`);
-    else if (activeUploadSessionId.value) ElMessage.error(`${message}，重新点击可从已完成分片继续`);
+    else if (activeUploadSessionIds.value.length) ElMessage.error(`${message}，重新点击可从已完成分片继续`);
     else ElMessage.error(message);
     await loadEpisodes(false);
   } finally {
-    if (activeUploadSessionId.value) {
-      cancellingUploadIds.value = cancellingUploadIds.value.filter((id) => id !== activeUploadSessionId.value);
-    }
+    cancellingUploadIds.value = cancellingUploadIds.value.filter((id) => !activeUploadSessionIds.value.includes(id));
     activeUploadRequests.clear();
-    activeUploadSessionId.value = null;
-    activeUploadResumeKey = '';
-    activeUploadIdempotencyKey = '';
+    activeUploadSessionIds.value = [];
+    activeUploadProgress.clear();
     uploadFinalizing.value = false;
     uploading.value = false;
   }
