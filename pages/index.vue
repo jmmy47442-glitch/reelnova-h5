@@ -187,7 +187,7 @@ watch(activeTab, (tab) => {
         </template>
         <template v-else>
           <section v-for="(section, sectionIndex) in tabSections" :id="section.id" :key="section.id" class="content-section">
-            <SectionHeader :title="section.title" :subtitle="section.subtitle" :to="section.id === 'new' ? '/explore?sort=Newest' : '/explore?sort=Popular'" />
+            <SectionHeader :title="section.title" :subtitle="section.subtitle" :to="section.id === 'new' ? '/section/new' : section.id === 'popular' ? '/section/popular' : '/explore?sort=Popular'" />
             <div class="poster-grid"><SeriesCard v-for="(series, index) in section.items" :key="series.id" :series="series" :section-id="section.id" :rank="section.id === 'popular' && series.views > 0 ? index + 1 : undefined" /></div>
             <NuxtLink v-if="sectionIndex === 0" class="section-inline-link" to="/explore">Explore every series <ChevronRight :size="17" /></NuxtLink>
           </section>

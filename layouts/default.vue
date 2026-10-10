@@ -1,7 +1,7 @@
 <script setup lang="ts">
 const route = useRoute();
 const primaryRoutes = new Set(['/', '/explore', '/library', '/profile']);
-const showBottomNav = computed(() => primaryRoutes.has(route.path));
+const showBottomNav = computed(() => primaryRoutes.has(route.path) || route.path.startsWith('/section/'));
 </script>
 
 <template>

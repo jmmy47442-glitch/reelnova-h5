@@ -10,7 +10,7 @@ defineProps<{ title: string; subtitle?: string; to?: string }>();
       <h2>{{ title }}</h2>
       <p v-if="subtitle">{{ subtitle }}</p>
     </div>
-    <NuxtLink v-if="to" :to="to" class="text-link">
+    <NuxtLink v-if="to" :to="to" class="text-link" :aria-label="`See all ${title}`">
       See all <ChevronRight :size="16" />
     </NuxtLink>
   </div>
