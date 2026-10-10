@@ -95,6 +95,11 @@ let nextPrefetchAttempted = false;
 let prefetchedNext: { episodeNo: number; sessionId: string; grant: PlaybackAuthorization } | undefined;
 const stopNextPrefetch = () => { nextPrefetchController?.abort(); nextPrefetchController = undefined; };
 const originalFallbackAttempted = ref(false);
+// Some corporate networks intercept the customer-*.cloudflarestream.com
+// hostname and present an untrusted certificate. Cloudflare also serves the
+// same signed Stream token through videodelivery.net, which gives the browser
+// a second TLS endpoint without changing the authorization token.
+const streamDeliveryFallbackAttempted = ref(false);
 const canUseOriginalSource = computed(() => Boolean(originalUrl.value) && !originalFallbackAttempted.value);
 let renewTimer: ReturnType<typeof setTimeout> | undefined;
 let sourceTransitionTimer: ReturnType<typeof setTimeout> | undefined;
@@ -269,6 +274,16 @@ const failPlayback = (message: string) => {
   video.value?.pause();
   playbackError.value = message;
 };
+const streamDeliveryFallbackUrl = (source: string) => {
+  try {
+    const url = new URL(source);
+    if (!/^customer-[a-z0-9]+\.cloudflarestream\.com$/i.test(url.hostname)) return '';
+    url.hostname = 'videodelivery.net';
+    return url.href;
+  } catch {
+    return '';
+  }
+};
 const loadSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
   if (directMp4.value) { loadOriginalSource(source, restoreAt, shouldPlay); return; }
   if (!video.value) return;
@@ -356,6 +371,18 @@ const loadSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
         instance.recoverMediaError();
         return;
       }
+      // A TLS interception/proxy can reject the customer hostname before HLS
+      // has a chance to parse the manifest. Retry once through Cloudflare's
+      // alternate delivery hostname before showing the generic error state.
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR && !streamDeliveryFallbackAttempted.value) {
+        const fallback = streamDeliveryFallbackUrl(source);
+        if (fallback) {
+          streamDeliveryFallbackAttempted.value = true;
+          signedUrl.value = fallback;
+          loadSource(fallback, video.value?.currentTime || 0, playRequested.value || isPlaying.value);
+          return;
+        }
+      }
       failPlayback('The video stream stopped unexpectedly. Please retry.');
     });
     hls.attachMedia(video.value);
@@ -424,6 +451,7 @@ const authorize = async (renew = false, retryPosition?: number) => {
     const authorization = await (prefetchedGrant || api.getPlayback(series.value.id, currentEpisode.value.episodeNo, session(), { profile: playbackProfile() }));
     if (!authorization.signedUrl) throw new Error('No playable source');
     signedUrl.value = authorization.signedUrl;
+    if (!renew) streamDeliveryFallbackAttempted.value = false;
     originalUrl.value = authorization.originalUrl || '';
     directMp4.value = authorization.delivery === 'mp4';
     rendition.value = authorization.rendition || 'original';
@@ -639,6 +667,19 @@ const onVideoError = () => {
     loadSource(signedUrl.value, seekTargetSeconds, seekShouldResume);
     return;
   }
+  // Safari and other native-HLS browsers do not emit hls.js network events;
+  // apply the same alternate-host retry when their media element reports a
+  // network/TLS failure.
+  if (!directMp4.value && nativeHlsPlayback && !streamDeliveryFallbackAttempted.value) {
+    const fallback = streamDeliveryFallbackUrl(activeSourceUrl.value || signedUrl.value);
+    if (fallback) {
+      streamDeliveryFallbackAttempted.value = true;
+      signedUrl.value = fallback;
+      playbackError.value = '';
+      loadSource(fallback, currentTime.value, isPlaying.value || playRequested.value);
+      return;
+    }
+  }
   // hls.js owns MediaSource recovery. Its fatal error handler decides
   // whether to recover the media element or expose an actionable retry.
   if (hls && !nativeHlsPlayback) return;
@@ -774,6 +815,7 @@ const retry = async () => {
   playbackError.value = '';
   resumeFallbackAttempted.value = false;
   qualityRecoveryMessage.value = '';
+  streamDeliveryFallbackAttempted.value = false;
   stalled.value = false;
   seeking.value = false;
   seekStartedAt = 0;
