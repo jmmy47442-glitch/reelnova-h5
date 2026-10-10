@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronRight, Heart, Play, Search, Shield, Sparkles, Trophy, UsersRound, WandSparkles } from 'lucide-vue-next';
+import { Heart, Play, Search, Shield, Sparkles, Trophy, UsersRound, WandSparkles } from 'lucide-vue-next';
 import type { Component } from 'vue';
 import { useAnalytics } from '~/composables/useAnalytics';
 import { usePageData } from '~/composables/usePageData';
@@ -186,10 +186,9 @@ watch(activeTab, (tab) => {
           </section>
         </template>
         <template v-else>
-          <section v-for="(section, sectionIndex) in tabSections" :id="section.id" :key="section.id" class="content-section">
-            <SectionHeader :title="section.title" :subtitle="section.subtitle" :to="section.id === 'new' ? '/section/new' : section.id === 'popular' ? '/section/popular' : '/explore?sort=Popular'" />
+          <section v-for="section in tabSections" :id="section.id" :key="section.id" class="content-section">
+            <SectionHeader :title="section.title" :subtitle="section.subtitle" :to="`/section/${encodeURIComponent(section.id)}`" />
             <div class="poster-grid"><SeriesCard v-for="(series, index) in section.items" :key="series.id" :series="series" :section-id="section.id" :rank="section.id === 'popular' && series.views > 0 ? index + 1 : undefined" /></div>
-            <NuxtLink v-if="sectionIndex === 0" class="section-inline-link" to="/explore">Explore every series <ChevronRight :size="17" /></NuxtLink>
           </section>
         </template>
       </div>
