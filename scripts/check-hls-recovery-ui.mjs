@@ -30,8 +30,8 @@ try {
       const file = new URL(route.request().url()).pathname.split('/recovery-fixture/')[1];
       assert.match(file, /^(master\.m3u8|v(?:360|480|720|1080)\/(index\.m3u8|init\.mp4|seg-\d{6}\.m4s))$/);
       requests.push({ file, time: Date.now() });
-      // Keep lower levels fast. A stalled high-quality request must be
-      // abandoned by real hls.js once the player restores adaptive mode.
+      // Keep lower levels fast so this check can prove a stalled fixed-quality
+      // request is not silently replaced by another rendition.
       if (file.endsWith('.m4s')) await new Promise(resolve => setTimeout(resolve, slow && file.startsWith('v720/') ? 15000 : 150));
       await route.fulfill({ body: readFileSync(join(directory, file)),
         contentType: file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp4' }).catch(() => {});
@@ -49,20 +49,12 @@ try {
       assert.ok(requests.some(request => request.file.startsWith('v720/') && request.file.endsWith('.m4s')));
       await page.getByRole('button', { name: 'Play', exact: true }).click();
       const playAt = Date.now();
-      if (slow) {
-        await page.waitForFunction(() => document.querySelector('.watch-quality')?.textContent?.includes('Auto'), {}, { timeout: 9000 });
-        assert.ok(Date.now() - playAt < 9000, 'must recover before waiting for the 15-second HD request');
-        await page.getByText('Switched to Auto for smoother playback.', { exact: true }).waitFor();
-        await page.waitForFunction(() => { const video = document.querySelector('video'); return video?.currentTime > 5 && !video.paused; }, {}, { timeout: 10000 });
-        assert.ok(requests.some(request => /^v(?:360|480)\/.+\.m4s$/.test(request.file) && request.time >= playAt));
-        assert.ok(Date.now() - playAt < 9000, 'playback must continue without waiting for the slow HD response or its timeout');
-      } else {
-        await page.waitForFunction(() => document.querySelector('video')?.currentTime > 5);
-        assert.match(await quality.innerText(), /720P/, 'a sustainable manual quality must be retained');
-        assert.equal(await page.locator('.watch-quality-notice').count(), 0);
-      }
+      await page.waitForFunction(() => document.querySelector('video')?.currentTime > 5, {}, { timeout: slow ? 25000 : 10000 });
+      assert.match(await quality.innerText(), /720P/, 'network conditions must not override a manual choice');
+      assert.equal(await page.locator('.watch-quality-notice').count(), 0);
+      if (slow) assert.equal(requests.some(request => /^v(?:360|480)\/.+\.m4s$/.test(request.file) && request.time >= playAt), false);
       assert.deepEqual(errors, []);
-      console.log(`${slow ? 'Slow' : 'Fast'} network passed: ${slow ? 'manual HD recovered to Auto and playback continued' : 'manual HD retained'}, paused preloading respected.`);
+      console.log(`${slow ? 'Slow' : 'Fast'} network passed: fixed 720P retained, paused preloading respected.`);
     } catch (error) {
       console.error({ slow, errors, requests });
       throw error;

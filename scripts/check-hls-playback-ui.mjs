@@ -50,10 +50,10 @@ try {
   await page.evaluate(() => document.querySelector('#__nuxt').__vue_app__.config.globalProperties.$router.push('/watch/hls-check/1'));
   await page.getByRole('button', { name: 'Play', exact: true }).click();
   await page.waitForFunction(() => { const video = document.querySelector('video'); return video?.currentTime > 1 && !video.paused; });
-  assert.equal(requests.find(r => r.file.endsWith('.m4s'))?.file, 'v360/seg-000000.m4s', 'first segment starts at lowest bitrate');
-  assert.match(await page.getByRole('button', { name: 'Video quality', exact: true }).innerText(), /Auto/);
+  assert.equal(requests.find(r => r.file.endsWith('.m4s'))?.file, 'v1080/seg-000000.m4s', 'first segment starts at the highest fixed quality');
+  assert.match(await page.getByRole('button', { name: 'Video quality', exact: true }).innerText(), /1080P/);
   await page.waitForFunction(() => document.querySelector('video')?.currentTime > 5.5);
-  assert.ok(requests.some(r => /^v(?:480|720|1080)\/seg-/.test(r.file)), 'ABR should upgrade on a fast connection');
+  assert.equal(requests.some(r => /^v(?:360|480|720)\/seg-/.test(r.file)), false, 'fixed quality must not downgrade automatically');
   const warm = grants.find(g => g.episodeNo === 2);
   assert.ok(warm, 'next episode grant should be prefetched');
   assert.equal(warm.prewarm, 'true');
@@ -68,7 +68,7 @@ try {
   await page.getByRole('slider', { name: 'Seek', exact: true }).fill('60');
   await page.waitForFunction(() => document.querySelector('video')?.currentTime >= 7);
   assert.deepEqual(errors, []);
-  console.log('HLS browser checks passed: real fMP4 decoding, low-bitrate start, automatic upgrade, next episode warming and session handoff, seek.');
+  console.log('HLS browser checks passed: real fMP4 decoding, fixed quality, next episode warming and session handoff, seek.');
 } catch (error) {
   console.error({ url: page.url(), errors, grants, requests }); throw error;
 } finally { await browser.close(); }

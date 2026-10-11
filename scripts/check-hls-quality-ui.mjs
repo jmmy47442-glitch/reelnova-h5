@@ -48,7 +48,8 @@ try {
       const quality = page.getByRole('button', { name: 'Video quality', exact: true });
       await quality.click();
       await page.getByRole('button', { name: '1080P High definition', exact: true }).waitFor();
-      await page.getByRole('button', { name: withOriginal ? '1080P High definition' : 'Highest Highest available quality', exact: true }).click();
+      await page.getByRole('button', { name: '1080P High definition', exact: true }).click();
+      await page.getByRole('status', { name: 'Switched to 1080P', exact: true }).waitFor();
       await page.getByRole('button', { name: 'Play', exact: true }).click();
       await page.waitForFunction(() => {
         const media = document.querySelector('video');
@@ -60,6 +61,7 @@ try {
         const position = await page.locator('video').evaluate(media => { media.pause(); return media.currentTime; });
         await quality.click();
         await page.getByRole('button', { name: 'Original Source quality', exact: true }).click();
+        await page.getByRole('status', { name: 'Switched to Original', exact: true }).waitFor();
         await page.waitForFunction(position => {
           const media = document.querySelector('video');
           return media?.currentSrc.endsWith('/original.mp4') && media.readyState >= 2
@@ -67,18 +69,19 @@ try {
         }, position);
         assert.equal(await page.locator('video').evaluate(media => media.paused), true);
         assert.match(await quality.innerText(), /Original/);
-        await quality.click();
-        await page.getByRole('button', { name: 'Auto Adjusts to your connection', exact: true }).click();
+        await page.getByRole('button', { name: 'Video quality', exact: true }).click();
+        await page.getByRole('button', { name: '1080P High definition', exact: true }).click();
+        await page.getByRole('status', { name: 'Switched to 1080P', exact: true }).waitFor();
         await page.waitForFunction(position => {
           const media = document.querySelector('video');
           return media?.currentSrc.startsWith('blob:') && media.readyState >= 2 && Math.abs(media.currentTime - position) < 0.3;
         }, position);
         await page.getByRole('button', { name: 'Play', exact: true }).click();
         await page.waitForFunction(position => document.querySelector('video')?.currentTime > position + 0.5, position);
-        assert.match(await quality.innerText(), /Auto/);
+        assert.match(await quality.innerText(), /1080P/);
       }
       assert.deepEqual(errors, []);
-      console.log(withOriginal ? '1080P → Original → Auto passed, including decoded resolution and position preservation.' : 'Highest selected and decoded the actual 1080P rendition.');
+      console.log(withOriginal ? '1080P → Original → 1080P passed, including decoded resolution and position preservation.' : 'Highest selected and decoded the actual 1080P rendition.');
     } catch (error) {
       console.error({ withOriginal, errors, requests });
       throw error;

@@ -1,4 +1,7 @@
-export type VideoQualityPreference = 'auto' | 'original' | number;
+// `auto` is kept as a compatibility value for older persisted preferences and
+// API callers, but the player UI now uses `highest` or an explicit resolution
+// so playback never changes quality without the user's action.
+export type VideoQualityPreference = 'auto' | 'highest' | 'original' | number;
 
 export interface VideoQualityLevel {
   index: number;
@@ -57,6 +60,6 @@ export const resolveVideoQualityLevel = (
   preference: VideoQualityPreference,
 ) => {
   if (preference === 'auto' || !levels.length) return -1;
-  if (preference === 'original') return levels[0]!.index;
+  if (preference === 'highest' || preference === 'original') return levels[0]!.index;
   return (levels.find((level) => level.resolution === preference) || levels[0])!.index;
 };
