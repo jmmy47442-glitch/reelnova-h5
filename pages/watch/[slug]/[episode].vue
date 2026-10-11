@@ -780,6 +780,11 @@ const persistSeek = () => {
 };
 const cycleSpeed = () => { const values = [1, 1.25, 1.5, 2]; speed.value = values[(values.indexOf(speed.value) + 1) % values.length] || 1; if (video.value) video.value.playbackRate = speed.value; };
 const selectQuality = (value: string) => {
+  const media = video.value;
+  const preservedPosition = media && Number.isFinite(media.currentTime)
+    ? Math.max(0, media.currentTime)
+    : currentTime.value;
+  const preservedDuration = durationSeconds.value;
   qualityPreference.value = value === 'auto' || value === 'highest' || value === 'original'
     ? value
     : Math.max(0, Number(value.replace('resolution:', '')) || 0);
@@ -799,7 +804,40 @@ const selectQuality = (value: string) => {
     if (signedUrl.value) loadSource(signedUrl.value, currentTime.value, shouldPlay);
     return;
   }
+  // Changing `currentLevel` can flush MSE's buffered ranges. Keep the playhead
+  // and the visible progress value pinned to the same position while the new
+  // rendition is loading, then restore playback if it was running.
+  const instance = hls;
+  let restored = false;
+  let restoreTimer: ReturnType<typeof setTimeout> | undefined;
+  const pinPosition = () => {
+    if (hls !== instance) return;
+    if (media) {
+      const maxPosition = Number.isFinite(media.duration) && media.duration > 0
+        ? Math.max(0, media.duration - 0.1)
+        : preservedPosition;
+      media.currentTime = Math.min(preservedPosition, maxPosition);
+    }
+    currentTime.value = preservedPosition;
+    if (preservedDuration > 0) durationSeconds.value = preservedDuration;
+    progress.value = durationSeconds.value ? Math.min(100, preservedPosition / durationSeconds.value * 100) : progress.value;
+  };
+  const restorePosition = () => {
+    if (restored || hls !== instance) return;
+    restored = true;
+    if (restoreTimer) clearTimeout(restoreTimer);
+    instance.off(Hls.Events.LEVEL_SWITCHED, restorePosition);
+    pinPosition();
+    if (shouldPlay && media?.paused) {
+      playRequested.value = true;
+      playbackLoading.value = true;
+      void startPlaybackWhenReady();
+    }
+  };
+  instance.on(Hls.Events.LEVEL_SWITCHED, restorePosition);
   applyFixedHlsLevel();
+  pinPosition();
+  restoreTimer = setTimeout(restorePosition, 2_000);
 };
 const chooseQuality = (value: string) => {
   closeQualityDrawer();

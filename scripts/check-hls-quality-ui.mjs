@@ -57,6 +57,16 @@ try {
       });
       assert.ok(requests.some(file => /^v1080\/seg-/.test(file)));
       assert.match(await quality.innerText(), /1080P/);
+      const fixedPosition = await page.locator('video').evaluate(media => media.currentTime);
+      await quality.click();
+      await page.getByRole('button', { name: '720P High definition', exact: true }).click();
+      await page.getByRole('status', { name: 'Switched to 720P', exact: true }).waitFor();
+      await page.waitForFunction(position => {
+        const media = document.querySelector('video');
+        return media && Math.abs(media.currentTime - position) < 0.35;
+      }, fixedPosition);
+      assert.ok(Math.abs(await page.locator('video').evaluate(media => media.currentTime) - fixedPosition) < 0.35);
+      assert.match(await quality.innerText(), /720P/);
       if (withOriginal) {
         const position = await page.locator('video').evaluate(media => { media.pause(); return media.currentTime; });
         await quality.click();
