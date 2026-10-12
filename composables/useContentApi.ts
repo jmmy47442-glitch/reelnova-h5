@@ -22,9 +22,9 @@ export const useContentApi = () => {
     requestFetch<ApiEnvelope<T>>(path, { baseURL, credentials: 'include', ...options }).then((response) => response.data);
 
   return {
-    getHome: () => request<HomeResponse>('/home', { cache: 'no-store' }),
-    getExplore: (params?: Record<string, string>) => request<ExploreResponse>('/explore', { query: params, cache: 'no-store' }),
-    getSeries: (slug: string) => request<Series>(`/series/${slug}`, { cache: 'no-store' }),
+    getHome: () => request<HomeResponse>('/home', { cache: 'default' }),
+    getExplore: (params?: Record<string, string>) => request<ExploreResponse>('/explore', { query: params, cache: 'default' }),
+    getSeries: (slug: string) => request<Series>(`/series/${slug}`, { cache: 'default' }),
     getLibrary: () => request<LibraryResponse>('/me/library'),
     getPlayback: (seriesId: string, episodeNo: number, sessionId: string, options: { profile?: 'original' | 'mobile'; prewarm?: boolean; signal?: AbortSignal } = {}) =>
       request<PlaybackAuthorization>('/playback', {

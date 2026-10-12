@@ -1,12 +1,12 @@
 import type { HomeSection, Series } from '~/types/content';
-import { ok } from '~/server/utils/response';
+import { ok, setPrivateContentCacheHeaders } from '~/server/utils/response';
 import { hydrateSeriesRuntimeData } from '~/server/utils/series-runtime';
 import { getHomeSections } from '~/server/utils/home-config';
 import { getPublicSeries } from '~/server/utils/managed-content';
 import { getSeriesBusinessMetrics, sortSeriesByPopularity } from '~/server/utils/content-ranking';
 
 export default defineEventHandler(async (event) => {
-  setHeader(event, 'cache-control', 'private, no-store, max-age=0');
+  setPrivateContentCacheHeaders(event);
   const [configuredSections, published, businessMetrics] = await Promise.all([
     getHomeSections(event), getPublicSeries(event), getSeriesBusinessMetrics(event),
   ]);

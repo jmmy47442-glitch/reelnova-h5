@@ -1,9 +1,9 @@
-import { ok } from '~/server/utils/response';
+import { ok, setPrivateContentCacheHeaders } from '~/server/utils/response';
 import { hydrateSeriesRuntimeData } from '~/server/utils/series-runtime';
 import { getPublicSeries } from '~/server/utils/managed-content';
 
 export default defineEventHandler(async (event) => {
-  setHeader(event, 'cache-control', 'private, no-store, max-age=0');
+  setPrivateContentCacheHeaders(event);
   const slug = getRouterParam(event, 'slug') || '';
   const series = (await getPublicSeries(event)).find((item) => item.slug === slug);
   if (!series) throw createError({ statusCode: 404, statusMessage: 'Series not found' });
