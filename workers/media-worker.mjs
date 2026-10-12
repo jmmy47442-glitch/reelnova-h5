@@ -360,7 +360,7 @@ export default {
           return json({ error: 'Invalid cover upload request' }, 400, requestCors);
         }
         const expires = Math.floor(Date.now() / 1000) + 15 * 60;
-        const uploadToken = await createToken({ key: body.objectKey, seriesId: String(body.seriesId),
+        const uploadToken = await createToken({ kind: 'cover', key: body.objectKey, seriesId: String(body.seriesId),
           contentType: body.contentType, fileSizeBytes: body.fileSizeBytes, expires }, env.MEDIA_WORKER_SECRET);
         return json({ objectKey: body.objectKey, uploadUrl: `${url.origin}/images/uploads/${encodeURIComponent(uploadToken)}`,
           uploadToken, expiresAt: new Date(expires * 1000).toISOString() }, 200, requestCors);
@@ -371,7 +371,8 @@ export default {
         const token = decodeURIComponent(imageUploadMatch[1]);
         const authorization = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
         const payload = await readToken(token, env.MEDIA_WORKER_SECRET);
-        if (!payload || !timingSafeEqual(authorization, token)) return json({ error: 'Invalid or expired image upload token' }, 401, requestCors);
+        if (payload?.kind !== 'cover' || !validCoverKey(payload.key, payload.seriesId)
+          || !timingSafeEqual(authorization, token)) return json({ error: 'Invalid or expired image upload token' }, 401, requestCors);
         if (request.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() !== payload.contentType) {
           return json({ error: 'Image content type does not match upload session' }, 400, requestCors);
         }

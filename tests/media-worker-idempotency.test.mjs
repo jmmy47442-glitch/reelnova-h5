@@ -157,6 +157,21 @@ test('cover upload sessions accept verified PNG bytes and reject mismatched imag
   assert.deepEqual(await verified.json(), {
     objectKey, publicUrl: `https://media.example.test/${objectKey}`, contentType: 'image/png', size: 12,
   });
+  const poster = await worker.fetch(new Request(`https://media.example.test/${objectKey}`), env);
+  assert.equal(poster.status, 200);
+  assert.equal(poster.headers.get('content-type'), 'image/png');
+  assert.deepEqual(new Uint8Array(await poster.arrayBuffer()), png);
+
+  const otherSeries = await worker.fetch(await signedRequest('/images/verify', { objectKey, seriesId: 'other-series' }), env);
+  assert.equal(otherSeries.status, 400);
+  const unauthorized = await worker.fetch(new Request(creation.uploadUrl, {
+    method: 'PUT', headers: { 'content-type': 'image/png' }, body: png,
+  }), env);
+  assert.equal(unauthorized.status, 401);
+  const truncated = await worker.fetch(new Request(creation.uploadUrl, {
+    method: 'PUT', headers: { authorization: `Bearer ${creation.uploadToken}`, 'content-type': 'image/png' }, body: png.slice(0, 8),
+  }), env);
+  assert.equal(truncated.status, 400);
 
   const invalidCreation = await (await worker.fetch(await signedRequest('/images/uploads', {
     objectKey: 'posters/series/cover-22222222-2222-4222-8222-222222222222.png',
