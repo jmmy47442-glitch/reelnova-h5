@@ -1,6 +1,6 @@
-// `auto` is kept as a compatibility value for older persisted preferences and
-// API callers, but the player UI now uses `highest` or an explicit resolution
-// so playback never changes quality without the user's action.
+// `auto` is the fast-start default: begin with a small rendition, then let the
+// player adapt to measured throughput. `highest` and numeric values are user
+// choices that explicitly lock a rendition.
 export type VideoQualityPreference = 'auto' | 'highest' | 'original' | number;
 
 export interface VideoQualityLevel {

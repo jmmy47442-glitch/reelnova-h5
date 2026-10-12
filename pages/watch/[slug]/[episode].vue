@@ -40,7 +40,10 @@ const playbackReady = ref(false);
 const firstFrameReady = ref(false);
 const playRequested = ref(false);
 const speed = ref(1);
-const qualityPreference = ref<VideoQualityPreference>('highest');
+// Start in ABR mode: hls.js begins with the smallest rendition and then raises
+// quality as throughput samples arrive. Locking the highest rendition before
+// measuring the connection makes the first frame unnecessarily expensive.
+const qualityPreference = ref<VideoQualityPreference>('auto');
 const qualityToast = ref('');
 const qualitySwitching = ref(false);
 const qualitySwitchPosition = ref(0);
@@ -205,13 +208,14 @@ const qualitySelectValue = computed(() => {
 const qualityControlLabel = computed(() => {
   if (directMp4.value && rendition.value === 'mobile') return 'Data saver';
   if (nativeQualityOnly.value) return 'Browser managed';
+  if (qualityPreference.value === 'auto') return 'Auto';
   if (qualityPreference.value === 'original') return canUseOriginalSource.value ? 'Original' : qualityLevels.value[0]?.label || 'Highest';
   if (qualityPreference.value === 'highest') return qualityLevels.value[0]?.label || 'Highest';
-  if (qualityPreference.value === 'auto') return qualityLevels.value[0]?.label || 'Highest';
   return `${qualityPreference.value}P`;
 });
 
 const qualityOptions = computed(() => directMp4.value ? [{ value: 'original', label: 'Original', detail: 'Source quality' }] : [
+  { value: 'auto', label: 'Auto', detail: 'Fast start, adapts to your connection' },
   ...(canUseOriginalSource.value
     ? [{ value: 'original', label: 'Original', detail: 'Source quality' }] : []),
   ...(!nativeQualityOnly.value ? qualityLevels.value.map(level => ({ value: `resolution:${level.resolution}`, label: level.label, detail: level.resolution >= 720 ? 'High definition' : 'Uses less data' })) : []),
@@ -229,13 +233,26 @@ const readStoredQuality = () => {
   }
 };
 const persistQuality = () => {
-  if (!import.meta.client || qualityPreference.value === 'auto') return;
-  try { localStorage.setItem(qualityStorageKey, typeof qualityPreference.value === 'number' ? `resolution:${qualityPreference.value}` : qualityPreference.value); } catch { /* optional preference */ }
+  if (!import.meta.client) return;
+  try {
+    if (qualityPreference.value === 'auto') localStorage.removeItem(qualityStorageKey);
+    else localStorage.setItem(qualityStorageKey, typeof qualityPreference.value === 'number' ? `resolution:${qualityPreference.value}` : qualityPreference.value);
+  } catch { /* optional preference */ }
 };
 
 const applyFixedHlsLevel = () => {
   if (!hls || !qualityLevels.value.length) return;
-  const requestedPreference = qualityPreference.value === 'auto' ? 'highest' : qualityPreference.value;
+  if (qualityPreference.value === 'auto') {
+    // Prime the connection with the smallest segment, then leave ABR enabled
+    // so subsequent fragments can move up once hls.js has a real sample.
+    hls.startLevel = qualityLevels.value.reduce((lowest, level) => level.resolution < lowest.resolution ? level : lowest).index;
+    hls.loadLevel = -1;
+    hls.currentLevel = -1;
+    hls.nextLevel = -1;
+    hls.autoLevelCapping = -1;
+    return;
+  }
+  const requestedPreference = qualityPreference.value;
   const requestedLevel = typeof requestedPreference === 'number'
     ? qualityLevels.value.find(level => level.resolution === requestedPreference)
     : undefined;
@@ -869,7 +886,6 @@ const selectQuality = (value: string) => {
   qualityPreference.value = value === 'auto' || value === 'highest' || value === 'original'
     ? value
     : Math.max(0, Number(value.replace('resolution:', '')) || 0);
-  if (qualityPreference.value === 'auto') qualityPreference.value = 'highest';
   persistQuality();
   qualityToast.value = `Switched to ${qualityControlLabel.value}`;
   if (qualityToastTimer) clearTimeout(qualityToastTimer);
@@ -918,7 +934,9 @@ const selectQuality = (value: string) => {
 };
 const chooseQuality = (value: string) => {
   closeQualityDrawer();
-  const next = value === 'highest' || value === 'original' ? value : Math.max(0, Number(value.replace('resolution:', '')) || 0);
+  const next = value === 'auto' || value === 'highest' || value === 'original'
+    ? value
+    : Math.max(0, Number(value.replace('resolution:', '')) || 0);
   if (next === qualityPreference.value) {
     return;
   }
