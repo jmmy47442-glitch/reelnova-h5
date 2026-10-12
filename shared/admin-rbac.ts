@@ -56,6 +56,7 @@ interface ApiPermissionRule {
 
 const apiPermissionRules: ApiPermissionRule[] = [
   { pattern: /^\/api\/admin\/dashboard$/, read: 'dashboard.read' },
+  { pattern: /^\/api\/admin\/analytics$/, read: 'dashboard.read' },
   { pattern: /^\/api\/admin\/metrics(?:\/|$)/, read: 'dashboard.read' },
   { pattern: /^\/api\/admin\/pending-items$/, read: 'dashboard.read' },
   { pattern: /^\/api\/admin\/(?:series|media|home-config|taxonomy)(?:\/|$)/, read: 'content.read', write: 'content.manage' },
