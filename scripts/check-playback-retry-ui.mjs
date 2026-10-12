@@ -8,9 +8,10 @@ const directory = process.env.HLS_FIXTURE_DIR;
 if (!directory) throw new Error('Set HLS_FIXTURE_DIR to an HLS package with v360, v480 and v720 renditions.');
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
 try {
-  for (const scenario of ['manifest', 'renewal', 'mp4']) {
+  for (const scenario of ['manifest', 'renewal', 'mp4', 'expired-session']) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     let grants = 0;
+    const playbackSessions = [];
     let failAuthorization = false;
     let failManifest = scenario === 'manifest';
     const errors = [];
@@ -25,6 +26,10 @@ try {
         episodes: [{ id: 'episode-1', episodeNo: 1, title: 'Episode', duration: '0:12', isFree: true }] };
       else if (path.endsWith('/playback')) {
         grants++;
+        playbackSessions.push(new URL(route.request().url()).searchParams.get('sessionId'));
+        if (scenario === 'expired-session' && grants === 1) {
+          return route.fulfill({ status: 403, json: { statusCode: 403, statusMessage: 'Playback session has expired', data: { code: 'PLAYBACK_SESSION_EXPIRED' } } });
+        }
         if (failAuthorization) return route.fulfill({ status: 503, json: { message: 'Offline' } });
         // A server can issue the same URL again within its signing window.
         const source = `${base}/retry-fixture/grant-${scenario === 'manifest' ? 1 : grants}/${scenario === 'mp4' ? 'source.mp4' : 'master.m3u8'}`;
@@ -58,6 +63,10 @@ try {
       if (scenario !== 'manifest') {
         await page.getByRole('button', { name: 'Continue from 0:02' }).click();
         await page.waitForFunction(() => document.querySelector('video')?.currentTime > 4);
+        if (scenario === 'expired-session') {
+          assert.equal(playbackSessions.length, 2, 'an expired session is retried once with a fresh authorization');
+          assert.ok(playbackSessions[0] && playbackSessions[1] && playbackSessions[0] !== playbackSessions[1], 'expired session recovery must rotate the session ID');
+        }
         await page.getByRole('button', { name: 'Playback speed' }).click();
         failAuthorization = true;
         // Invoke the same callback as the renewal timer without waiting ten minutes.

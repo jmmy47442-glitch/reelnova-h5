@@ -42,6 +42,11 @@ const playRequested = ref(false);
 const speed = ref(1);
 const qualityPreference = ref<VideoQualityPreference>('highest');
 const qualityToast = ref('');
+const qualitySwitching = ref(false);
+const qualitySwitchPosition = ref(0);
+const qualitySwitchProgress = ref(0);
+const qualitySwitchDuration = ref(0);
+const qualitySwitchShouldPlay = ref(false);
 const qualityLevels = ref<VideoQualityLevel[]>([]);
 const showQualityDrawer = ref(false);
 const qualityTrigger = ref<HTMLButtonElement | null>(null);
@@ -103,6 +108,7 @@ const canUseOriginalSource = computed(() => Boolean(originalUrl.value) && !origi
 let renewTimer: ReturnType<typeof setTimeout> | undefined;
 let sourceTransitionTimer: ReturnType<typeof setTimeout> | undefined;
 let qualityToastTimer: ReturnType<typeof setTimeout> | undefined;
+let qualitySwitchTimer: ReturnType<typeof setTimeout> | undefined;
 let hls: Hls | undefined;
 let clearSourceRestore: (() => void) | undefined;
 let recordQueue: Promise<void> = Promise.resolve();
@@ -111,6 +117,7 @@ let networkResourceObserver: PerformanceObserver | undefined;
 let initialGrantPromise: ReturnType<typeof api.getPlaybackBySlug> | undefined;
 let seekTargetSeconds = 0;
 let seekStartedAt = 0;
+let hiddenAt = 0;
 let seekShouldResume = false;
 let seekRecoveryAttempted = false;
 const networkSamples: Array<{ bytes: number; durationMs: number; latencyMs: number | null }> = [];
@@ -250,9 +257,52 @@ const applyFixedHlsLevel = () => {
 
 const snapshotPlayback = () => {
   if (!video.value) return;
+  if (qualitySwitching.value) {
+    currentTime.value = qualitySwitchPosition.value;
+    if (qualitySwitchDuration.value > 0) durationSeconds.value = qualitySwitchDuration.value;
+    progress.value = qualitySwitchProgress.value;
+    return;
+  }
   currentTime.value = Number.isFinite(video.value.currentTime) ? Math.max(0, video.value.currentTime) : currentTime.value;
   durationSeconds.value = Number.isFinite(video.value.duration) ? Math.max(0, video.value.duration) : durationSeconds.value;
   progress.value = durationSeconds.value ? Math.min(100, currentTime.value / durationSeconds.value * 100) : 0;
+};
+const beginQualitySwitch = (media: HTMLVideoElement | null, shouldPlay: boolean) => {
+  if (!media) return;
+  qualitySwitchPosition.value = Number.isFinite(media.currentTime) ? Math.max(0, media.currentTime) : currentTime.value;
+  qualitySwitchDuration.value = durationSeconds.value;
+  qualitySwitchProgress.value = durationSeconds.value
+    ? Math.min(100, qualitySwitchPosition.value / durationSeconds.value * 100)
+    : progress.value;
+  qualitySwitchShouldPlay.value = shouldPlay;
+  qualitySwitching.value = true;
+  // Pause the element while its MSE source is being replaced. This prevents
+  // the browser's transient 0-second timeupdate from moving the progress bar.
+  if (!media.paused) media.pause();
+  if (qualitySwitchTimer) clearTimeout(qualitySwitchTimer);
+  qualitySwitchTimer = setTimeout(finishQualitySwitch, 6_000);
+};
+const finishQualitySwitch = () => {
+  const media = video.value;
+  if (media) {
+    const maxPosition = Number.isFinite(media.duration) && media.duration > 0
+      ? Math.max(0, media.duration - 0.1)
+      : qualitySwitchPosition.value;
+    media.currentTime = Math.min(qualitySwitchPosition.value, maxPosition);
+  }
+  currentTime.value = qualitySwitchPosition.value;
+  if (qualitySwitchDuration.value > 0) durationSeconds.value = qualitySwitchDuration.value;
+  progress.value = qualitySwitchProgress.value;
+  qualitySwitching.value = false;
+  const shouldPlay = qualitySwitchShouldPlay.value;
+  qualitySwitchShouldPlay.value = false;
+  if (qualitySwitchTimer) clearTimeout(qualitySwitchTimer);
+  qualitySwitchTimer = undefined;
+  if (shouldPlay && media?.paused) {
+    playRequested.value = true;
+    playbackLoading.value = true;
+    void startPlaybackWhenReady();
+  }
 };
 const updateBuffered = () => {
   const media = video.value;
@@ -298,6 +348,18 @@ const scheduleRenewal = () => {
   if (renewTimer) clearTimeout(renewTimer);
   const wait = Math.max(15_000, expiresAt.value - Date.now() - 60_000);
   renewTimer = setTimeout(() => { void authorize(true); }, wait);
+};
+const isExpiredPlaybackSession = (error: unknown) => {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as { data?: unknown; response?: { _data?: unknown } };
+  const responseData = candidate.response?._data;
+  const errorData = candidate.data;
+  const codeFrom = (value: unknown): string | undefined => {
+    if (!value || typeof value !== 'object') return undefined;
+    const record = value as { code?: unknown; data?: unknown };
+    return typeof record.code === 'string' ? record.code : codeFrom(record.data);
+  };
+  return codeFrom(errorData) === 'PLAYBACK_SESSION_EXPIRED' || codeFrom(responseData) === 'PLAYBACK_SESSION_EXPIRED';
 };
 const failPlayback = (message: string) => {
   snapshotPlayback();
@@ -350,6 +412,7 @@ const loadSource = (source: string, restoreAt: number, shouldPlay: boolean) => {
     if (restoreAt > 0) media.currentTime = Math.min(restoreAt, Math.max(0, (media.duration || Infinity) - 0.1));
     media.playbackRate = speed.value;
     snapshotPlayback();
+    if (qualitySwitching.value) finishQualitySwitch();
     if (shouldPlay) { playRequested.value = true; void startPlaybackWhenReady(); }
     sourceTransition.value = false;
     if (sourceTransitionTimer) clearTimeout(sourceTransitionTimer);
@@ -455,6 +518,7 @@ const loadOriginalSource = (source: string, restoreAt: number, shouldPlay: boole
     if (restoreAt > 0) media.currentTime = Math.min(restoreAt, Math.max(0, (media.duration || Infinity) - 0.1));
     media.playbackRate = speed.value;
     snapshotPlayback();
+    if (qualitySwitching.value) finishQualitySwitch();
     if (shouldPlay) { playRequested.value = true; void startPlaybackWhenReady(); }
     sourceTransition.value = false;
     if (sourceTransitionTimer) clearTimeout(sourceTransitionTimer);
@@ -483,7 +547,17 @@ const authorize = async (renew = false, retryPosition?: number) => {
     const wasPlaying = isPlaying.value;
     const prefetchedGrant = !renew && retryPosition === undefined ? initialGrantPromise : undefined;
     initialGrantPromise = undefined;
-    const authorization = await (prefetchedGrant || api.getPlayback(series.value.id, currentEpisode.value.episodeNo, session(), { profile: playbackProfile() }));
+    let authorization: PlaybackAuthorization;
+    try {
+      authorization = await (prefetchedGrant || api.getPlayback(series.value.id, currentEpisode.value.episodeNo, session(), { profile: playbackProfile() }));
+    } catch (error) {
+      // Background tabs can suspend the renewal timer long enough for the
+      // server-side playback session to expire. Refresh only that session
+      // failure with a new ID; entitlement/device/security 403s stay denied.
+      if (!isExpiredPlaybackSession(error)) throw error;
+      sessionId.value = crypto.randomUUID();
+      authorization = await api.getPlayback(series.value.id, currentEpisode.value.episodeNo, sessionId.value, { profile: playbackProfile() });
+    }
     if (!authorization.signedUrl) throw new Error('No playable source');
     signedUrl.value = authorization.signedUrl;
     if (!renew) streamDeliveryFallbackAttempted.value = false;
@@ -617,6 +691,13 @@ const maybePrefetchNext = () => {
 };
 const onTimeUpdate = () => {
   if (!video.value) return;
+  if (qualitySwitching.value) {
+    currentTime.value = qualitySwitchPosition.value;
+    progress.value = qualitySwitchProgress.value;
+    if (qualitySwitchDuration.value > 0) durationSeconds.value = qualitySwitchDuration.value;
+    updateBuffered();
+    return;
+  }
   currentTime.value = video.value.currentTime;
   durationSeconds.value = Number.isFinite(video.value.duration) ? video.value.duration : durationSeconds.value;
   progress.value = durationSeconds.value ? Math.min(100, currentTime.value / durationSeconds.value * 100) : 0;
@@ -795,6 +876,7 @@ const selectQuality = (value: string) => {
   qualityToastTimer = setTimeout(() => { qualityToast.value = ''; }, 2_400);
   snapshotPlayback();
   const shouldPlay = Boolean(video.value && !video.value.paused) || playRequested.value;
+  beginQualitySwitch(media, shouldPlay);
   if (qualityPreference.value === 'original' && originalUrl.value) {
     originalFallbackAttempted.value = false;
     loadOriginalSource(originalUrl.value, currentTime.value, shouldPlay);
@@ -828,11 +910,6 @@ const selectQuality = (value: string) => {
     if (restoreTimer) clearTimeout(restoreTimer);
     instance.off(Hls.Events.LEVEL_SWITCHED, restorePosition);
     pinPosition();
-    if (shouldPlay && media?.paused) {
-      playRequested.value = true;
-      playbackLoading.value = true;
-      void startPlaybackWhenReady();
-    }
   };
   instance.on(Hls.Events.LEVEL_SWITCHED, restorePosition);
   applyFixedHlsLevel();
@@ -973,7 +1050,22 @@ const chooseResume = (choice: 'resume' | 'restart') => {
   }
 };
 const persistOnExit = () => { if (started.value && !video.value?.ended) void record('heartbeat', true); };
-const persistWhenHidden = () => { if (document.visibilityState === 'hidden') { stopNextPrefetch(); persistOnExit(); } };
+const persistWhenHidden = () => {
+  if (document.visibilityState === 'hidden') {
+    hiddenAt = Date.now();
+    stopNextPrefetch();
+    persistOnExit();
+    return;
+  }
+  const backgroundedLongEnough = hiddenAt > 0 && Date.now() - hiddenAt >= 5 * 60_000;
+  hiddenAt = 0;
+  // Browsers throttle timers in background tabs. Refresh on return instead of
+  // waiting for a delayed token-renewal timer to discover an expired session.
+  if (backgroundedLongEnough && signedUrl.value && !renewing.value) {
+    if (renewTimer) clearTimeout(renewTimer);
+    void authorize(true);
+  }
+};
 const handleUnlocked = async () => {
   locallyUnlocked.value = true;
   showUnlock.value = false;

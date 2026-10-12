@@ -187,8 +187,11 @@ export const establishPlaybackSession = async (event: H3Event, input: {
       await recordPlaybackSecurityEvent(event, { eventType: 'session_scope_mismatch', userId: input.userId, sessionId: input.sessionId, deviceHash: input.context.deviceHash, ipHash: input.context.ipHash });
       throw createError({ statusCode: 401, statusMessage: 'Playback session is invalid' });
     }
-    if (existing.status !== 'active' || Date.parse(existing.expires_at) <= now.getTime() || existing.last_seen_at <= staleBefore) {
-      throw createError({ statusCode: 403, statusMessage: 'Playback session has expired' });
+    if (existing.status !== 'active') {
+      throw createError({ statusCode: 403, statusMessage: 'Playback session is no longer active' });
+    }
+    if (Date.parse(existing.expires_at) <= now.getTime() || existing.last_seen_at <= staleBefore) {
+      throw createError({ statusCode: 403, statusMessage: 'Playback session has expired', data: { code: 'PLAYBACK_SESSION_EXPIRED' } });
     }
     if (existing.device_hash !== input.context.deviceHash) {
       await d1Run(event, `UPDATE playback_sessions SET status = 'blocked', blocked_reason = 'device mismatch', revoked_at = ? WHERE session_id = ?`, [nowIso, input.sessionId]);
