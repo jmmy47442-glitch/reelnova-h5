@@ -4,6 +4,7 @@ const encoder = new TextEncoder();
 // custom domains (Chrome reports ERR_HTTP2_PROTOCOL_ERROR), especially when
 // several multipart requests are in flight. The client uses 10 MiB parts.
 const maximumUploadPartBytes = 10 * 1024 * 1024;
+const maximumCoverBytes = 10 * 1024 * 1024;
 
 const bytesToHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 const base64Url = (value) => btoa(String.fromCharCode(...value)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, '');
@@ -70,6 +71,21 @@ const readToken = async (token, secret) => {
   } catch {
     return null;
   }
+};
+
+const imageTypeFromBytes = (bytes) => {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+    && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) return 'image/png';
+  if (bytes.length >= 12 && new TextDecoder().decode(bytes.slice(0, 4)) === 'RIFF'
+    && new TextDecoder().decode(bytes.slice(8, 12)) === 'WEBP') return 'image/webp';
+  return null;
+};
+
+const validCoverKey = (key, seriesId) => {
+  const parts = String(key || '').split('/');
+  return parts.length === 3 && parts[0] === 'posters' && parts[1] === String(seriesId)
+    && /^cover-[0-9a-f-]{36}\.(?:jpg|png|webp)$/i.test(parts[2]);
 };
 
 const awsEncode = (value) => encodeURIComponent(value).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
@@ -330,6 +346,62 @@ export default {
         const object = await env.MEDIA_BUCKET.get(objectKey);
         if (!object) return new Response('Not found', { status: 404, headers });
         return new Response(object.body, { status: 200, headers });
+      }
+
+      if (request.method === 'POST' && url.pathname === '/images/uploads') {
+        const rawBody = await request.text();
+        if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401, requestCors);
+        const body = JSON.parse(rawBody);
+        const extensions = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
+        if (!body.seriesId || !extensions[body.contentType] || !Number.isSafeInteger(body.fileSizeBytes)
+          || body.fileSizeBytes <= 0 || body.fileSizeBytes > maximumCoverBytes
+          || !validCoverKey(body.objectKey, body.seriesId)
+          || !body.objectKey.endsWith(`.${extensions[body.contentType]}`)) {
+          return json({ error: 'Invalid cover upload request' }, 400, requestCors);
+        }
+        const expires = Math.floor(Date.now() / 1000) + 15 * 60;
+        const uploadToken = await createToken({ key: body.objectKey, seriesId: String(body.seriesId),
+          contentType: body.contentType, fileSizeBytes: body.fileSizeBytes, expires }, env.MEDIA_WORKER_SECRET);
+        return json({ objectKey: body.objectKey, uploadUrl: `${url.origin}/images/uploads/${encodeURIComponent(uploadToken)}`,
+          uploadToken, expiresAt: new Date(expires * 1000).toISOString() }, 200, requestCors);
+      }
+
+      const imageUploadMatch = url.pathname.match(/^\/images\/uploads\/([^/]+)$/);
+      if (imageUploadMatch && request.method === 'PUT') {
+        const token = decodeURIComponent(imageUploadMatch[1]);
+        const authorization = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
+        const payload = await readToken(token, env.MEDIA_WORKER_SECRET);
+        if (!payload || !timingSafeEqual(authorization, token)) return json({ error: 'Invalid or expired image upload token' }, 401, requestCors);
+        if (request.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() !== payload.contentType) {
+          return json({ error: 'Image content type does not match upload session' }, 400, requestCors);
+        }
+        const bytes = new Uint8Array(await request.arrayBuffer());
+        if (!bytes.length || bytes.length !== payload.fileSizeBytes || bytes.length > maximumCoverBytes) {
+          return json({ error: 'Image size does not match upload session' }, 400, requestCors);
+        }
+        if (imageTypeFromBytes(bytes) !== payload.contentType) return json({ error: 'Uploaded file is not a valid supported image' }, 400, requestCors);
+        await env.MEDIA_BUCKET.put(payload.key, bytes, { httpMetadata: { contentType: payload.contentType },
+          customMetadata: { managedBy: 'reelnova', seriesId: payload.seriesId, kind: 'cover' } });
+        return new Response(null, { status: 204, headers: requestCors });
+      }
+
+      if (request.method === 'POST' && url.pathname === '/images/verify') {
+        const rawBody = await request.text();
+        if (!await verifyServerRequest(request, env, rawBody)) return json({ error: 'Invalid server signature' }, 401, requestCors);
+        const body = JSON.parse(rawBody);
+        if (!body.seriesId || !validCoverKey(body.objectKey, body.seriesId)) return json({ error: 'Invalid cover object key' }, 400, requestCors);
+        const object = await env.MEDIA_BUCKET.get(body.objectKey);
+        if (!object) return json({ error: 'Uploaded cover was not found' }, 404, requestCors);
+        const bytes = new Uint8Array(await object.arrayBuffer());
+        const contentType = imageTypeFromBytes(bytes);
+        if (!contentType || contentType !== object.httpMetadata?.contentType || bytes.length > maximumCoverBytes
+          || object.customMetadata?.seriesId !== String(body.seriesId) || object.customMetadata?.kind !== 'cover') {
+          return json({ error: 'Uploaded cover failed image verification' }, 400, requestCors);
+        }
+        const extension = contentType === 'image/jpeg' ? 'jpg' : contentType === 'image/png' ? 'png' : 'webp';
+        if (!body.objectKey.endsWith(`.${extension}`)) return json({ error: 'Cover extension does not match image type' }, 400, requestCors);
+        return json({ objectKey: body.objectKey, publicUrl: `${String(env.PUBLIC_BASE_URL).replace(/\/$/, '')}/${body.objectKey}`,
+          contentType, size: bytes.length }, 200, requestCors);
       }
 
       if (request.method === 'POST' && url.pathname === '/uploads') {

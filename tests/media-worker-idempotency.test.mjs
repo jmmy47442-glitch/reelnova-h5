@@ -29,6 +29,7 @@ const createBucket = () => {
   const bodyObject = (value) => ({
     ...value,
     async json() { return JSON.parse(value.body); },
+    async arrayBuffer() { return value.body instanceof Uint8Array ? value.body.slice().buffer : new TextEncoder().encode(value.body).buffer; },
   });
   return {
     get createCount() { return creates; },
@@ -60,7 +61,8 @@ const createBucket = () => {
       };
     },
     async put(key, body, options) {
-      objects.set(key, { key, body, httpEtag: `etag:${key}`, customMetadata: options?.customMetadata || {}, uploaded: new Date() });
+      objects.set(key, { key, body, httpEtag: `etag:${key}`, httpMetadata: options?.httpMetadata || {},
+        customMetadata: options?.customMetadata || {}, size: body.byteLength ?? String(body).length, uploaded: new Date() });
     },
     async get(key) { return objects.has(key) ? bodyObject(objects.get(key)) : null; },
     async head(key) { return objects.get(key) || null; },
@@ -135,4 +137,33 @@ test('repeated upload creation and completion reuse R2 and Stream resources', as
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('cover upload sessions accept verified PNG bytes and reject mismatched image content', async () => {
+  const bucket = createBucket();
+  const env = { MEDIA_BUCKET: bucket, MEDIA_WORKER_SECRET: secret, PUBLIC_BASE_URL: 'https://media.example.test', APP_ORIGINS: '' };
+  const objectKey = 'posters/series/cover-11111111-1111-4111-8111-111111111111.png';
+  const creation = await (await worker.fetch(await signedRequest('/images/uploads', {
+    objectKey, seriesId: 'series', contentType: 'image/png', fileSizeBytes: 12,
+  }), env)).json();
+  assert.equal(creation.objectKey, objectKey);
+
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+  const upload = await worker.fetch(new Request(creation.uploadUrl, {
+    method: 'PUT', headers: { authorization: `Bearer ${creation.uploadToken}`, 'content-type': 'image/png' }, body: png,
+  }), env);
+  assert.equal(upload.status, 204);
+  const verified = await worker.fetch(await signedRequest('/images/verify', { objectKey, seriesId: 'series' }), env);
+  assert.deepEqual(await verified.json(), {
+    objectKey, publicUrl: `https://media.example.test/${objectKey}`, contentType: 'image/png', size: 12,
+  });
+
+  const invalidCreation = await (await worker.fetch(await signedRequest('/images/uploads', {
+    objectKey: 'posters/series/cover-22222222-2222-4222-8222-222222222222.png',
+    seriesId: 'series', contentType: 'image/png', fileSizeBytes: 3,
+  }), env)).json();
+  const invalidUpload = await worker.fetch(new Request(invalidCreation.uploadUrl, {
+    method: 'PUT', headers: { authorization: `Bearer ${invalidCreation.uploadToken}`, 'content-type': 'image/png' }, body: new Uint8Array([1, 2, 3]),
+  }), env);
+  assert.equal(invalidUpload.status, 400);
 });
